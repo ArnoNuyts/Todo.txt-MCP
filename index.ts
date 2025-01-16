@@ -5,7 +5,7 @@ import {
   handleInput,
   handleMouseControls,
   Signal,
-  Tui
+  Tui,
 } from "https://deno.land/x/tui@2.1.11/mod.ts";
 import { debounce } from "jsr:@std/async/debounce";
 import { propagateOnSetHandler } from "./logic/signal-helpers.ts";
@@ -73,18 +73,18 @@ let actionBar: ActionBar | undefined = undefined;
 const disableUiWhile = <T, Args extends unknown[]>(
   func: (...args: Args) => Promise<T>,
 ): (...args: Args) => Promise<T | undefined> =>
-  async (...args: Args) => {
-    const disableTodoList = disableComponent(todoList!);
-    const disableActionBar = disableComponent(actionBar!);
-    try {
-      return await func(...args);
-    } catch (_) {
-      // Catch cancel of modals
-    } finally {
-      disableTodoList.abort();
-      disableActionBar.abort();
-    }
-  };
+async (...args: Args) => {
+  const disableTodoList = disableComponent(todoList!);
+  const disableActionBar = disableComponent(actionBar!);
+  try {
+    return await func(...args);
+  } catch (_) {
+    // Catch cancel of modals
+  } finally {
+    disableTodoList.abort();
+    disableActionBar.abort();
+  }
+};
 
 const archiveCallback = disableUiWhile(async () => {
   const completedTodos = todosOrig.value.filter((x) => x.isDone());
@@ -176,10 +176,10 @@ actionBar = new ActionBar({
     const text = await editTodo(todo.text, tui);
     return todo.setText(text);
   }),
-  dueCallback: () => { },
-  thresholdCallback: () => { },
-  deleteCallback: () => { },
-  toggleHiddenCallback: () => { },
+  dueCallback: () => {},
+  thresholdCallback: () => {},
+  deleteCallback: () => {},
+  toggleHiddenCallback: () => {},
   archiveCallback,
 });
 
