@@ -3,7 +3,7 @@ import { Todo } from "./todo.ts";
 import { Todos } from "./Todos.ts";
 
 export const propagateOnSetHandler = (signal: Signal<Todos>) => ({
-  set(obj: Todo, prop: Exclude<keyof Todo, 'id'>, value: never) {
+  set(obj: Todo, prop: Exclude<keyof Todo, "id">, value: never) {
     // The default behavior to store the value
     obj[prop] = value as never; // as never is a hack to make typescript shut up
     signal.propagate();
