@@ -1,21 +1,21 @@
 Fix for no todos! h:1
 2024-12-17 bla h:1
 2024-12-17 Arno h:1
-(C) Temp due:2024-12-26
+x (C) Temp of every days due:2024-12-26 rec:5d
 2024-12-17 4 h:1
-2024-12-17 5
+x 2025-10-02 2024-12-17 5 rec:2d
 2024-12-17 99
 2024-12-17 1234 due:2024-12-20
 2024-12-17 Meh! due:2025-01-09
 Roadmap due:2024-12-20
-bla??? due:2024-12-20
-(B) 2024-12-17 bloe due:2025-01-09
+bla???
+x (B) 2024-12-17 2025-10-02 bloe due:2025-01-09 rec:1m
 gmbl h:1
 2024-12-17 prffff h:1
 2024-12-17 jmpojm h:1
 2024-12-17 babaganoush h:1
-Arno due:2024-12-20
-2024-12-17 Artifacts! due:2025-01-02
+Arno due:2024-12-20 rec:5d
+2024-12-17 Artifacts! due:2025-01-02 rec:d
 2024-12-17 Why more artifacts?? h:1
 Aaargh!
 2024-12-17 Arno
@@ -35,3 +35,10 @@ Aaargh!
 2024-12-17 
 2024-12-17 Gmbl
 2024-12-17 zeze
+x (B) 2025-10-02 2025-10-02 bloe due:2025-02-09 rec:1m
+x (B) 2025-10-02 2025-10-02 bloe due:2025-03-09 rec:1m
+x (B) 2025-10-02 2025-10-02 bloe due:2025-10-03 rec:1m
+(B) 2025-10-02 bloe due:2025-11-03 rec:1m
+2025-10-02 Arno rec:d
+(C) Temp of every days due:2024-12-31 rec:3d
+2025-10-02 5 rec:2d due:2025-10-04

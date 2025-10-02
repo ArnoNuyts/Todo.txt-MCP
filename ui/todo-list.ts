@@ -11,7 +11,7 @@ import {
   Style,
   TextObject,
 } from "https://deno.land/x/tui@2.1.11/mod.ts";
-import { debounce } from "jsr:@std/async/debounce";
+import { debounce } from "jsr:@std/async@0.224.0/debounce";
 import { Todo } from "../logic/todo.ts";
 import { Todos } from "../logic/Todos.ts";
 import { UpperCaseLetter } from "../types/types.ts";
@@ -40,6 +40,8 @@ export interface TableOptions extends Omit<ComponentOptions, "theme"> {
   thresholdCallback: (currentTodo: Todo) => void;
   deleteCallback: (currentTodo: Todo) => void;
   toggleHiddenCallback: (currentTodo: Todo) => void;
+  toggleStateCallback: (currentTodo: Todo) => void;
+  recurrenceCallback: (currentTodo: Todo) => void;
   newCallback: () => Promise<Todo | undefined>;
   data: Computed<Todos>;
 }
@@ -55,6 +57,8 @@ export class TodoList extends Component {
   thresholdCallback: (currentTodo: Todo) => void;
   deleteCallback: (currentTodo: Todo) => void;
   toggleHiddenCallback: (currentTodo: Todo) => void;
+  toggleStateCallback: (currentTodo: Todo) => void;
+  recurrenceCallback: (currentTodo: Todo) => void;
   newCallback: () => Promise<Todo | undefined>;
   lastSelectedId: symbol | undefined = undefined;
   archiveCallback: () => void;
@@ -111,6 +115,8 @@ export class TodoList extends Component {
     this.archiveCallback = options.archiveCallback;
     this.thresholdCallback = options.thresholdCallback;
     this.toggleHiddenCallback = options.toggleHiddenCallback;
+    this.toggleStateCallback = options.toggleStateCallback;
+    this.recurrenceCallback = options.recurrenceCallback;
     this.dueCallback = options.dueCallback;
 
     if (this.lastSelectedId === undefined) {
@@ -231,6 +237,11 @@ export class TodoList extends Component {
             setTimeout(() => this.thresholdCallback(currentSelectedTodo), 0);
           }
           return;
+        case "r": // Recurrence
+          if (currentSelectedTodo) {
+            setTimeout(() => this.recurrenceCallback(currentSelectedTodo), 0);
+          }
+          return;
         case "n":
           setTimeout(() => {
             this.newCallback().then((todo) => {
@@ -242,7 +253,7 @@ export class TodoList extends Component {
           return;
         case "space":
           if (currentSelectedTodo) {
-            currentSelectedTodo.toggleState();
+            this.toggleStateCallback(currentSelectedTodo);
           }
           return;
         case "delete":

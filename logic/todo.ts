@@ -47,6 +47,42 @@ export class Todo {
     if (this.state === TodoStateEnum.todo && this.completionDate) {
       this.completionDate = undefined;
     }
+
+    if (this.state === TodoStateEnum.done && this.tags.rec) {
+      const recurrence = this.tags.rec as string;
+      const newTodo = new Todo(this.toString());
+      newTodo.state = TodoStateEnum.todo;
+      newTodo.completionDate = undefined;
+
+      const regex = /(\d+)([dwmy])/;
+      const match = recurrence.match(regex);
+      if (match) {
+        const amount = parseInt(match[1]);
+        const unit = match[2];
+        const newDueDate = new Date();
+        /*if (this.tags.due) {
+          newDueDate = new Date(this.tags.due as string);
+        }*/
+
+        switch (unit) {
+          case "d":
+            newDueDate.setDate(newDueDate.getDate() + amount);
+            break;
+          case "w":
+            newDueDate.setDate(newDueDate.getDate() + amount * 7);
+            break;
+          case "m":
+            newDueDate.setMonth(newDueDate.getMonth() + amount);
+            break;
+          case "y":
+            newDueDate.setFullYear(newDueDate.getFullYear() + amount);
+            break;
+        }
+        newTodo.setDue(newDueDate);
+      }
+
+      return newTodo;
+    }
   }
   toString() {
     return (this.isDone() ? "x " : "") +
@@ -122,6 +158,11 @@ export class Todo {
       text = text.replace(tag[0], "");
     }
     this.text = text;
+  }
+
+  setRecurrence(recurrence: string): void {
+    this.tags.rec = recurrence;
+    this.signalChangeHack++;
   }
 
   setDue(date: Date): void {

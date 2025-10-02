@@ -1,5 +1,5 @@
 (B) Todo item action menu @v0.2
-(A) 2024-12-19 Repo @v0.1
+x (A) 2025-10-02 2024-12-19 Repo @v0.1
 x (A) 2024-12-24 2024-12-19 Action button bar bottom @v0.1
 (D) 2024-12-14 Paste @zFuture
 (E) 2024-07-12 Autocomplete context / tags / projects @zFuture
@@ -18,3 +18,4 @@ x 2024-12-24 2024-12-19 Make confirm dialog clickable @v0.1
 2024-12-24 Add button mouseover effect (actionbar, dialogs) @v0.3
 2024-12-24 Close button on dialogs @v0.2
 2025-01-06 Fix cancel in confirm in dialog @v0.1 +bug
+x 2025-10-02 2025-10-02 Recurrent todos @v0.1
