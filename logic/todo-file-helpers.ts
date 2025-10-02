@@ -6,7 +6,8 @@ export async function readTodosFromFile(filename: string) {
     await Deno.stat(filename); // Check if file exists
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return new Todos(); // File does not exist, return empty Todos
+      await Deno.writeTextFile(filename, ""); // Create the file if it doesn't exist
+      return new Todos(); // Return empty Todos after creating the file
     }
     throw error; // Re-throw other errors from stat()
   }
