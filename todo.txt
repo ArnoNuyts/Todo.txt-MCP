@@ -1,9 +1,9 @@
 (B) Todo item action menu @v0.2
-x (A) 2025-10-02 2024-12-19 Repo @v0.1
-x (A) 2024-12-24 2024-12-19 Action button bar bottom @v0.1
+x (A) 2024-12-19 2025-10-02 Repo @v0.1
+x (A) 2024-12-19 2024-12-24 Action button bar bottom @v0.1
 (D) 2024-12-14 Paste @zFuture
 (E) 2024-07-12 Autocomplete context / tags / projects @zFuture
-Fix UI breaks when no todos present +bugs @v0.1
+x Fix UI breaks when no todos present +bugs @v0.1
 Fix tui in cmdr +bugs @zFuture
 Double click to complete @zFuture
 (F) Datepicker @v0.2
@@ -13,7 +13,7 @@ Show tags and Projects in colors @v0.3
 2024-12-17 Solution for chcp 65001 @v0.2
 2024-12-18 Group edit context title @zFuture by editing when Context is selected
 2024-12-19 Make Todo work with readonly getters @v0.2
-x 2024-12-24 2024-12-19 Make confirm dialog clickable @v0.1
+x 2024-12-19 2024-12-24 Make confirm dialog clickable @v0.1
 2024-12-23 Support for mac shortcuts @zFuture
 2024-12-24 Add button mouseover effect (actionbar, dialogs) @v0.3
 2024-12-24 Close button on dialogs @v0.2

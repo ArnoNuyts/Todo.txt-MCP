@@ -148,7 +148,6 @@ export class TodoList extends Component {
     this.indexes.subscribe((indexes) => {
       // Draw extra objects if data was changed
       const dataDrawObjects = this.drawnRows.length;
-      if (!dataDrawObjects) return;
       if (indexes.length > dataDrawObjects) {
         this.#fillDataDrawObjects();
       } else if (indexes.length < dataDrawObjects) {

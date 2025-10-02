@@ -3,6 +3,15 @@ import { Todos } from "./Todos.ts";
 
 export async function readTodosFromFile(filename: string) {
   try {
+    await Deno.stat(filename); // Check if file exists
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return new Todos(); // File does not exist, return empty Todos
+    }
+    throw error; // Re-throw other errors from stat()
+  }
+
+  try {
     // Read the file content
     const data = await Deno.readTextFile(filename);
 

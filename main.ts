@@ -215,6 +215,16 @@ const readTodosDebounced = debounce(
 );
 
 const openTodoFileWatcher = async (filename: string) => {
+  try {
+    await Deno.stat(filename); // Check if file exists
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      await Deno.writeTextFile(filename, ""); // Create the file if it doesn't exist
+    } else {
+      throw error; // Re-throw other errors from stat()
+    }
+  }
+
   const watcher = Deno.watchFs(filename);
   for await (const event of watcher) {
     if (event.kind === "modify") {
