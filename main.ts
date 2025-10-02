@@ -1,27 +1,23 @@
-
-import { dirname } from                                                
-    "https://deno.land/std@0.224.0/path/mod.ts";                             
-  import { crayon } from                                                 
-    "https://deno.land/x/crayon@3.3.3/mod.ts";                               
-  import {                                                               
-    Computed,                                                            
-    handleInput,                                                         
-    handleMouseControls,                                                 
-    Signal,                                                              
-    Tui,                                                                 
-  } from "https://deno.land/x/tui@2.1.11/mod.ts";                        
-  import { debounce } from "jsr:@std/async@1.0.14/debounce";            
-  import { propagateOnSetHandler } from                                  
-    "./logic/signal-helpers.ts";                                             
-import {                                                               
-  readTodosFromFile,                                                   
-  writeTodosToFile,                                                    
-} from "./logic/todo-file-helpers.ts";                                 
-import { Todo } from "./logic/todo.ts";                                
-import { Todos } from "./logic/Todos.ts";                              
-import { ActionBar } from "./ui/action-bar.ts";                        
-import confirmDialog from "./ui/confirm-dialog.ts";                    
-import dateSelector from "./ui/date-selector.ts";                      
+import { dirname } from "https://deno.land/std@0.224.0/path/mod.ts";
+import { crayon } from "https://deno.land/x/crayon@3.3.3/mod.ts";
+import {
+  Computed,
+  handleInput,
+  handleMouseControls,
+  Signal,
+  Tui,
+} from "https://deno.land/x/tui@2.1.11/mod.ts";
+import { debounce } from "jsr:@std/async@1.0.14/debounce";
+import { propagateOnSetHandler } from "./logic/signal-helpers.ts";
+import {
+  readTodosFromFile,
+  writeTodosToFile,
+} from "./logic/todo-file-helpers.ts";
+import { Todo } from "./logic/todo.ts";
+import { Todos } from "./logic/Todos.ts";
+import { ActionBar } from "./ui/action-bar.ts";
+import confirmDialog from "./ui/confirm-dialog.ts";
+import dateSelector from "./ui/date-selector.ts";
 import recurrenceDialog from "./ui/recurrence-dialog.ts";
 import editTodo from "./ui/edit-todo.ts";
 import recurrenceAmountDialog from "./ui/recurrence-amount-dialog.ts";
@@ -161,13 +157,12 @@ todoList = new TodoList({
   recurrenceCallback: disableUiWhile(async (todo: Todo): Promise<void> => {
     const recurrence = await recurrenceDialog("Recurrence", tui);
 
-      const amount = await recurrenceAmountDialog(
-        "",
-        tui,
-        recurrence,
-      );
-      todo.setRecurrence(`${amount}${recurrence}`);
-   
+    const amount = await recurrenceAmountDialog(
+      "",
+      tui,
+      recurrence,
+    );
+    todo.setRecurrence(`${amount}${recurrence}`);
   }),
 });
 todoList.state.value = "focused";

@@ -8,7 +8,11 @@ import { Text } from "https://deno.land/x/tui@2.1.11/src/components/text.ts";
 import { insertAt } from "https://deno.land/x/tui@2.1.11/src/utils/strings.ts";
 import { keepComponentFocussed } from "./tui-helpers.ts";
 
-export default (text: string, parent: Tui, recurrenceType: "d" | "w" | "m" | "y"): Promise<string> => {
+export default (
+  text: string,
+  parent: Tui,
+  recurrenceType: "d" | "w" | "m" | "y",
+): Promise<string> => {
   const box = new Box({
     parent: parent,
     theme: {
