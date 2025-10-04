@@ -120,7 +120,7 @@ export default (
         reject("Canceled");
       } else if (key === "up") {
         let newIndex = selectedRow.value - 1;
-        while (newIndex >= 0 && actions[newIndex].isTitle) {
+        while (newIndex >= 0 && !actions[newIndex].callBack) {
           newIndex--;
         }
         if (newIndex >= 0) {
@@ -128,14 +128,14 @@ export default (
         }
       } else if (key === "down") {
         let newIndex = selectedRow.value + 1;
-        while (newIndex < actions.length && actions[newIndex].isTitle) {
+        while (newIndex < actions.length && !actions[newIndex].callBack) {
           newIndex++;
         }
         if (newIndex < actions.length) {
           selectedRow.value = newIndex;
         }
       } else if (key === "return") {
-        if (actions[selectedRow.value].isTitle) return;
+        if (!actions[selectedRow.value].callBack) return;
         menuItems.forEach((x) => x.destroy());
         box.destroy();
         // Should this be awaited?
