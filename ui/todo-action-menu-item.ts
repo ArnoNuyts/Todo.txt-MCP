@@ -1,4 +1,4 @@
-import { crayon } from "https://deno.land/x/crayon@3.3.3/mod.ts";
+import { Crayon, crayon } from "https://deno.land/x/crayon@3.3.3/mod.ts";
 import {
   Component,
   Computed,
@@ -14,13 +14,14 @@ export interface TodoActionMenuItemOptions {
   key: string;
   description: string;
   callBack: () => void;
+  isSelected: Signal<boolean>;
 }
 
 export class TodoActionMenuItem extends Component {
   key: string;
   description: string;
   callBack: () => void;
-  baseStyle = new Signal(crayon.bgBlack);
+  baseStyle: Signal<Crayon>;
 
   constructor(options: TodoActionMenuItemOptions) {
     const rectangle = new Computed(() => (
@@ -28,7 +29,7 @@ export class TodoActionMenuItem extends Component {
         column: options.parent.rectangle.value.column + 1,
         height: 1,
         row: options.row.value,
-        width: options.key.length + options.description.length + 2,
+        width: options.parent.rectangle.value.width,
       }));
 
     super(
@@ -37,12 +38,13 @@ export class TodoActionMenuItem extends Component {
         zIndex: options.zIndex,
         rectangle,
         theme: {}
-      } ,
+      },
     );
     this.key = options.key;
     this.description = options.description;
     this.callBack = options.callBack;
-
+    this.baseStyle = new Computed(() => options.isSelected.value ? crayon.bgWhite: crayon.bgBlack);
+    this.style = this.baseStyle as unknown as Signal<Style>;
   }
 
   override draw(): void {
@@ -50,12 +52,15 @@ export class TodoActionMenuItem extends Component {
     super.draw();
 
     const { canvas } = this.tui;
+
+
+
     const key = new TextObject({
       canvas,
       view: this.view,
       zIndex: this.zIndex.value + 1,
-      style: new Computed(() => this.baseStyle.value.lightYellow as Style),
-      value: this.key,
+      style: new Computed(() => crayon.bgBlack.lightYellow as Style),
+      value: this.key.padStart(5, " "),
       rectangle: new Computed(() => {
         const { column, row } = this.rectangle.value;
 
@@ -70,13 +75,13 @@ export class TodoActionMenuItem extends Component {
       canvas,
       view: this.view,
       zIndex: this.zIndex.value + 1,
-      style: crayon.bgBlack.lightCyan,
-      value: this.description,
+      style: new Computed(() => this.baseStyle.value.lightCyan as Style),
+      value: new Computed(() => " " + this.description.padEnd(this.rectangle.value.width - (this.key.length < 5 ? 5 : this.key.length) -4, " ")),
       rectangle: new Computed(() => {
         const { column, row } = this.rectangle.value;
 
         return {
-          column: column + this.key.length + 1,
+          column: column + (this.key.length < 5 ? 5 : this.key.length) +1,
           row: row,
         };
       }),

@@ -225,12 +225,7 @@ export class List extends Component {
             string += dataCell;
           }
 
-          const endPadding = Math.max(
-            0,
-            this.rectangle.value.width - textWidth(string) - 2,
-          );
-          string += " ".repeat(endPadding);
-          return string;
+          return string.padEnd(this.rectangle.value.width, " ");
         }),
         rectangle: new Computed(() => {
           const { column, row } = this.rectangle.value;

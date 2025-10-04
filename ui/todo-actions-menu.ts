@@ -36,7 +36,7 @@ export default (
       return {
         column: Math.floor((parent.rectangle.value.width - width) / 2),
         row: Math.floor((parent.rectangle.value.height - 10) / 2),
-        height: 10,
+        height: 7,
         width: width,
       };
     }),
@@ -55,7 +55,7 @@ export default (
 
   const actions = [
     { name: "Edit", shortcut: "e", callBack: callbacks.edit },
-    { name: "Del", shortcut: "delete", callBack: callbacks.delete },
+    { name: "Delete", shortcut: "del", callBack: callbacks.delete },
     { name: "Toggle Complete", shortcut: "space", callBack: callbacks.toggleComplete },
     { name: "Set Due Date", shortcut: "d", callBack: callbacks.setDueDate },
     { name: "Set Threshold Date", shortcut: "t", callBack: callbacks.setThresholdDate },
@@ -74,6 +74,7 @@ export default (
       key: action.shortcut,
       description: action.name,
       callBack: action.callBack,
+      isSelected: new Computed(() => index == selectedRow.value),
     })
   );
   box.draw();
@@ -86,6 +87,7 @@ export default (
   return new Promise((resolve, reject) => {
     box.on("keyPress", ({ key }) => {
       if (key === "escape") {
+        menuItems.forEach(x => x.destroy()); 
         box.destroy();
         reject("Canceled");
       } else if (key === "up") {
@@ -93,9 +95,10 @@ export default (
       } else if (key === "down") {
         selectedRow.value = Math.min(actions.length - 1, selectedRow.value + 1);
       } else if (key === "return") {
+        menuItems.forEach(x => x.destroy()); 
         box.destroy();
         // Should this be awaited?
-        menuItems[selectedRow.value].callBack();
+        setTimeout(menuItems[selectedRow.value].callBack,0);
         resolve(actions[selectedRow.value].name);
       }
     });
