@@ -7,6 +7,7 @@ import {
 } from "https://deno.land/x/tui@2.1.11/mod.ts";
 import { Box } from "https://deno.land/x/tui@2.1.11/src/components/box.ts";
 import { Frame } from "https://deno.land/x/tui@2.1.11/src/components/frame.ts";
+import { Text } from "https://deno.land/x/tui@2.1.11/src/components/text.ts";
 import { TodoActionMenuItem } from "./todo-action-menu-item.ts";
 import { keepComponentFocussed } from "./tui-helpers.ts";
 import { TodoActionMenuTitleItem } from "./todo-action-menu-title-item.ts";
@@ -83,6 +84,19 @@ export default (
     zIndex: 5,
   });
 
+  const textBox = new Text({
+    parent: box,
+    text: `| Todo menu |`,
+    theme: {
+      base: crayon.bgBlack.white,
+    },
+    rectangle: new Computed(() => ({
+      column: box.rectangle.value.column + 2,
+      row: box.rectangle.value.row - 1,
+    })),
+    zIndex: 6,
+  });
+
   const selectedRow = new Signal(0);
 
   const menuItems: (TodoActionMenuItem | TodoActionMenuTitleItem)[] = actions
@@ -105,10 +119,6 @@ export default (
         isSelected: new Computed(() => index == selectedRow.value),
       });
     });
-  box.draw();
-  frame.draw();
-
-  menuItems.forEach((item) => item.draw());
 
   keepComponentFocussed(box);
 
@@ -116,6 +126,7 @@ export default (
     box.on("keyPress", ({ key }) => {
       if (key === "escape") {
         menuItems.forEach((x) => x.destroy());
+        textBox.destroy();
         box.destroy();
         reject("Canceled");
       } else if (key === "up") {
@@ -137,6 +148,7 @@ export default (
       } else if (key === "return") {
         if (!actions[selectedRow.value].callBack) return;
         menuItems.forEach((x) => x.destroy());
+        textBox.destroy();
         box.destroy();
         // Should this be awaited?
         setTimeout(

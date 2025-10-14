@@ -18,7 +18,6 @@ import type {
 } from "https://deno.land/x/tui@2.1.11/src/types.ts";
 import { clamp } from "https://deno.land/x/tui@2.1.11/src/utils/numbers.ts";
 import { signalify } from "https://deno.land/x/tui@2.1.11/src/utils/signals.ts";
-import { textWidth } from "https://deno.land/x/tui@2.1.11/src/utils/strings.ts";
 
 export interface ListTheme extends Theme {
   frame: Theme;
