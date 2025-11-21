@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  todotui:
+    # Build directly from the git repository
+    # Replace with your actual git repository URL
+    build: https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+
+    ports:
+      - "5000:5000"
+
+    volumes:
+      # Mount only the data file for persistence
+      - ./todo.txt:/app/todo.txt
+
+    environment:
+      # Configuration
+      - TODOTUI_BACKEND=local
+      - TODOTUI_LOCAL_FILENAME=todo.txt
+      # - TODOTUI_BACKEND=webdav
+      # - TODOTUI_WEBDAV_URL=https://dav.example.com
+      # - TODOTUI_WEBDAV_USERNAME=user
+      # - TODOTUI_WEBDAV_PASSWORD=pass

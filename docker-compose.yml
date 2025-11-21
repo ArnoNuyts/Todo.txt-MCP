@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  todotui:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./todo.txt:/app/todo.txt
+    environment:
+      - PORT=5000
+      # Example overrides (uncomment to use)
+      - TODOTUI_BACKEND=local
+      - TODOTUI_LOCAL_FILENAME=test.txt
+      # - TODOTUI_BACKEND=webdav
+      # - TODOTUI_WEBDAV_URL=https://dav.example.com
+      # - TODOTUI_WEBDAV_USERNAME=user
+      # - TODOTUI_WEBDAV_PASSWORD=pass
