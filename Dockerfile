@@ -5,7 +5,7 @@ EXPOSE 3000
 WORKDIR /app
 
 # Prefer not to run as root.
-USER deno
+#USER deno
 
 # Cache the dependencies as a layer (the following two steps are re-run only when deps.ts or deno.json changes).
 # Ideally cache deps.ts if you have one, or deno.json
