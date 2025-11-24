@@ -58,24 +58,51 @@ async function createTodoServer() {
 
 
   // Tool: list_todos
-  server.tool("list_todos", {}, async () => {
-    const todos = await backend.load();
-    const todoStrings = await Promise.all(
-      todos.map(async (todo) => {
-        const hash = await todo.getHash();
-        return `[${hash}] ${todo.toDisplayString()}`;
-      })
+  server.tool(
+    "list_todos",
+    {
+      status: z.enum(["todo", "done", "all"]).optional().describe("Filter by status: 'todo' (default), 'done', or 'all'"),
+      search: z.string().optional().describe("Search query to filter todos by text"),
+      limit: z.number().optional().describe("Maximum number of todos to return (default: 50)"),
+      offset: z.number().optional().describe("Number of todos to skip (default: 0)"),
+    } as any,
+    async ({ status = "todo", search, limit = 50, offset = 0 }: { status?: "todo" | "done" | "all"; search?: string; limit?: number; offset?: number }) => {
+      const allTodos = await backend.load();
+      
+      let filteredTodos = allTodos;
 
-    );
-    return {
-      content: [
-        {
-          type: "text",
-          text: todoStrings.join("\n"),
-        },
-      ],
-    };
-  });
+      // Filter by status
+      if (status !== "all") {
+        const targetState = status === "done" ? TodoStateEnum.done : TodoStateEnum.todo;
+        filteredTodos = filteredTodos.filter(t => t.state === targetState);
+      }
+
+      // Filter by search query
+      if (search) {
+        const lowerSearch = search.toLowerCase();
+        filteredTodos = filteredTodos.filter(t => t.text.toLowerCase().includes(lowerSearch));
+      }
+
+      // Apply pagination
+      const pagedTodos = filteredTodos.slice(offset, offset + limit);
+
+      const todoStrings = await Promise.all(
+        pagedTodos.map(async (todo) => {
+          const hash = await todo.getHash();
+          return `[${hash}] ${todo.toDisplayString()}`;
+        })
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: todoStrings.length > 0 ? todoStrings.join("\n") : "No todos found matching criteria.",
+          },
+        ],
+      };
+    }
+  );
 
   // Tool: add_todo
   // @ts-ignore: Zod version mismatch with McpServer
