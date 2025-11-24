@@ -141,14 +141,15 @@ async function createTodoServer() {
     }
   );
 
-  // Tool: mark_done
+  // Tool: set_todo_status
   // @ts-ignore: Zod version mismatch with McpServer
   server.tool(
-    "mark_done",
+    "set_todo_status",
     {
-      hash: z.string().describe("Hash of the todo to mark as done"),
+      hash: z.string().describe("Hash of the todo to update"),
+      status: z.enum(["done", "todo"]).describe("New status for the todo ('done' or 'todo')"),
     } as any,
-    async ({ hash }: { hash: string }) => {
+    async ({ hash, status }: { hash: string; status: "done" | "todo" }) => {
       const todos = await backend.load();
       let foundIndex = -1;
       for (let i = 0; i < todos.length; i++) {
@@ -165,54 +166,20 @@ async function createTodoServer() {
         };
       }
       const todo = todos[foundIndex];
-      if (todo.state !== TodoStateEnum.done) {
-        todo.toggleState();
-        await backend.save(todos);
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Marked todo [${await todo.getHash()}] as done: ${todo.toDisplayString()}`,
-          },
-        ],
-      };
-    }
-  );
+      const targetState = status === "done" ? TodoStateEnum.done : TodoStateEnum.todo;
 
-  // Tool: mark_todo
-  // @ts-ignore: Zod version mismatch with McpServer
-  server.tool(
-    "mark_todo",
-    {
-      hash: z.string().describe("Hash of the todo to mark as not done (active)"),
-    } as any,
-    async ({ hash }: { hash: string }) => {
-      const todos = await backend.load();
-      let foundIndex = -1;
-      for (let i = 0; i < todos.length; i++) {
-        if ((await todos[i].getHash()) === hash) {
-          foundIndex = i;
-          break;
+      if (todo.state !== targetState) {
+        const newTodo = todo.toggleState();
+        if (newTodo) {
+          todos.push(newTodo);
         }
-      }
-
-      if (foundIndex === -1) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "Todo not found (file modified?)" }],
-        };
-      }
-      const todo = todos[foundIndex];
-      if (todo.state === TodoStateEnum.done) {
-        todo.toggleState();
         await backend.save(todos);
       }
       return {
         content: [
           {
             type: "text",
-            text: `Marked todo [${await todo.getHash()}] as todo: ${todo.toDisplayString()}`,
+            text: `Set todo [${await todo.getHash()}] status to ${status}: ${todo.toDisplayString()}`,
           },
         ],
       };

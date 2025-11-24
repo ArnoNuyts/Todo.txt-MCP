@@ -63,15 +63,31 @@ async function main() {
       Deno.exit(1);
   }
   console.log("Edit result:", editRes.result.content[0].text);
+  
+  // Update hash after edit
+  const editText = editRes.result.content[0].text;
+  const editHashMatch = editText.match(/\[([0-9a-f]+)\]/);
+  if (editHashMatch) {
+      hash = editHashMatch[1];
+      console.log("New Hash after edit:", hash);
+  }
 
   // 3. Mark Done
   console.log("Marking done...");
-  const doneRes = await rpc("mark_done", { hash: hash });
+  const doneRes = await rpc("set_todo_status", { hash: hash, status: "done" });
   if (doneRes.error) {
       console.error("Mark done failed:", doneRes.error);
       Deno.exit(1);
   }
   console.log("Mark done result:", doneRes.result.content[0].text);
+
+  // Update hash after mark done
+  const doneText = doneRes.result.content[0].text;
+  const doneHashMatch = doneText.match(/\[([0-9a-f]+)\]/);
+  if (doneHashMatch) {
+      hash = doneHashMatch[1];
+      console.log("New Hash after mark done:", hash);
+  }
 
   // 4. Verify state
   console.log("Verifying state...");
