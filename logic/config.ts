@@ -24,7 +24,8 @@ export const ConfigSchema = z.discriminatedUnion("backend", [
 export type TodoTxtMcpConfig = z.infer<typeof ConfigSchema>;
 
 export async function loadConfig(): Promise<TodoTxtMcpConfig> {
-  let config: Record<string, any> = {};
+  type ConfigMap = { [key: string]: ConfigMap | string | undefined };
+  let config: ConfigMap = {};
 
   // 1. Try to load from file
   try {

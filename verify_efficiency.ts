@@ -67,7 +67,7 @@ async function main() {
   console.log("\nTesting Pagination (Limit=1)...");
   const pageRes = await rpc("list_todos", { limit: 1 });
   const pageText = pageRes.result.content[0].text;
-  const lines = pageText.split("\n").filter(l => l.trim() !== "");
+  const lines = pageText.split("\n").filter((l: string) => l.trim() !== "");
   if (lines.length === 1) {
     console.log("PASS: Pagination limit correct");
   } else {
