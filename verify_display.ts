@@ -8,13 +8,13 @@ console.log("\nNew toDisplayString (should NOT have date):");
 console.log(todoWithDate.toDisplayString());
 
 if (todoWithDate.toString().includes("2023-10-27")) {
-    console.log("\n[PASS] toString includes date");
+  console.log("\n[PASS] toString includes date");
 } else {
-    console.error("\n[FAIL] toString missing date");
+  console.error("\n[FAIL] toString missing date");
 }
 
 if (!todoWithDate.toDisplayString().includes("2023-10-27")) {
-    console.log("[PASS] toDisplayString excludes date");
+  console.log("[PASS] toDisplayString excludes date");
 } else {
-    console.error("[FAIL] toDisplayString includes date");
+  console.error("[FAIL] toDisplayString includes date");
 }

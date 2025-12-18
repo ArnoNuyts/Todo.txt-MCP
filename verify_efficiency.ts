@@ -1,10 +1,9 @@
-
-async function rpc(method: string, params?: any) {
+async function rpc(method: string, params?: unknown) {
   const response = await fetch("http://localhost:3001/mcp", {
     method: "POST",
-    headers: { 
+    headers: {
       "Content-Type": "application/json",
-      "Accept": "application/json, text/event-stream"
+      "Accept": "application/json, text/event-stream",
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -34,7 +33,10 @@ async function main() {
   console.log("\nTesting Default (Status=todo)...");
   const defaultRes = await rpc("list_todos", {});
   const defaultText = defaultRes.result.content[0].text;
-  if (defaultText.includes("Active Task 1") && !defaultText.includes("Done Task 1")) {
+  if (
+    defaultText.includes("Active Task 1") &&
+    !defaultText.includes("Done Task 1")
+  ) {
     console.log("PASS: Default shows active only");
   } else {
     console.error("FAIL: Default filtering incorrect");
@@ -56,7 +58,10 @@ async function main() {
   console.log("\nTesting Search...");
   const searchRes = await rpc("list_todos", { search: "UniqueSearchTerm" });
   const searchText = searchRes.result.content[0].text;
-  if (searchText.includes("UniqueSearchTerm") && !searchText.includes("Active Task 1")) {
+  if (
+    searchText.includes("UniqueSearchTerm") &&
+    !searchText.includes("Active Task 1")
+  ) {
     console.log("PASS: Search filtering correct");
   } else {
     console.error("FAIL: Search filtering incorrect");
@@ -71,7 +76,9 @@ async function main() {
   if (lines.length === 1) {
     console.log("PASS: Pagination limit correct");
   } else {
-    console.error(`FAIL: Pagination limit incorrect (got ${lines.length} lines)`);
+    console.error(
+      `FAIL: Pagination limit incorrect (got ${lines.length} lines)`,
+    );
     console.log(pageText);
   }
 }

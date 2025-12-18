@@ -1,4 +1,4 @@
-import { z } from "npm:zod@3.21.4";
+import { z } from "npm:zod@3.25.1";
 
 const LocalConfig = z.object({
   backend: z.literal("local"),
@@ -35,7 +35,9 @@ export async function loadConfig(): Promise<TodoTxtMcpConfig> {
     if (!(error instanceof Deno.errors.NotFound)) {
       throw error;
     }
-    console.log("Config file not found, using defaults and environment variables.");
+    console.log(
+      "Config file not found, using defaults and environment variables.",
+    );
   }
 
   // 2. Override with Environment Variables
@@ -51,19 +53,21 @@ export async function loadConfig(): Promise<TodoTxtMcpConfig> {
     const value = Deno.env.get(envVar);
     if (value !== undefined) {
       const parts = path.split(".");
-      let current = config;
+      let current: ConfigMap = config;
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
-        if (!current[part]) current[part] = {};
-        current = current[part];
+        if (typeof current[part] !== "object" || current[part] === null) {
+          current[part] = {};
+        }
+        current = current[part] as ConfigMap;
       }
       current[parts[parts.length - 1]] = value;
     }
   }
-  
+
   // Default to local if nothing specified
   if (!config.backend) {
-      config.backend = "local";
+    config.backend = "local";
   }
 
   // 3. Validate
