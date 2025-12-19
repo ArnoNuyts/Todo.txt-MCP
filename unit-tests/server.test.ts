@@ -246,7 +246,6 @@ describe("Server tool handlers", () => {
     });
   });
 
-
   describe("Full flow scenarios", () => {
     it("should handle the full add-edit-markdone cycle", async () => {
       // 1. Add a todo
@@ -268,7 +267,6 @@ describe("Server tool handlers", () => {
       assertEquals(editedTodos.length, 1);
       assertEquals(editedTodos[0].text, "Test Hash Todo Edited");
       const editedHash = await editedTodos[0].getHash();
-
 
       // 3. Mark the todo as done
       const doneArgs = { hash: editedHash, status: "done" };

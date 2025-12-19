@@ -47,7 +47,6 @@ export const SetTodoStatusSchema = z.object({
   ),
 });
 
-
 function createBackend(config: TodoTxtMcpConfig): TodoBackend {
   switch (config.backend) {
     case "webdav":
@@ -104,23 +103,22 @@ export async function editTodoHandler(
   const results: string[] = [];
   let changesMade = false;
 
+  const todoHashMap = new Map<string, Todo>();
+  for (const todo of todos) {
+    todoHashMap.set(await todo.getHash(), todo);
+  }
+
   for (const edit of edits) {
     const { hash, text } = edit;
-    let found = false;
-    for (let i = 0; i < todos.length; i++) {
-      if ((await todos[i].getHash()) === hash) {
-        todos[i].setText(text);
-        results.push(
-          `Edited todo [${await todos[i].getHash()}]: ${ 
-            todos[i].toDisplayString()
-          }`,
-        );
-        found = true;
-        changesMade = true;
-        break;
-      }
-    }
-    if (!found) {
+    const todo = todoHashMap.get(hash);
+
+    if (todo) {
+      todo.setText(text);
+      results.push(
+        `Edited todo [${await todo.getHash()}]: ${todo.toDisplayString()}`,
+      );
+      changesMade = true;
+    } else {
       results.push(`Todo with hash ${hash} not found.`);
     }
   }
@@ -143,9 +141,8 @@ export async function listTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { status = "todo", search, limit = 50, offset = 0 } =
-    ListTodosSchema
-      .parse(rawArgs);
+  const { status = "todo", search, limit = 50, offset = 0 } = ListTodosSchema
+    .parse(rawArgs);
   const allTodos = await backend.load();
 
   let filteredTodos = allTodos;
@@ -194,21 +191,24 @@ export async function setTodoStatusHandler(
 ) {
   const { hash, status } = SetTodoStatusSchema.parse(rawArgs);
   const todos = await backend.load();
-  let foundIndex = -1;
-  for (let i = 0; i < todos.length; i++) {
-    if ((await todos[i].getHash()) === hash) {
-      foundIndex = i;
-      break;
-    }
+
+  const todoHashMap = new Map<string, Todo>();
+  for (const todo of todos) {
+    todoHashMap.set(await todo.getHash(), todo);
   }
 
-  if (foundIndex === -1) {
+  const todo = todoHashMap.get(hash);
+
+  if (!todo) {
     return {
       isError: true,
-      content: [{ type: "text" as const, text: "Todo not found (file modified?)" }],
+      content: [{
+        type: "text" as const,
+        text: "Todo not found (file modified?)",
+      }],
     };
   }
-  const todo = todos[foundIndex];
+
   const targetState = status === "done"
     ? TodoStateEnum.done
     : TodoStateEnum.todo;
@@ -224,9 +224,8 @@ export async function setTodoStatusHandler(
     content: [
       {
         type: "text" as const,
-        text: `Set todo [${
-          await todo.getHash()
-        }] status to ${status}: ${todo.toDisplayString()}`,
+        text: `Set todo [${await todo
+          .getHash()}] status to ${status}: ${todo.toDisplayString()}`,
       },
     ],
   };

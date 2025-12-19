@@ -34,7 +34,9 @@ Deno.test("Tool schemas should have descriptions for all properties", () => {
         if (propSchema instanceof z.ZodArray) {
           if (propSchema.element instanceof z.ZodObject) {
             for (
-              const [key, value] of Object.entries(propSchema.element.shape) as [string, z.ZodTypeAny][]
+              const [key, value] of Object.entries(
+                propSchema.element.shape,
+              ) as [string, z.ZodTypeAny][]
             ) {
               assertEquals(
                 hasDescription(value),

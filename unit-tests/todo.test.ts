@@ -449,4 +449,3 @@ Deno.test("getHash - should change when todo is modified", async () => {
   const hash2Done = await todo2.getHash();
   assertEquals(hash2 !== hash2Done, true);
 });
-
