@@ -41,7 +41,7 @@ async function main() {
     const listRes = await rpc("list_todos");
     const listText = listRes.result.content[0].text;
     const lines = listText.split("\n");
-    const line = lines.find((l) => l.includes("Test Hash Todo"));
+    const line = lines.find((l: string) => l.includes("Test Hash Todo"));
     if (line) {
       const match = line.match(/\[([0-9a-f]+)\]/);
       if (match) hash = match[1];

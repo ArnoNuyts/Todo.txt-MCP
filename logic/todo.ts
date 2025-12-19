@@ -127,13 +127,25 @@ export class Todo {
   }
 
   isOverdue() {
-    return typeof this.tags.due === "string" &&
-      new Date() > new Date(this.tags.due);
+    if (typeof this.tags.due !== "string") {
+      return false;
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // set to midnight today
+    const dueDate = new Date(this.tags.due);
+    dueDate.setHours(0, 0, 0, 0); // set to midnight of due date
+    return today > dueDate;
   }
 
   isPassedThreshold() {
-    return typeof this.tags.t !== "string" ||
-      new Date() >= new Date(this.tags.t);
+    if (typeof this.tags.t !== "string") {
+      return true; // No threshold date, always passed
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // set to midnight today
+    const thresholdDate = new Date(this.tags.t);
+    thresholdDate.setHours(0, 0, 0, 0); // set to midnight of threshold date
+    return today >= thresholdDate;
   }
 
   setText(text: string) {

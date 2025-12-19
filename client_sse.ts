@@ -1,4 +1,5 @@
 import { Client } from "npm:@modelcontextprotocol/sdk@1.22.0/client/index.js";
+import { StreamableHTTPClientTransport } from "npm:@modelcontextprotocol/sdk@1.22.0/client/streamableHttp.js";
 async function main() {
   const transport = new StreamableHTTPClientTransport(
     new URL("http://localhost:3000/sse"),
@@ -20,7 +21,9 @@ async function main() {
     // Read resource
     const result = await client.readResource({ uri: "todos://list" });
     console.log("Todos via MCP (SSE):");
-    console.log(result.contents[0].text);
+    if (result.contents[0] && "text" in result.contents[0]) {
+      console.log(result.contents[0].text);
+    }
   } catch (error) {
     console.error("Error connecting or reading todos:", error);
   } finally {

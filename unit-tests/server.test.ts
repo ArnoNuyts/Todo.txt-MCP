@@ -6,7 +6,13 @@ import {
 } from "https://deno.land/std@0.224.0/testing/bdd.ts";
 import { Todo } from "../logic/todo.ts";
 import { TodoBackend } from "../logic/backend.ts";
-import { addTodoHandler, editTodoHandler } from "../server.ts";
+import {
+  addTodoHandler,
+  editTodoHandler,
+  listTodosHandler,
+  setTodoStatusHandler,
+} from "../server.ts";
+import { TodoStateEnum } from "../types/enums.ts";
 
 // Mock backend
 class MockBackend implements TodoBackend {
@@ -188,6 +194,101 @@ describe("Server tool handlers", () => {
 
       // Check stored todos
       assertEquals(storedTodos[0].text, "edited text");
+    });
+  });
+
+  describe("listTodosHandler", () => {
+    beforeEach(async () => {
+      await backend.save([
+        new Todo("Active Task 1"),
+        new Todo("Active Task 2"),
+        new Todo("x Done Task 1"),
+        new Todo("x Done Task 2"),
+        new Todo("UniqueSearchTerm Task"),
+      ]);
+    });
+
+    it("should return only active todos by default", async () => {
+      const result = await listTodosHandler(backend, {});
+      const text = result.content[0].text as string;
+      assertEquals(text.includes("Active Task 1"), true);
+      assertEquals(text.includes("Done Task 1"), false);
+    });
+
+    it("should return only done todos when status is 'done'", async () => {
+      const result = await listTodosHandler(backend, { status: "done" });
+      const text = result.content[0].text as string;
+      assertEquals(text.includes("Active Task 1"), false);
+      assertEquals(text.includes("Done Task 1"), true);
+    });
+
+    it("should return all todos when status is 'all'", async () => {
+      const result = await listTodosHandler(backend, { status: "all" });
+      const text = result.content[0].text as string;
+      assertEquals(text.includes("Active Task 1"), true);
+      assertEquals(text.includes("Done Task 1"), true);
+    });
+
+    it("should filter todos by search term", async () => {
+      const result = await listTodosHandler(backend, {
+        search: "UniqueSearchTerm",
+      });
+      const text = result.content[0].text as string;
+      assertEquals(text.includes("UniqueSearchTerm"), true);
+      assertEquals(text.includes("Active Task 1"), false);
+    });
+
+    it("should apply pagination limit", async () => {
+      const result = await listTodosHandler(backend, { limit: 1 });
+      const text = result.content[0].text as string;
+      const lines = text.split("\n").filter((l) => l.trim() !== "");
+      assertEquals(lines.length, 1);
+    });
+  });
+
+
+  describe("Full flow scenarios", () => {
+    it("should handle the full add-edit-markdone cycle", async () => {
+      // 1. Add a todo
+      const addArgs = {
+        todos: ["Test Hash Todo"],
+      };
+      await addTodoHandler(backend, addArgs);
+      const initialTodos = backend.getTodos();
+      assertEquals(initialTodos.length, 1);
+      const todo = initialTodos[0];
+      const originalHash = await todo.getHash();
+
+      // 2. Edit the todo
+      const editArgs = {
+        edits: [{ hash: originalHash, text: "Test Hash Todo Edited" }],
+      };
+      await editTodoHandler(backend, editArgs);
+      const editedTodos = backend.getTodos();
+      assertEquals(editedTodos.length, 1);
+      assertEquals(editedTodos[0].text, "Test Hash Todo Edited");
+      const editedHash = await editedTodos[0].getHash();
+
+
+      // 3. Mark the todo as done
+      const doneArgs = { hash: editedHash, status: "done" };
+      await setTodoStatusHandler(backend, doneArgs);
+
+      // 4. Verify final state
+      const finalTodos = backend.getTodos();
+      assertEquals(finalTodos.length, 1);
+      const doneTodo = finalTodos[0];
+      assertEquals(doneTodo.state, TodoStateEnum.done);
+      assertEquals(doneTodo.text, "Test Hash Todo Edited");
+
+      // Verify using listTodosHandler
+      const listArgs = { status: "done" };
+      const listResult = await listTodosHandler(backend, listArgs);
+      const text = listResult.content[0].text as string;
+
+      const doneHash = await doneTodo!.getHash();
+      assertEquals(text.includes(`[${doneHash}] x`), true);
+      assertEquals(text.includes("Test Hash Todo Edited"), true);
     });
   });
 });
