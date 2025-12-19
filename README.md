@@ -15,24 +15,24 @@ You can use the following `docker-compose.yml` configuration:
 version: "3.8"
 
 services:
-    todo-txt-mcp:
-        build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
+  todo-txt-mcp:
+    build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
 
-        ports:
-            - "5000:5000"
+    ports:
+      - "5000:5000"
 
-        volumes:
-            # Mount only the data file for persistence
-            - ./todo.txt:/app/todo.txt
+    volumes:
+      # Mount only the data file for persistence
+      - ./todo.txt:/app/todo.txt
 
-        environment:
-            # Configuration
-            - TODOTXT_MCP_BACKEND=local
-            - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
-            # - TODOTXT_MCP_BACKEND=webdav
-            # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
-            # - TODOTXT_MCP_WEBDAV_USERNAME=user
-            # - TODOTXT_MCP_WEBDAV_PASSWORD=pass
+    environment:
+      # Configuration
+      - TODOTXT_MCP_BACKEND=local
+      - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
+      # - TODOTXT_MCP_BACKEND=webdav
+      # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
+      # - TODOTXT_MCP_WEBDAV_USERNAME=user
+      # - TODOTXT_MCP_WEBDAV_PASSWORD=pass
 ```
 
 1. **Run**:

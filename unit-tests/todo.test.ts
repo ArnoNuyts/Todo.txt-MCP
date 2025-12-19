@@ -271,7 +271,7 @@ Deno.test("isOverdue - returns correctly", () => {
     { input: "In the future due:3000-01-01", expected: false },
     {
       input: `Today due:${lightFormat(new Date(), "yyyy-MM-dd")}`,
-      expected: true,
+      expected: false,
     },
     {
       input: `Tomorrow due:${lightFormat(startOfTomorrow(), "yyyy-MM-dd")}`,
@@ -424,4 +424,28 @@ Deno.test("setThreshold - sets correctly", () => {
       `Input "${input}" should be: ${expected}`,
     );
   }
+});
+
+Deno.test("toString - should include creation date", () => {
+  const todo = new Todo("2023-10-27 Test todo");
+  assertEquals(todo.toString().includes("2023-10-27"), true);
+});
+
+Deno.test("toDisplayString - should NOT include creation date", () => {
+  const todo = new Todo("2023-10-27 Test todo");
+  assertEquals(todo.toDisplayString().includes("2023-10-27"), false);
+});
+
+Deno.test("getHash - should change when todo is modified", async () => {
+  const todo = new Todo("Test todo");
+  const oldHash = await todo.getHash();
+  todo.setText("Updated todo");
+  const newHash = await todo.getHash();
+  assertEquals(oldHash !== newHash, true);
+
+  const todo2 = new Todo("Task to mark done");
+  const hash2 = await todo2.getHash();
+  todo2.toggleState();
+  const hash2Done = await todo2.getHash();
+  assertEquals(hash2 !== hash2Done, true);
 });

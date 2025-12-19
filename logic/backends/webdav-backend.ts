@@ -6,7 +6,7 @@ export class WebDavBackend implements TodoBackend {
   constructor(
     private url: string,
     private username?: string,
-    private password?: string
+    private password?: string,
   ) {}
 
   private getHeaders(): HeadersInit {
@@ -29,7 +29,7 @@ export class WebDavBackend implements TodoBackend {
         return new Todos();
       }
       throw new Error(
-        `Failed to load todos from WebDAV: ${response.status} ${response.statusText}`
+        `Failed to load todos from WebDAV: ${response.status} ${response.statusText}`,
       );
     }
 
@@ -38,7 +38,7 @@ export class WebDavBackend implements TodoBackend {
       ...text
         .split("\n")
         .filter((x) => x.trim())
-        .map((x) => new Todo(x))
+        .map((x) => new Todo(x)),
     );
   }
 
@@ -55,7 +55,7 @@ export class WebDavBackend implements TodoBackend {
 
     if (!response.ok) {
       throw new Error(
-        `Failed to save todos to WebDAV: ${response.status} ${response.statusText}`
+        `Failed to save todos to WebDAV: ${response.status} ${response.statusText}`,
       );
     }
   }
