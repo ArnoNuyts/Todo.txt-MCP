@@ -1,14 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import type { WriteFileOptions } from "node:fs";
+import type { Stats, WriteFileOptions } from "node:fs";
 import { dirname, join } from "node:path";
 import { Todo } from "./todo.ts";
 import { Todos } from "./Todos.ts";
 import { isNotFoundError } from "./fs-errors.ts";
+import {
+  assertFileSizeWithinLimit,
+  resolveMaxFileBytes,
+} from "./limits.ts";
 
-export async function readTodosFromFile(filename: string): Promise<Todos> {
+export interface ReadTodosOptions {
+  /** Maximum allowed file size in bytes. Defaults to `TODOTXT_MCP_MAX_FILE_BYTES`. */
+  maxFileBytes?: number;
+}
+
+export async function readTodosFromFile(
+  filename: string,
+  options: ReadTodosOptions = {},
+): Promise<Todos> {
+  const maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
+  let fileInfo: Stats;
   try {
-    await stat(filename); // Check if file exists
+    fileInfo = await stat(filename); // Check if file exists
   } catch (error) {
     if (isNotFoundError(error)) {
       await writeFile(filename, ""); // Create the file if it doesn't exist
@@ -17,17 +31,33 @@ export async function readTodosFromFile(filename: string): Promise<Todos> {
     throw error; // Re-throw other errors from stat()
   }
 
+  // Check the size before reading so an oversized file is never loaded.
+  assertFileSizeWithinLimit(
+    `Todo file "${filename}"`,
+    fileInfo.size,
+    maxFileBytes,
+  );
+
+  let data: string;
   try {
-    const data = await readFile(filename, "utf8");
-    return new Todos(
-      ...data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x)),
-    );
+    data = await readFile(filename, "utf8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Error reading file "${filename}": ${message}`, {
       cause: error,
     });
   }
+
+  // Re-check the byte length after reading in case the file grew in between.
+  assertFileSizeWithinLimit(
+    `Todo file "${filename}"`,
+    Buffer.byteLength(data, "utf8"),
+    maxFileBytes,
+  );
+
+  return new Todos(
+    ...data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x)),
+  );
 }
 
 /**
