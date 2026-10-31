@@ -29,8 +29,9 @@ services:
       start_period: 5s
 
     volumes:
-      # Mount only the data file for persistence
-      - ./todo.txt:/app/todo.txt
+      # Mount a directory, not a single file: atomic writes replace the file
+      # with a rename inside this directory.
+      - ./data:/data
 
     environment:
       # Network security (see SECURITY.md)
@@ -40,7 +41,7 @@ services:
       # - MCP_AUTH_TOKEN=change-me
       # Configuration
       - TODOTXT_MCP_BACKEND=local
-      - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
+      - TODOTXT_MCP_LOCAL_FILENAME=/data/todo.txt
       # - TODOTXT_MCP_BACKEND=webdav
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user

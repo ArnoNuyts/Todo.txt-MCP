@@ -27,7 +27,9 @@ authorization (there is a single shared todo file).
 - The server binds to `127.0.0.1` unless `HOST` is set.
 - The Docker Compose files publish the port on `127.0.0.1:3000` only, run the
   container read-only with `cap_drop: ["ALL"]`, `no-new-privileges`, and a
-  writable `/tmp` tmpfs.
+  writable `/tmp` tmpfs. The todo file lives on a writable bind-mounted
+  directory (`./data:/data`) so atomic replace-by-rename works while the rest
+  of the filesystem stays read-only.
 - **Host header validation** (DNS rebinding protection). Only these hostnames
   are accepted by default: `localhost`, `127.0.0.1`, `[::1]`. Ports are
   ignored, and a missing or invalid `Host` header is rejected with a `403`
