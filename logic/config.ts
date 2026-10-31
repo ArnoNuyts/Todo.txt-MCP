@@ -7,7 +7,7 @@ const LocalConfig = z.object({
   backend: z.literal("local"),
   local: z.object({
     filename: z.string().default("todo.txt"),
-  }).default({}),
+  }).default({ filename: "todo.txt" }),
 });
 
 const WebDavConfig = z.object({

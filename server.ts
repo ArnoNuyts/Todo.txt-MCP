@@ -254,30 +254,43 @@ export function createTodoMcpServer(backend: TodoBackend) {
   );
 
   // Tool: list_todos
-  server.tool(
+  server.registerTool(
     "list_todos",
-    ListTodosSchema.shape,
+    {
+      description:
+        "List todos with optional status, search, limit, and offset filters.",
+      inputSchema: ListTodosSchema.shape,
+    },
     (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
   );
 
   // Tool: add_todo
-  server.tool(
+  server.registerTool(
     "add_todo",
-    AddTodoSchema.shape,
+    {
+      description: "Add one or more todos in todo.txt format.",
+      inputSchema: AddTodoSchema.shape,
+    },
     (rawArgs: unknown) => addTodoHandler(backend, rawArgs),
   );
 
   // Tool: edit_todo
-  server.tool(
+  server.registerTool(
     "edit_todo",
-    EditTodoSchema.shape,
+    {
+      description: "Edit one or more existing todos by hash.",
+      inputSchema: EditTodoSchema.shape,
+    },
     (rawArgs: unknown) => editTodoHandler(backend, rawArgs),
   );
 
   // Tool: set_todo_status
-  server.tool(
+  server.registerTool(
     "set_todo_status",
-    SetTodoStatusSchema.shape,
+    {
+      description: "Mark a todo done or active by hash.",
+      inputSchema: SetTodoStatusSchema.shape,
+    },
     (rawArgs: unknown) => setTodoStatusHandler(backend, rawArgs),
   );
 

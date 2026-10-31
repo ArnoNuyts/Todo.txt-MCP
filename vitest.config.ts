@@ -13,6 +13,12 @@ export default defineConfig({
       provider: "v8",
       include: ["logic/**/*.ts", "server.ts"],
       exclude: ["types/**"],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
     },
   },
 });
