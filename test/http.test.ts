@@ -170,7 +170,13 @@ describe("MCP HTTP endpoint", () => {
 
     const listed = await rpc("tools/list");
     expect(listed.result?.tools?.map((tool) => tool.name))
-      .toEqual(["list_todos", "add_todo", "edit_todo", "set_todo_status"]);
+      .toEqual([
+        "list_todos",
+        "add_todo",
+        "edit_todo",
+        "set_todo_status",
+        "delete_todo",
+      ]);
   });
 
   it("adds and lists a todo over HTTP", async () => {

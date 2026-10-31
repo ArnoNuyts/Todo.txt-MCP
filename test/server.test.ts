@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Todo } from "../logic/todo.ts";
 import {
   addTodoHandler,
+  deleteTodoHandler,
   editTodoHandler,
   listTodosHandler,
   setTodoStatusHandler,
 } from "../server.ts";
 import { TodoStateEnum } from "../types/enums.ts";
+import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
 describe("Server tool handlers", () => {
@@ -33,6 +38,12 @@ describe("Server tool handlers", () => {
       }`;
 
       expect(result.content[0].text).toBe(expectedText);
+      expect(result.structuredContent).toEqual({
+        added: [{
+          hash: todo1Hash,
+          text: storedTodos[0].toDisplayString(),
+        }],
+      });
     });
 
     it("should add multiple todos", async () => {
@@ -71,6 +82,42 @@ describe("Server tool handlers", () => {
       expect(storedTodos[0].text).toBe("existing todo");
       expect(storedTodos[1].text).toBe("new todo");
     });
+
+    it("should reject too many todos", async () => {
+      const args = {
+        todos: Array.from({ length: 101 }, (_, i) => `todo ${i}`),
+      };
+
+      await expect(addTodoHandler(backend, args)).rejects.toThrow();
+      expect(backend.getTodos()).toHaveLength(0);
+    });
+
+    it("should reject an overlong todo", async () => {
+      await expect(
+        addTodoHandler(backend, { todos: ["a".repeat(2001)] }),
+      ).rejects.toThrow();
+      expect(backend.getTodos()).toHaveLength(0);
+    });
+
+    it("should persist both of two concurrent adds", async () => {
+      const directory = await mkdtemp(join(tmpdir(), "todo-txt-mcp-concurrent-"));
+      try {
+        const fileBackend = new LocalFileBackend(join(directory, "todo.txt"));
+
+        await Promise.all([
+          addTodoHandler(fileBackend, { todos: ["first concurrent"] }),
+          addTodoHandler(fileBackend, { todos: ["second concurrent"] }),
+        ]);
+
+        const stored = await fileBackend.load();
+        expect([...stored].map((todo) => todo.text).sort()).toEqual([
+          "first concurrent",
+          "second concurrent",
+        ]);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("editTodoHandler", () => {
@@ -93,6 +140,13 @@ describe("Server tool handlers", () => {
       expect(result.content[0].text).toBe(
         `Edited todo [${newHash}]: ${storedTodos[0].toDisplayString()}`,
       );
+      expect(result.structuredContent).toEqual({
+        edited: [{
+          hash: newHash,
+          text: storedTodos[0].toDisplayString(),
+        }],
+        missing: [],
+      });
     });
 
     it("should edit multiple todos", async () => {
@@ -165,6 +219,14 @@ describe("Server tool handlers", () => {
 
       // Check stored todos
       expect(storedTodos[0].text).toBe("edited text");
+
+      expect(result.structuredContent).toEqual({
+        edited: [{
+          hash: newHash,
+          text: storedTodos[0].toDisplayString(),
+        }],
+        missing: ["nonexistent"],
+      });
     });
   });
 
@@ -184,6 +246,10 @@ describe("Server tool handlers", () => {
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(true);
       expect(text.includes("Done Task 1")).toBe(false);
+      expect(result.structuredContent).toMatchObject({
+        total: 3,
+        nextOffset: null,
+      });
     });
 
     it("should return only done todos when status is 'done'", async () => {
@@ -214,6 +280,32 @@ describe("Server tool handlers", () => {
       const text = result.content[0].text as string;
       const lines = text.split("\n").filter((l) => l.trim() !== "");
       expect(lines.length).toBe(1);
+      expect(result.structuredContent).toMatchObject({
+        total: 3,
+        nextOffset: 1,
+      });
+    });
+
+    it("should include todo details in structured content", async () => {
+      const result = await listTodosHandler(backend, { status: "all" });
+      const structured = result.structuredContent as {
+        todos: Array<Record<string, unknown>>;
+        total: number;
+      };
+
+      expect(structured.total).toBe(5);
+      expect(structured.todos).toHaveLength(5);
+      const done = structured.todos.find((todo) =>
+        todo.text === "x Done Task 1"
+      );
+      expect(done).toBeDefined();
+      expect(done!.state).toBe(TodoStateEnum.done);
+      expect(done!.hash).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    it("should reject an out-of-range limit", async () => {
+      await expect(listTodosHandler(backend, { limit: 0 })).rejects.toThrow();
+      await expect(listTodosHandler(backend, { limit: 501 })).rejects.toThrow();
     });
   });
 
@@ -237,6 +329,11 @@ describe("Server tool handlers", () => {
       expect(result.content[0].text).toBe(
         `Set todo [${newHash}] status to done: ${storedTodos[0].toDisplayString()}`,
       );
+      expect(result.structuredContent).toEqual({
+        hash: newHash,
+        status: "done",
+        text: storedTodos[0].toDisplayString(),
+      });
     });
 
     it("should mark a done todo as todo again", async () => {
@@ -277,6 +374,44 @@ describe("Server tool handlers", () => {
       const storedTodos = backend.getTodos();
       expect(storedTodos.length).toBe(1);
       expect(storedTodos[0].state).toBe(TodoStateEnum.todo);
+    });
+  });
+
+  describe("deleteTodoHandler", () => {
+    it("should delete a todo by hash", async () => {
+      const initialTodos = [new Todo("task to delete"), new Todo("keep me")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+
+      const result = await deleteTodoHandler(backend, { hash });
+
+      expect(result).not.toMatchObject({ isError: true });
+      expect(result.content[0].text).toBe(`Deleted todo [${hash}]`);
+      expect(result.structuredContent).toEqual({ deleted: true, hash });
+
+      const storedTodos = backend.getTodos();
+      expect(storedTodos).toHaveLength(1);
+      expect(storedTodos[0].text).toBe("keep me");
+    });
+
+    it("should return an error when the hash is missing", async () => {
+      await backend.save([new Todo("keep me")]);
+
+      const result = await deleteTodoHandler(backend, {
+        hash: "0123456789abcdef",
+      });
+
+      expect(result).toMatchObject({ isError: true });
+      expect(result.content[0].text).toBe("Todo not found (file modified?)");
+
+      const storedTodos = backend.getTodos();
+      expect(storedTodos).toHaveLength(1);
+      expect(storedTodos[0].text).toBe("keep me");
+    });
+
+    it("should reject a hash outside the allowed length", async () => {
+      await expect(deleteTodoHandler(backend, { hash: "short" })).rejects
+        .toThrow();
     });
   });
 

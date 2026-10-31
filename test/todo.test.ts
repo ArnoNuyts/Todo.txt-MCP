@@ -422,6 +422,11 @@ describe("Todo", () => {
     expect(todo.toDisplayString().includes("2023-10-27")).toBe(false);
   });
 
+  it("getHash - returns 16 lowercase hex characters", async () => {
+    const hash = await new Todo("Test todo").getHash();
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it("getHash - should change when todo is modified", async () => {
     const todo = new Todo("Test todo");
     const oldHash = await todo.getHash();

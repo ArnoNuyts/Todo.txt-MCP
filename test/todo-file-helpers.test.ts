@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -59,5 +59,36 @@ describe("todo-file-helpers", () => {
     await expect(readTodosFromFile(directory)).rejects.toThrow(
       /Error reading file/,
     );
+  });
+
+  it("writeTodosToFile - leaves no temporary files behind", async () => {
+    const filename = join(tempDir, "todos.txt");
+
+    await writeTodosToFile([new Todo("task")], filename);
+
+    expect(await readdir(tempDir)).toEqual(["todos.txt"]);
+  });
+
+  it("writeTodosToFile - removes the temporary file when the rename fails", async () => {
+    // The target is a directory, so renaming the temp file over it fails.
+    const filename = join(tempDir, "target-dir");
+    await mkdir(filename);
+
+    await expect(writeTodosToFile([new Todo("task")], filename)).rejects
+      .toThrow();
+
+    expect(await readdir(tempDir)).toEqual(["target-dir"]);
+  });
+
+  it("writeTodosToFile - forwards write options", async () => {
+    const filename = join(tempDir, "todos.txt");
+
+    await writeTodosToFile([new Todo("task")], filename, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+
+    const fileInfo = await stat(filename);
+    expect(fileInfo.mode & 0o777).toBe(0o600);
   });
 });
