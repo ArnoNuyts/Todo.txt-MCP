@@ -5,7 +5,11 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, type CreateAppOptions } from "../server.ts";
+import {
+  createApp,
+  resolveReadOnlyMode,
+  type CreateAppOptions,
+} from "../server.ts";
 import {
   buildCorsOptions,
   DEFAULT_ALLOWED_HOSTS,
@@ -16,6 +20,7 @@ import {
   resolveHttpSecurityOptions,
   tokensEqual,
 } from "../logic/http-security.ts";
+import { createLogger } from "../logic/logging.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
 interface RpcResponse {
@@ -444,6 +449,156 @@ describe("MCP HTTP endpoint", () => {
     expect(body.result?.serverInfo?.name).toBe("todo.txt-mcp");
   });
 
+  it("accepts any active token during rotation", async () => {
+    await restartApp({
+      authTokens: [
+        "rotation-token-one-aaaaaaaaaaaaaaaa",
+        "rotation-token-two-bbbbbbbbbbbbbbbb",
+      ],
+    });
+
+    for (
+      const token of [
+        "rotation-token-one-aaaaaaaaaaaaaaaa",
+        "rotation-token-two-bbbbbbbbbbbbbbbb",
+      ]
+    ) {
+      const response = await postWithToken(token);
+      expect(response.status).toBe(200);
+      await response.body?.cancel();
+    }
+
+    const rejected = await postWithToken("rotation-token-three-cccccccc");
+    expect(rejected.status).toBe(401);
+    await rejected.body?.cancel();
+  });
+
+  it("exposes only list_todos in read-only mode", async () => {
+    await restartApp({ readOnly: true });
+
+    const listed = await rpc("tools/list");
+    expect(listed.result?.tools?.map((tool) => tool.name)).toEqual([
+      "list_todos",
+    ]);
+
+    const attempted = await rpc("tools/call", {
+      name: "add_todo",
+      arguments: { todos: ["should not be added"] },
+    });
+    const attemptMessage = attempted.error?.message ??
+      attempted.result?.content?.map((item) => item.text ?? "").join(" ") ??
+      "";
+    expect(attemptMessage).toMatch(/not found|unknown|unsupported/i);
+    expect(backend.getTodos()).toHaveLength(0);
+  });
+
+  it("sets security headers and hides the framework name", async () => {
+    const mcp = await fetch(`${baseUrl}/mcp`);
+    expect(mcp.status).toBe(405);
+    expect(mcp.headers.get("x-powered-by")).toBeNull();
+    expect(mcp.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(mcp.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(mcp.headers.get("cache-control")).toBe("no-store");
+    await mcp.body?.cancel();
+
+    const metrics = await fetch(`${baseUrl}/metrics`);
+    expect(metrics.status).toBe(200);
+    expect(metrics.headers.get("x-powered-by")).toBeNull();
+    expect(metrics.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(metrics.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(metrics.headers.get("cache-control")).toBe("no-store");
+    expect(metrics.headers.get("content-type"))
+      .toContain("text/plain");
+    await metrics.body?.cancel();
+  });
+
+  it("echoes a valid request ID and replaces an invalid one", async () => {
+    const valid = await fetch(`${baseUrl}/healthz`, {
+      headers: { "x-request-id": "client-request_1.2" },
+    });
+    expect(valid.status).toBe(200);
+    expect(valid.headers.get("x-request-id")).toBe("client-request_1.2");
+
+    const invalid = await fetch(`${baseUrl}/healthz`, {
+      headers: { "x-request-id": "not a valid id!" },
+    });
+    expect(invalid.status).toBe(200);
+    const generated = invalid.headers.get("x-request-id");
+    expect(generated).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(generated).not.toBe("not a valid id!");
+  });
+
+  it("never writes bearer tokens or bodies to the log output", async () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: "debug",
+      stdout: (line) => lines.push(line),
+      stderr: (line) => lines.push(line),
+    });
+    const token = "log-secret-token-aaaaaaaaaaaaaaaa";
+    await restartApp({
+      authToken: token,
+      logger,
+      abuse: { authFailLimit: 100, rateLimitPerMin: 1_000 },
+    });
+
+    await (await postWithToken(token)).text();
+    await (await postWithToken("wrong-log-token-bbbbbbbbbbbb")).text();
+
+    const output = lines.join("\n");
+    expect(output).not.toContain(token);
+    expect(output).not.toContain("wrong-log-token-bbbbbbbbbbbb");
+    expect(output).not.toContain("Bearer");
+    expect(output).not.toContain("todo_secret_content");
+
+    const records = lines.map((line) => JSON.parse(line) as {
+      msg?: string;
+      requestId?: string;
+      path?: string;
+      auth?: string;
+    });
+    const requests = records.filter((record) => record.msg === "request");
+    expect(requests.some((record) => record.path === "/mcp")).toBe(true);
+    expect(requests.some((record) => record.auth === "fail")).toBe(true);
+    expect(requests.every((record) => typeof record.requestId === "string"))
+      .toBe(true);
+  });
+
+  it("serves open metrics with request counters when auth is disabled", async () => {
+    await fetch(`${baseUrl}/healthz`);
+    await fetch(`${baseUrl}/healthz`);
+
+    const response = await fetch(`${baseUrl}/metrics`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    const text = await response.text();
+    expect(text).toContain("# TYPE todo_mcp_requests_total counter");
+    expect(text).toContain("todo_mcp_requests_total 2");
+    expect(text).toContain("todo_mcp_responses_2xx_total 2");
+    expect(text).toContain("todo_mcp_auth_failures_total 0");
+  });
+
+  it("protects metrics with the same bearer token when configured", async () => {
+    await restartApp({ authToken: "metrics-token-aaaaaaaaaaaaaaaaaaaa" });
+
+    const unauthorized = await fetch(`${baseUrl}/metrics`);
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("www-authenticate")).toBe("Bearer");
+    await unauthorized.body?.cancel();
+
+    const authorized = await fetch(`${baseUrl}/metrics`, {
+      headers: {
+        authorization: "Bearer metrics-token-aaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+    expect(authorized.status).toBe(200);
+    const text = await authorized.text();
+    expect(text).toContain("todo_mcp_auth_failures_total 1");
+    expect(text).toContain("todo_mcp_responses_401_total 1");
+  });
+
   it("locks out a key after repeated bad tokens", async () => {
     await restartApp({
       authToken: "s3cret-token",
@@ -552,9 +707,17 @@ describe("MCP HTTP endpoint", () => {
   });
 
   it("opens the global circuit breaker on distributed auth failures", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warnings: Array<Record<string, unknown>> = [];
+    const logger = createLogger({
+      level: "debug",
+      stdout: () => {},
+      stderr: (line) => {
+        warnings.push(JSON.parse(line) as Record<string, unknown>);
+      },
+    });
     await restartApp({
       authToken: "s3cret-token",
+      logger,
       abuse: {
         authFailLimit: 100,
         globalAuthFailLimit: 2,
@@ -572,9 +735,10 @@ describe("MCP HTTP endpoint", () => {
     expect(shed.headers.get("retry-after")).toBe("60");
     const shedBody = (await shed.json()) as RpcResponse;
     expect(shedBody.error?.message).toContain("temporarily unavailable");
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("circuit breaker"),
-    );
+    expect(warnings).toContainEqual(expect.objectContaining({
+      msg: "auth_failure_circuit_breaker",
+      requestId: expect.any(String),
+    }));
 
     const health = await fetch(`${baseUrl}/healthz`);
     expect(health.status).toBe(200);
@@ -701,6 +865,7 @@ describe("HTTP security helpers", () => {
       allowedHosts: DEFAULT_ALLOWED_HOSTS,
       allowedOrigins: DEFAULT_ALLOWED_ORIGINS,
       authToken: undefined,
+      authTokens: [],
     });
 
     expect(resolveHttpSecurityOptions({}, {
@@ -711,6 +876,7 @@ describe("HTTP security helpers", () => {
       allowedHosts: ["todo.local"],
       allowedOrigins: ["https://todo.local", "https://alt.local"],
       authToken: "env-token",
+      authTokens: ["env-token"],
     });
 
     expect(resolveHttpSecurityOptions({
@@ -725,16 +891,36 @@ describe("HTTP security helpers", () => {
       allowedHosts: ["override.local"],
       allowedOrigins: [],
       authToken: "option-token",
+      authTokens: ["option-token"],
     });
 
     expect(resolveHttpSecurityOptions({ authToken: "  " }, {}).authToken)
       .toBeUndefined();
+
+    expect(resolveHttpSecurityOptions({}, {
+      MCP_AUTH_TOKENS: "list-one, list-two",
+    })).toMatchObject({
+      authToken: "list-one",
+      authTokens: ["list-one", "list-two"],
+    });
   });
 
   it("compares tokens in constant time", () => {
     expect(tokensEqual("secret", "secret")).toBe(true);
     expect(tokensEqual("secret", "secreT")).toBe(false);
     expect(tokensEqual("secret", "short")).toBe(false);
+    expect(tokensEqual("a".repeat(64), "a".repeat(63))).toBe(false);
+    expect(tokensEqual("héllo", "héllo")).toBe(true);
+  });
+
+  it("resolves read-only mode from options and the environment", () => {
+    expect(resolveReadOnlyMode({}, {})).toBe(false);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "1" })).toBe(true);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "true" })).toBe(true);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "yes" })).toBe(true);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "0" })).toBe(false);
+    expect(resolveReadOnlyMode({ readOnly: false }, { MCP_READ_ONLY: "1" }))
+      .toBe(false);
   });
 
   it("extracts bearer tokens", () => {

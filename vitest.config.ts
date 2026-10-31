@@ -6,6 +6,8 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     env: {
       TZ: "UTC",
+      // Keep the test output readable; logging tests inject their own logger.
+      MCP_LOG_LEVEL: "error",
     },
     clearMocks: true,
     restoreMocks: true,

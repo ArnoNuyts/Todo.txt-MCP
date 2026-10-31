@@ -1,7 +1,8 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { Request, RequestHandler, Response } from "express";
 import type { CorsOptions } from "cors";
+import { resolveAuthTokens } from "./auth-tokens.ts";
 
 export const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 export const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"];
@@ -19,13 +20,19 @@ export const CORS_EXPOSED_HEADERS = ["mcp-session-id"];
 export interface HttpSecurityOptions {
   allowedHosts?: string | string[];
   allowedOrigins?: string | string[];
+  /** Single bearer token. Kept for tests and backwards compatibility. */
   authToken?: string;
+  /** Multiple active bearer tokens, e.g. during rotation. */
+  authTokens?: string[];
 }
 
 export interface ResolvedHttpSecurityOptions {
   allowedHosts: string[];
   allowedOrigins: string[];
+  /** First configured token; kept for backwards compatibility. */
   authToken: string | undefined;
+  /** All active tokens. Empty when authentication is disabled. */
+  authTokens: string[];
 }
 
 /**
@@ -60,22 +67,31 @@ export function resolveHttpSecurityOptions(
     options.allowedOrigins ?? env.MCP_ALLOWED_ORIGINS,
     DEFAULT_ALLOWED_ORIGINS,
   );
-  const rawToken = options.authToken ?? env.MCP_AUTH_TOKEN;
-  const authToken = rawToken !== undefined && rawToken.trim() !== ""
-    ? rawToken
-    : undefined;
+  const resolvedTokens = resolveAuthTokens(
+    { authToken: options.authToken, authTokens: options.authTokens },
+    env,
+  );
+  const authTokens = resolvedTokens.tokens;
+  const authToken = authTokens[0];
 
-  return { allowedHosts, allowedOrigins, authToken };
+  return { allowedHosts, allowedOrigins, authToken, authTokens };
 }
 
-/** Constant-time string comparison for secrets. */
+/**
+ * Constant-time string comparison for secrets.
+ *
+ * Both values are hashed first so the comparison always operates on fixed-size
+ * digests. This avoids leaking the expected length through an early return and
+ * makes the timing independent of the input length.
+ */
 export function tokensEqual(expected: string, provided: string): boolean {
-  const expectedBuffer = Buffer.from(expected, "utf8");
-  const providedBuffer = Buffer.from(provided, "utf8");
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(expectedBuffer, providedBuffer);
+  const expectedDigest = createHash("sha256")
+    .update(expected, "utf8")
+    .digest();
+  const providedDigest = createHash("sha256")
+    .update(provided, "utf8")
+    .digest();
+  return timingSafeEqual(expectedDigest, providedDigest);
 }
 
 /** Extracts the bearer token from an Authorization header value. */
@@ -103,16 +119,34 @@ export interface BearerAuthHooks {
 /**
  * Express middleware requiring `Authorization: Bearer <token>`.
  * Responds with a 401 JSON-RPC error when the token is missing or wrong.
+ *
+ * Accepts one token or a list of active tokens. Every configured token is
+ * compared in constant time; the request is authorized when any matches.
  * Optional hooks let callers record failures/successes without coupling this
  * middleware to the abuse-control implementation.
  */
 export function createBearerAuthMiddleware(
-  token: string,
+  token: string | string[],
   hooks: BearerAuthHooks = {},
 ): RequestHandler {
+  const expectedTokens = (Array.isArray(token) ? token : [token])
+    .filter((entry) => entry !== "");
+
   return (req, res, next) => {
     const provided = extractBearerToken(req.headers.authorization);
-    if (provided === undefined || !tokensEqual(token, provided)) {
+    let authorized = false;
+    if (provided !== undefined) {
+      // Compare against every configured token instead of returning early so
+      // the work does not reveal which token (if any) matched.
+      for (const expected of expectedTokens) {
+        if (tokensEqual(expected, provided)) {
+          authorized = true;
+        }
+      }
+    }
+
+    if (!authorized) {
+      res.locals.authResult = "fail";
       if (hooks.onFailure?.(req, res) === true) {
         return;
       }
@@ -124,6 +158,8 @@ export function createBearerAuthMiddleware(
       });
       return;
     }
+
+    res.locals.authResult = "ok";
     hooks.onSuccess?.(req, res);
     next();
   };
