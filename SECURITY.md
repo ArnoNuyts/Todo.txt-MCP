@@ -48,8 +48,8 @@ authorization (there is a single shared todo file).
   name is not advertised. Structured logs never include tokens, bodies, or todo
   content.
 - `GET /healthz` returns `{"status":"ok"}` for health checks and is never
-  authenticated. `GET /metrics` is also unauthenticated when no token is
-  configured, so keep the process on loopback.
+  authenticated. `/mcp` and `/metrics` require a bearer token; the server
+  refuses to start when no token source is configured.
 
 ### Configuration
 
@@ -59,7 +59,7 @@ authorization (there is a single shared todo file).
 | `PORT` | `3000` | Listen port (integer 0-65535). |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated hostnames accepted in the `Host` header. Hostnames only, no ports. |
 | `MCP_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed for browser clients. Empty disables CORS entirely. |
-| `MCP_AUTH_TOKEN` | unset | Single bearer token. When set, `/mcp` and `/metrics` require `Authorization: Bearer <token>`. |
+| `MCP_AUTH_TOKEN` | **required** | Single bearer token. `/mcp` and `/metrics` require `Authorization: Bearer <token>`. The server refuses to start without at least one token source. |
 | `MCP_AUTH_TOKENS` | unset | Comma/whitespace separated list of active tokens for rotation. Takes precedence over `MCP_AUTH_TOKEN`. |
 | `MCP_AUTH_TOKEN_FILE` | unset | File containing one or more tokens. Takes precedence over both environment variables. Keep it mode `0600`. |
 | `MCP_ALLOW_WEAK_TOKEN` | unset | Set to `1` to allow environment/file tokens shorter than 32 characters. |
@@ -82,12 +82,11 @@ set `MCP_ALLOWED_HOSTS=todo.example.com` (and keep `localhost,127.0.0.1` if you
 still connect locally), and add `https://todo.example.com` to
 `MCP_ALLOWED_ORIGINS` if a browser client is used.
 
-## Enabling authentication
+## Authentication (required)
 
-Authentication is **optional**, but recommended as soon as the endpoint is
-reachable by anything other than the local user. The server logs a warning at
-startup when none of `MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or
-`MCP_AUTH_TOKEN_FILE` is set.
+Authentication is **mandatory**. The server refuses to start when none of
+`MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or `MCP_AUTH_TOKEN_FILE` is set, or when
+every configured value is empty.
 
 Set a long, random token and pass it to clients as a bearer token:
 
@@ -330,7 +329,7 @@ Never enable it on a host that clients can reach directly: spoofed
 
 - [ ] Bind to loopback and terminate TLS at a trusted proxy.
 - [ ] Set a long random token (`MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or
-      `MCP_AUTH_TOKEN_FILE`); never run exposed without one.
+      `MCP_AUTH_TOKEN_FILE`). Startup fails without one; never bypass this.
 - [ ] Keep token files mode `0600` and rotate with overlapping tokens.
 - [ ] Set `TRUST_PROXY` only to the real proxy address/network.
 - [ ] Keep the default rate, lockout, and concurrency limits unless you have

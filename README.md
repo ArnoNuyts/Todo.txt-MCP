@@ -27,7 +27,8 @@ services:
       - MCP_ALLOWED_ORIGINS=http://localhost:3000
       - TODOTXT_MCP_BACKEND=local
       - TODOTXT_MCP_LOCAL_FILENAME=/data/todo.txt
-      # - MCP_AUTH_TOKEN=change-me
+      # Required: the server refuses to start without an auth token.
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?set MCP_AUTH_TOKEN}
       # - TODOTXT_MCP_BACKEND=webdav
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user
@@ -38,10 +39,15 @@ services:
    ```bash
    mkdir -p data
    cp todo.txt.example data/todo.txt
+   export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
    docker compose up -d
    ```
 2. **Access**: the server listens at `http://localhost:3000`.
 3. **MCP endpoint**: `http://localhost:3000/mcp`
+
+Authentication is **required**. The server refuses to start unless
+`MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or `MCP_AUTH_TOKEN_FILE` is set. Clients
+must send `Authorization: Bearer <token>`.
 
 > The container runs as the unprivileged `node` user (UID 1000). If `data/` is
 > not writable by that user, adjust its ownership, for example
@@ -59,6 +65,7 @@ Requirements:
 
 ```bash
 npm ci
+export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
 npm start
 ```
 

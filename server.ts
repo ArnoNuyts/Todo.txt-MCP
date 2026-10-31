@@ -20,6 +20,7 @@ import {
   resolveAbuseConfig,
 } from "./logic/abuse-controls.ts";
 import {
+  assertAuthTokensConfigured,
   assertStrongAuthTokens,
   isWeakTokenOverrideEnabled,
   resolveAuthTokens,
@@ -930,6 +931,7 @@ export async function main() {
         resolvedTokens.source,
       );
     }
+    assertAuthTokensConfigured(resolvedTokens.tokens);
     authTokens = resolvedTokens.tokens;
   } catch (error) {
     console.error(
@@ -943,12 +945,6 @@ export async function main() {
     ...(trustProxy === undefined ? {} : { trustProxy }),
     ...(authTokens.length > 0 ? { authTokens } : {}),
   });
-
-  if (authTokens.length === 0) {
-    console.warn(
-      "⚠️  No MCP auth token is configured (MCP_AUTH_TOKEN, MCP_AUTH_TOKENS, or MCP_AUTH_TOKEN_FILE): the /mcp endpoint is unauthenticated. Set one when exposing the server beyond localhost.",
-    );
-  }
 
   const port = Number(process.env.PORT ?? "3000");
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
