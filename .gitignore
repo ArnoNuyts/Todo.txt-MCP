@@ -1,4 +1,5 @@
 /.vscode
+/todo.txt
 node_modules/
 coverage/
 dist/
