@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
-import type { RequestHandler } from "express";
+import { isIP } from "node:net";
+import type { Request, RequestHandler, Response } from "express";
 import type { CorsOptions } from "cors";
 
 export const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
@@ -88,14 +89,33 @@ export function extractBearerToken(
   return match?.[1];
 }
 
+export interface BearerAuthHooks {
+  /**
+   * Called after a missing or invalid token. Return `true` when the hook has
+   * already written a response (for example a 429 lockout); otherwise the
+   * middleware sends the standard 401.
+   */
+  onFailure?: (req: Request, res: Response) => boolean | void;
+  /** Called after a valid token, before the request continues. */
+  onSuccess?: (req: Request, res: Response) => void;
+}
+
 /**
  * Express middleware requiring `Authorization: Bearer <token>`.
  * Responds with a 401 JSON-RPC error when the token is missing or wrong.
+ * Optional hooks let callers record failures/successes without coupling this
+ * middleware to the abuse-control implementation.
  */
-export function createBearerAuthMiddleware(token: string): RequestHandler {
+export function createBearerAuthMiddleware(
+  token: string,
+  hooks: BearerAuthHooks = {},
+): RequestHandler {
   return (req, res, next) => {
     const provided = extractBearerToken(req.headers.authorization);
     if (provided === undefined || !tokensEqual(token, provided)) {
+      if (hooks.onFailure?.(req, res) === true) {
+        return;
+      }
       res.setHeader("WWW-Authenticate", "Bearer");
       res.status(401).json({
         jsonrpc: "2.0",
@@ -104,8 +124,101 @@ export function createBearerAuthMiddleware(token: string): RequestHandler {
       });
       return;
     }
+    hooks.onSuccess?.(req, res);
     next();
   };
+}
+
+export type TrustProxyValue = boolean | number | string | string[];
+
+function isValidTrustProxyEntry(entry: string): boolean {
+  if (entry === "loopback") {
+    return true;
+  }
+  const parts = entry.split("/");
+  if (parts.length > 2) {
+    return false;
+  }
+  const [address, prefix] = parts;
+  const version = isIP(address);
+  if (version === 0) {
+    return false;
+  }
+  if (prefix === undefined) {
+    return true;
+  }
+  if (!/^\d+$/.test(prefix)) {
+    return false;
+  }
+  const bits = Number(prefix);
+  return bits >= 0 && bits <= (version === 4 ? 32 : 128);
+}
+
+/**
+ * Parses `TRUST_PROXY`.
+ *
+ * Accepts `false`, `true`, a hop count (`1`..`n`), `loopback`, and a
+ * comma-separated list of IP addresses or CIDR blocks. Returns `undefined`
+ * when the variable is unset so callers can avoid touching Express's default.
+ * Throws on malformed values; `main()` validates once at startup.
+ */
+export function parseTrustProxy(
+  value: string | number | boolean | string[] | undefined,
+): TrustProxyValue | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const entries = value
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== "");
+    for (const entry of entries) {
+      if (!isValidTrustProxyEntry(entry)) {
+        throw new Error(
+          `Invalid TRUST_PROXY entry "${entry}": expected false, true, a hop count, "loopback", or IP/CIDR values.`,
+        );
+      }
+    }
+    return entries;
+  }
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(
+        `Invalid TRUST_PROXY "${value}": expected a non-negative integer.`,
+      );
+    }
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "" || /^false$/i.test(trimmed)) {
+    return false;
+  }
+  if (/^true$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+
+  const entries = trimmed
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  if (entries.length === 0) {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!isValidTrustProxyEntry(entry)) {
+      throw new Error(
+        `Invalid TRUST_PROXY entry "${entry}": expected false, true, a hop count, "loopback", or IP/CIDR values.`,
+      );
+    }
+  }
+  return entries.length === 1 ? entries[0] : entries;
 }
 
 /**

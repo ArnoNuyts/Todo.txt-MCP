@@ -4,7 +4,7 @@ import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, type CreateAppOptions } from "../server.ts";
 import {
   buildCorsOptions,
@@ -12,6 +12,7 @@ import {
   DEFAULT_ALLOWED_ORIGINS,
   extractBearerToken,
   parseList,
+  parseTrustProxy,
   resolveHttpSecurityOptions,
   tokensEqual,
 } from "../logic/http-security.ts";
@@ -125,6 +126,22 @@ describe("MCP HTTP endpoint", () => {
         capabilities: {},
         clientInfo: { name: "http-test", version: "1.0.0" },
       },
+    });
+  }
+
+  async function postWithToken(
+    token?: string,
+    headers: Record<string, string> = {},
+  ): Promise<Response> {
+    return await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        ...headers,
+      },
+      body: initializeBody(),
     });
   }
 
@@ -426,6 +443,229 @@ describe("MCP HTTP endpoint", () => {
     const body = (await response.json()) as RpcResponse;
     expect(body.result?.serverInfo?.name).toBe("todo.txt-mcp");
   });
+
+  it("locks out a key after repeated bad tokens", async () => {
+    await restartApp({
+      authToken: "s3cret-token",
+      abuse: { authFailLimit: 3, authBanSec: 60, rateLimitPerMin: 1_000 },
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await postWithToken("wrong-token");
+      expect(response.status).toBe(401);
+      expect((await response.json() as RpcResponse).error?.code).toBe(-32001);
+    }
+
+    const locked = await postWithToken("wrong-token");
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get("retry-after")).toBe("60");
+    const lockedBody = (await locked.json()) as RpcResponse;
+    expect(lockedBody.error?.code).toBe(-32000);
+    expect(lockedBody.error?.message).toBe(
+      "Too many failed authentication attempts.",
+    );
+
+    // A correct token is still rejected while the ban is active.
+    const bannedGoodToken = await postWithToken("s3cret-token");
+    expect(bannedGoodToken.status).toBe(429);
+    expect((await bannedGoodToken.json() as RpcResponse).error?.message).toBe(
+      "Too many failed authentication attempts.",
+    );
+
+    const health = await fetch(`${baseUrl}/healthz`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ status: "ok" });
+  });
+
+  it("resets the failed-auth counter after a successful login", async () => {
+    await restartApp({
+      authToken: "s3cret-token",
+      abuse: { authFailLimit: 3, rateLimitPerMin: 1_000 },
+    });
+
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("s3cret-token")).status).toBe(200);
+
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+  });
+
+  it("expires a ban automatically using the injected clock", async () => {
+    let now = 1_000_000;
+    await restartApp({
+      authToken: "s3cret-token",
+      abuse: {
+        authFailLimit: 2,
+        authBanSec: 60,
+        rateLimitPerMin: 1_000,
+        now: () => now,
+      },
+    });
+
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("wrong-token")).status).toBe(429);
+    expect((await postWithToken("s3cret-token")).status).toBe(429);
+
+    now += 60_001;
+    expect((await postWithToken("s3cret-token")).status).toBe(200);
+  });
+
+  it("ignores spoofed X-Forwarded-For when trust proxy is off", async () => {
+    await restartApp({
+      authToken: "s3cret-token",
+      trustProxy: false,
+      abuse: { authFailLimit: 2, rateLimitPerMin: 1_000 },
+    });
+
+    const first = await postWithToken("wrong-token", {
+      "x-forwarded-for": "203.0.113.10",
+    });
+    expect(first.status).toBe(401);
+
+    // A different spoofed address still maps to the same socket key.
+    const second = await postWithToken("wrong-token", {
+      "x-forwarded-for": "203.0.113.11",
+    });
+    expect(second.status).toBe(429);
+  });
+
+  it("uses X-Forwarded-For when trust proxy is explicitly enabled", async () => {
+    await restartApp({
+      authToken: "s3cret-token",
+      trustProxy: true,
+      abuse: { authFailLimit: 2, rateLimitPerMin: 1_000 },
+    });
+
+    const first = await postWithToken("wrong-token", {
+      "x-forwarded-for": "203.0.113.10",
+    });
+    expect(first.status).toBe(401);
+    const second = await postWithToken("wrong-token", {
+      "x-forwarded-for": "203.0.113.11",
+    });
+    expect(second.status).toBe(401);
+    const third = await postWithToken("wrong-token", {
+      "x-forwarded-for": "203.0.113.10",
+    });
+    expect(third.status).toBe(429);
+  });
+
+  it("opens the global circuit breaker on distributed auth failures", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await restartApp({
+      authToken: "s3cret-token",
+      abuse: {
+        authFailLimit: 100,
+        globalAuthFailLimit: 2,
+        globalAuthFailWindowSec: 60,
+        globalBreakerCooldownSec: 60,
+        rateLimitPerMin: 1_000,
+      },
+    });
+
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+
+    const shed = await postWithToken("s3cret-token");
+    expect(shed.status).toBe(503);
+    expect(shed.headers.get("retry-after")).toBe("60");
+    const shedBody = (await shed.json()) as RpcResponse;
+    expect(shedBody.error?.message).toContain("temporarily unavailable");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("circuit breaker"),
+    );
+
+    const health = await fetch(`${baseUrl}/healthz`);
+    expect(health.status).toBe(200);
+  });
+
+  it("emits rate limit headers and rejects excess requests", async () => {
+    await restartApp({ abuse: { rateLimitPerMin: 2 } });
+
+    const first = await fetch(`${baseUrl}/mcp`);
+    expect(first.status).toBe(405);
+    expect(first.headers.get("ratelimit-limit")).toBe("2");
+    expect(first.headers.get("ratelimit-remaining")).toBe("1");
+    expect(Number(first.headers.get("ratelimit-reset"))).toBeGreaterThan(0);
+    await first.body?.cancel();
+
+    const second = await fetch(`${baseUrl}/mcp`);
+    expect(second.status).toBe(405);
+    expect(second.headers.get("ratelimit-remaining")).toBe("0");
+    await second.body?.cancel();
+
+    const third = await fetch(`${baseUrl}/mcp`);
+    expect(third.status).toBe(429);
+    expect(third.headers.get("retry-after")).toBe("60");
+    expect(third.headers.get("ratelimit-limit")).toBe("2");
+    expect(third.headers.get("ratelimit-remaining")).toBe("0");
+    const body = (await third.json()) as RpcResponse;
+    expect(body.error?.code).toBe(-32000);
+    expect(body.error?.message).toBe("Too many requests.");
+  });
+
+  it("returns 503 instead of queueing beyond the concurrency cap", async () => {
+    const slowBackend = new MockBackend();
+    const originalLoad = slowBackend.load.bind(slowBackend);
+    let firstLoad = true;
+    let releaseLoad: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    let signalLoadStarted: () => void = () => {};
+    const loadStarted = new Promise<void>((resolve) => {
+      signalLoadStarted = resolve;
+    });
+
+    slowBackend.load = async () => {
+      if (firstLoad) {
+        firstLoad = false;
+        signalLoadStarted();
+        await gate;
+      }
+      return await originalLoad();
+    };
+
+    backend = slowBackend;
+    await restartApp({
+      abuse: { maxConcurrency: 1, rateLimitPerMin: 1_000 },
+    });
+
+    const callBody = () =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: nextId++,
+        method: "tools/call",
+        params: { name: "list_todos", arguments: {} },
+      });
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    };
+
+    const firstPromise = fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers,
+      body: callBody(),
+    });
+    await loadStarted;
+
+    const rejected = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers,
+      body: callBody(),
+    });
+    expect(rejected.status).toBe(503);
+    expect(rejected.headers.get("retry-after")).toBe("1");
+    const rejectedBody = (await rejected.json()) as RpcResponse;
+    expect(rejectedBody.error?.message).toContain("busy");
+
+    releaseLoad();
+    const first = await firstPromise;
+    expect(first.status).toBe(200);
+    await first.body?.cancel();
+  });
 });
 
 describe("HTTP security helpers", () => {
@@ -436,6 +676,24 @@ describe("HTTP security helpers", () => {
       .toEqual(["localhost", "127.0.0.1", "[::1]"]);
     expect(parseList([" a ", "", "b"], ["fallback"])).toEqual(["a", "b"]);
     expect(parseList("", DEFAULT_ALLOWED_ORIGINS)).toEqual([]);
+  });
+
+  it("parses trust proxy settings and rejects malformed values", () => {
+    expect(parseTrustProxy(undefined)).toBeUndefined();
+    expect(parseTrustProxy("false")).toBe(false);
+    expect(parseTrustProxy("FALSE")).toBe(false);
+    expect(parseTrustProxy("")).toBe(false);
+    expect(parseTrustProxy("true")).toBe(true);
+    expect(parseTrustProxy("2")).toBe(2);
+    expect(parseTrustProxy("loopback")).toBe("loopback");
+    expect(parseTrustProxy("127.0.0.1")).toBe("127.0.0.1");
+    expect(parseTrustProxy("10.0.0.0/8, 172.16.0.0/12")).toEqual([
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+    ]);
+    expect(() => parseTrustProxy("not-an-ip")).toThrow();
+    expect(() => parseTrustProxy("10.0.0.0/33")).toThrow();
+    expect(() => parseTrustProxy("-1")).toThrow();
   });
 
   it("resolves env defaults and option overrides", () => {

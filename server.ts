@@ -10,9 +10,15 @@ import {
   buildCorsOptions,
   createBearerAuthMiddleware,
   DEFAULT_HOST,
+  parseTrustProxy,
   type HttpSecurityOptions,
   resolveHttpSecurityOptions,
 } from "./logic/http-security.ts";
+import {
+  type AbuseControlOverrides,
+  createAbuseControls,
+  resolveAbuseConfig,
+} from "./logic/abuse-controls.ts";
 
 import { Todo } from "./logic/todo.ts";
 import { TodoStateEnum } from "./types/enums.ts";
@@ -501,14 +507,20 @@ export function createTodoMcpServer(backend: TodoBackend) {
   return server;
 }
 
-export type CreateAppOptions = HttpSecurityOptions;
+export type CreateAppOptions = HttpSecurityOptions & {
+  abuse?: AbuseControlOverrides;
+  trustProxy?: string | number | boolean | string[];
+};
 
 export function createApp(
   backend: TodoBackend,
-  options: HttpSecurityOptions = {},
+  options: CreateAppOptions = {},
 ) {
   const { allowedHosts, allowedOrigins, authToken } =
     resolveHttpSecurityOptions(options);
+  const abuseOverrides = options.abuse ?? {};
+  const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
+  const abuse = createAbuseControls(abuseConfig, abuseOverrides.now);
   const app = express();
 
   // An empty allowlist means "no browser origins allowed". The transport
@@ -517,6 +529,15 @@ export function createApp(
   const transportOrigins = allowedOrigins.length > 0
     ? allowedOrigins
     : ["__no_origins_allowed__"];
+
+  // Only opt into proxy headers when explicitly configured. Trusting
+  // X-Forwarded-For without a real proxy lets clients spoof their limiter key.
+  const trustProxy = parseTrustProxy(
+    options.trustProxy ?? process.env.TRUST_PROXY,
+  );
+  if (trustProxy !== undefined) {
+    app.set("trust proxy", trustProxy);
+  }
 
   // Port-agnostic Host validation protects against DNS rebinding.
   app.use(hostHeaderValidation(allowedHosts));
@@ -530,13 +551,133 @@ export function createApp(
     res.status(200).json({ status: "ok" });
   });
 
+  // Abuse controls run before authentication so floods and banned keys are
+  // rejected without doing token work. Health checks are never affected.
+  app.use("/mcp", (req: Request, res: Response, next) => {
+    const key = abuse.clientKey(req);
+
+    const breaker = abuse.breaker.state();
+    if (breaker.open) {
+      res.setHeader("Retry-After", String(breaker.retryAfterSec));
+      res.status(503).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Service temporarily unavailable due to authentication failures.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    const ban = abuse.authFailures.getBan(key);
+    if (ban.banned) {
+      res.setHeader("Retry-After", String(ban.retryAfterSec));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Too many failed authentication attempts.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    const limit = abuse.limiter.check(key);
+    if (limit.limit > 0) {
+      res.setHeader("RateLimit-Limit", String(limit.limit));
+      res.setHeader("RateLimit-Remaining", String(limit.remaining));
+      res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
+    }
+    if (!limit.allowed) {
+      res.setHeader("Retry-After", String(limit.retryAfterSec));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Too many requests." },
+        id: null,
+      });
+      return;
+    }
+
+    next();
+  });
+
   if (authToken !== undefined) {
-    app.use("/mcp", createBearerAuthMiddleware(authToken));
+    app.use(
+      "/mcp",
+      createBearerAuthMiddleware(authToken, {
+        onFailure: (req, res) => {
+          const key = abuse.clientKey(req);
+          const breaker = abuse.breaker.recordFailure();
+          if (breaker.openedNow) {
+            console.warn(
+              `[security] Global authentication failure circuit breaker opened; shedding /mcp traffic for ${breaker.retryAfterSec}s.`,
+            );
+          }
+
+          const failure = abuse.authFailures.recordFailure(key);
+          if (failure.banned) {
+            res.setHeader("Retry-After", String(failure.retryAfterSec));
+            res.status(429).json({
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message: "Too many failed authentication attempts.",
+              },
+              id: null,
+            });
+            return true;
+          }
+          return false;
+        },
+        onSuccess: (req) => {
+          abuse.authFailures.recordSuccess(abuse.clientKey(req));
+        },
+      }),
+    );
   }
+
+  let inFlightMcpRequests = 0;
+
+  // Cap concurrent POST work so the backend lock queue cannot grow without
+  // bound. The counter is released on both finish and close.
+  const concurrencyGuard = (
+    _req: Request,
+    res: Response,
+    next: () => void,
+  ) => {
+    if (
+      abuseConfig.maxConcurrency > 0 &&
+      inFlightMcpRequests >= abuseConfig.maxConcurrency
+    ) {
+      res.setHeader("Retry-After", "1");
+      res.status(503).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Server is busy. Try again later." },
+        id: null,
+      });
+      return;
+    }
+
+    inFlightMcpRequests += 1;
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      inFlightMcpRequests -= 1;
+    };
+    res.once("finish", release);
+    res.once("close", release);
+    next();
+  };
 
   app.post(
     "/mcp",
     createJsonContentTypeMiddleware(),
+    concurrencyGuard,
     async (req: Request, res: Response) => {
       // Create a new server and transport for each request to keep the
       // stateless endpoint free of request ID collisions.
@@ -615,7 +756,22 @@ export async function main() {
   }
 
   const backend = createBackend(config);
-  const app = createApp(backend);
+
+  let trustProxy: ReturnType<typeof parseTrustProxy>;
+  try {
+    trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const app = createApp(
+    backend,
+    trustProxy === undefined ? {} : { trustProxy },
+  );
 
   const authToken = process.env.MCP_AUTH_TOKEN;
   if (authToken === undefined || authToken.trim() === "") {
@@ -645,6 +801,11 @@ export async function main() {
     );
     console.log(`MCP Endpoint: http://localhost:${boundPort}/mcp`);
   });
+
+  // Bound slow-body and idle-connection attacks.
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
 
   server.on("error", (error) => {
     console.error("❌ Failed to start todo.txt-mcp server:", error.message);
