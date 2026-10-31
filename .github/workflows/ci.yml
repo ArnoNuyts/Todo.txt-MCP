@@ -27,7 +27,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test -- --coverage
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --omit=dev --audit-level=moderate
 
   docker:
     runs-on: ubuntu-latest

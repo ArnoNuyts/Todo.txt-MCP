@@ -5,6 +5,10 @@ services:
       # Bind to the loopback interface only; use a TLS reverse proxy to expose it.
       - "127.0.0.1:3000:3000"
     init: true
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 256
+    stop_grace_period: 15s
     read_only: true
     tmpfs:
       - /tmp
@@ -17,7 +21,7 @@ services:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:3000/healthz').then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1));"
+        - "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/healthz').then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1));"
       interval: 30s
       timeout: 5s
       retries: 3
