@@ -75,6 +75,10 @@ The default port is `3000`. Override it with the `PORT` environment variable:
 PORT=8080 npm start
 ```
 
+If you change the port, update `MCP_ALLOWED_ORIGINS` and the MCP client URL
+(for example `http://localhost:3330/mcp`) to match. The examples in this repo
+assume `3000`.
+
 For development with automatic restarts:
 
 ```bash
