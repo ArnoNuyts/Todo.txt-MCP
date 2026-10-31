@@ -37,8 +37,9 @@ authorization (there is a single shared todo file).
 - **Origin allowlist.** Cross-origin browser requests are only allowed from
   `http://localhost:3000` by default. Requests without an `Origin` header
   (command-line clients, MCP clients) continue to work. CORS never emits
-  `Access-Control-Allow-Origin: *`; if `MCP_ALLOWED_ORIGINS` is empty, no CORS
-  headers are emitted at all.
+  `Access-Control-Allow-Origin: *`. If `MCP_ALLOWED_ORIGINS` is empty, no CORS
+  headers are emitted and any request that carries an `Origin` header is
+  rejected with a `403`; clients without an `Origin` header still work.
 - **Request body limit.** Request bodies are capped at 64 KiB.
 - The server is stateless (`sessionIdGenerator: undefined`) and returns JSON
   responses rather than long-lived SSE streams.
