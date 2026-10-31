@@ -5,8 +5,9 @@ Todo.txt-MCP is a [Model Context Protocol](https://modelcontextprotocol.io)
 and complete tasks. Todos can be stored in a local file or synchronized over
 WebDAV.
 
-The server runs on **Node.js 24 LTS** and executes TypeScript directly using
-Node's built-in type stripping, so there is no build step.
+The server runs on **Node.js 26 LTS** and executes TypeScript directly using
+Node's built-in type stripping, so there is no build step. The minimum supported
+runtime is Node.js 24.15.
 
 ## 🚀 Quick Start with Docker
 
@@ -15,13 +16,18 @@ services:
   todo-txt-mcp:
     build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
     ports:
-      - "3000:3000"
+      # Loopback only; put a TLS reverse proxy in front to expose it.
+      - "127.0.0.1:3000:3000"
     volumes:
-      # Mount only the data file for persistence
-      - ./todo.txt:/app/todo.txt
+      # Mount a directory so atomic file replacement works.
+      - ./data:/data
     environment:
+      - HOST=0.0.0.0
+      - MCP_ALLOWED_HOSTS=localhost,127.0.0.1
+      - MCP_ALLOWED_ORIGINS=http://localhost:3000
       - TODOTXT_MCP_BACKEND=local
-      - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
+      - TODOTXT_MCP_LOCAL_FILENAME=/data/todo.txt
+      # - MCP_AUTH_TOKEN=change-me
       # - TODOTXT_MCP_BACKEND=webdav
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user
@@ -30,22 +36,26 @@ services:
 
 1. **Run**:
    ```bash
-   touch todo.txt
+   mkdir -p data
+   cp todo.txt.example data/todo.txt
    docker compose up -d
    ```
 2. **Access**: the server listens at `http://localhost:3000`.
 3. **MCP endpoint**: `http://localhost:3000/mcp`
 
-> The container runs as the unprivileged `node` user (UID 1000). If your mounted
-> `todo.txt` is not writable by that user, adjust its ownership, for example
-> `sudo chown 1000:1000 todo.txt`.
+> The container runs as the unprivileged `node` user (UID 1000). If `data/` is
+> not writable by that user, adjust its ownership, for example
+> `sudo chown -R 1000:1000 data`.
+
+See [SECURITY.md](SECURITY.md) for Host/Origin allowlists, bearer-token auth,
+and reverse-proxy TLS guidance.
 
 ## 💻 Run Locally
 
 Requirements:
 
-- [Node.js](https://nodejs.org) **24.2 or newer**
-- npm 11
+- [Node.js](https://nodejs.org) **26 LTS** (minimum 24.15)
+- npm 12
 
 ```bash
 npm ci
