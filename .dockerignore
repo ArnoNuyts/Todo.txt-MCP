@@ -6,6 +6,7 @@ dist
 test
 unit-tests
 docs
+data
 *.md
 .gitignore
 docker-compose*.yml
