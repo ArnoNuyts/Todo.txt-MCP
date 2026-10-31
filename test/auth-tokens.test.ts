@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertAuthTokensConfigured,
   assertStrongAuthTokens,
   isWeakTokenOverrideEnabled,
   MIN_TOKEN_LENGTH,
@@ -124,6 +125,14 @@ describe("auth token validation", () => {
     expect(isWeakTokenOverrideEnabled("YES")).toBe(true);
     expect(isWeakTokenOverrideEnabled("0")).toBe(false);
     expect(isWeakTokenOverrideEnabled(undefined)).toBe(false);
+  });
+
+  it("refuses to start when no auth token is configured", () => {
+    expect(() => assertAuthTokensConfigured([])).toThrow(
+      /Refusing to start: no MCP auth token is configured/,
+    );
+    expect(() => assertAuthTokensConfigured(["a".repeat(MIN_TOKEN_LENGTH)]))
+      .not.toThrow();
   });
 
   it.skipIf(process.platform === "win32")(

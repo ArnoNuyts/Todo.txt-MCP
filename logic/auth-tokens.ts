@@ -128,6 +128,21 @@ export function resolveAuthTokens(
   return { tokens: [], source: "none" };
 }
 
+/**
+ * Refuses to start when no bearer token is configured. Authentication is
+ * mandatory: an empty or unset token source must never silently expose the
+ * MCP endpoint.
+ */
+export function assertAuthTokensConfigured(tokens: string[]): void {
+  if (tokens.length === 0) {
+    throw new Error(
+      "Refusing to start: no MCP auth token is configured. Set " +
+        "MCP_AUTH_TOKEN, MCP_AUTH_TOKENS, or MCP_AUTH_TOKEN_FILE to a strong " +
+        "random value.",
+    );
+  }
+}
+
 /** True when `MCP_ALLOW_WEAK_TOKEN` explicitly opts out of length checks. */
 export function isWeakTokenOverrideEnabled(
   value: string | undefined,
