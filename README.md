@@ -5,8 +5,9 @@ Todo.txt-MCP is a [Model Context Protocol](https://modelcontextprotocol.io)
 and complete tasks. Todos can be stored in a local file or synchronized over
 WebDAV.
 
-The server runs on **Node.js 24 LTS** and executes TypeScript directly using
-Node's built-in type stripping, so there is no build step.
+The server runs on **Node.js 26 LTS** and executes TypeScript directly using
+Node's built-in type stripping, so there is no build step. The minimum supported
+runtime is Node.js 24.15.
 
 ## 🚀 Quick Start with Docker
 
@@ -30,7 +31,7 @@ services:
 
 1. **Run**:
    ```bash
-   touch todo.txt
+   cp todo.txt.example todo.txt
    docker compose up -d
    ```
 2. **Access**: the server listens at `http://localhost:3000`.
@@ -44,8 +45,8 @@ services:
 
 Requirements:
 
-- [Node.js](https://nodejs.org) **24.2 or newer**
-- npm 11
+- [Node.js](https://nodejs.org) **26 LTS** (minimum 24.15)
+- npm 12
 
 ```bash
 npm ci

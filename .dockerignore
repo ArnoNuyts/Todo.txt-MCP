@@ -5,6 +5,7 @@ coverage
 dist
 test
 unit-tests
+docs
 *.md
 .gitignore
 docker-compose*.yml
