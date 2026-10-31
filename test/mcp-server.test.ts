@@ -175,6 +175,31 @@ describe("createTodoMcpServer", () => {
     expect(textOf(missingResult)).toBe("Todo not found (file modified?)");
   });
 
+  it("should only expose list_todos in read-only mode", async () => {
+    const readOnlyServer = createTodoMcpServer(backend, { readOnly: true });
+    const [clientTransport, serverTransport] = InMemoryTransport
+      .createLinkedPair();
+    const readOnlyClient = new Client({
+      name: "todo-txt-mcp-read-only-test",
+      version: "1.0.0",
+    });
+
+    try {
+      await Promise.all([
+        readOnlyClient.connect(clientTransport),
+        readOnlyServer.connect(serverTransport),
+      ]);
+
+      const { tools } = await readOnlyClient.listTools();
+      expect(tools.map((tool) => tool.name)).toEqual(["list_todos"]);
+    } finally {
+      await Promise.allSettled([
+        readOnlyClient.close(),
+        readOnlyServer.close(),
+      ]);
+    }
+  });
+
   it("should expose a todo_format prompt with a user message", async () => {
     const result = await client.getPrompt({ name: "todo_format" });
 

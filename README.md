@@ -119,6 +119,26 @@ Syncs todos with a WebDAV server (e.g., Nextcloud).
 }
 ```
 
+## 🔐 Read-only mode, token rotation, and observability
+
+- **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
+  not registered.
+- **Token rotation:** keep several bearers active with
+  `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
+  `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
+  Environment/file tokens must be at least 32 characters unless
+  `MCP_ALLOW_WEAK_TOKEN=1`.
+- **Logs:** structured JSON to stdout/stderr; set `MCP_LOG_LEVEL` to `debug`,
+  `info` (default), `warn`, or `error`. Tokens, request bodies, and todo content
+  are never logged.
+- **Metrics:** `GET /metrics` serves in-memory Prometheus counters
+  (`todo_mcp_requests_total`, auth failures, and response classes). It requires
+  the bearer token when authentication is enabled and is open otherwise, so keep
+  the server on loopback or scrape it through the protected proxy.
+
+See [SECURITY.md](SECURITY.md) for rotation, file permissions, and exposure
+guidance.
+
 ## 🔧 Available Tools
 
 - `list_todos` — list, filter, search, and paginate todos.

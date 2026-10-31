@@ -19,6 +19,22 @@ import {
   createAbuseControls,
   resolveAbuseConfig,
 } from "./logic/abuse-controls.ts";
+import {
+  assertStrongAuthTokens,
+  isWeakTokenOverrideEnabled,
+  resolveAuthTokens,
+  warnOnInsecureTokenFile,
+} from "./logic/auth-tokens.ts";
+import {
+  createLogger,
+  createRequestLoggingMiddleware,
+  getRequestId,
+  getRequestPath,
+  type Logger,
+  type LogLevel,
+  resolveLogLevel,
+} from "./logic/logging.ts";
+import { createMetrics } from "./logic/metrics.ts";
 
 import { Todo } from "./logic/todo.ts";
 import { TodoStateEnum } from "./types/enums.ts";
@@ -380,7 +396,30 @@ export async function deleteTodoHandler(
   });
 }
 
-export function createTodoMcpServer(backend: TodoBackend) {
+export interface CreateTodoMcpServerOptions {
+  /** When true only `list_todos` is exposed; mutating tools are absent. */
+  readOnly?: boolean;
+}
+
+/**
+ * Resolves read-only mode from an explicit option, then `MCP_READ_ONLY`.
+ * Accepts `1`, `true`, or `yes` (case-insensitive).
+ */
+export function resolveReadOnlyMode(
+  options: { readOnly?: boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (options.readOnly !== undefined) {
+    return options.readOnly;
+  }
+  const value = env.MCP_READ_ONLY?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+export function createTodoMcpServer(
+  backend: TodoBackend,
+  options: CreateTodoMcpServerOptions = {},
+) {
   const server = new McpServer({
     name: "todo.txt-mcp",
     version: "1.0.0",
@@ -425,6 +464,12 @@ export function createTodoMcpServer(backend: TodoBackend) {
     },
     (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
   );
+
+  // Read-only mode exposes listing only. Returning here keeps the mutating
+  // tools out of tools/list and out of the callable surface entirely.
+  if (options.readOnly === true) {
+    return server;
+  }
 
   // Tool: add_todo
   server.registerTool(
@@ -492,18 +537,31 @@ export function createTodoMcpServer(backend: TodoBackend) {
 export type CreateAppOptions = HttpSecurityOptions & {
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
+  /** When true only `list_todos` is registered on the MCP endpoint. */
+  readOnly?: boolean;
+  /** Injectable structured logger, primarily for tests. */
+  logger?: Logger;
+  /** Overrides `MCP_LOG_LEVEL` for the default logger. */
+  logLevel?: LogLevel;
 };
 
 export function createApp(
   backend: TodoBackend,
   options: CreateAppOptions = {},
 ) {
-  const { allowedHosts, allowedOrigins, authToken } =
+  const { allowedHosts, allowedOrigins, authTokens } =
     resolveHttpSecurityOptions(options);
   const abuseOverrides = options.abuse ?? {};
   const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
   const abuse = createAbuseControls(abuseConfig, abuseOverrides.now);
+  const logger = options.logger ??
+    createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
+  const metrics = createMetrics();
+  const readOnly = resolveReadOnlyMode(options, process.env);
   const app = express();
+
+  // Do not advertise the framework.
+  app.disable("x-powered-by");
 
   // Only opt into proxy headers when explicitly configured. Trusting
   // X-Forwarded-For without a real proxy lets clients spoof their limiter key.
@@ -513,6 +571,30 @@ export function createApp(
   if (trustProxy !== undefined) {
     app.set("trust proxy", trustProxy);
   }
+
+  // Assign/echo a request ID and log one structured line per request. This
+  // never includes Authorization, tokens, bodies, or todo content.
+  app.use(createRequestLoggingMiddleware(logger));
+
+  // Count every finished response, including health checks and rejections.
+  app.use((_req: Request, res: Response, next) => {
+    res.once("finish", () => metrics.recordRequest(res.statusCode));
+    next();
+  });
+
+  // Security headers for the data-bearing endpoints.
+  const securityHeaders = (
+    _req: Request,
+    res: Response,
+    next: () => void,
+  ) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  };
+  app.use("/mcp", securityHeaders);
+  app.use("/metrics", securityHeaders);
 
   // Port-agnostic Host validation protects against DNS rebinding.
   app.use(hostHeaderValidation(allowedHosts));
@@ -533,6 +615,11 @@ export function createApp(
 
     const breaker = abuse.breaker.state();
     if (breaker.open) {
+      logger.warn("auth_failure_circuit_open", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        retryAfterSec: breaker.retryAfterSec,
+      });
       res.setHeader("Retry-After", String(breaker.retryAfterSec));
       res.status(503).json({
         jsonrpc: "2.0",
@@ -547,6 +634,11 @@ export function createApp(
 
     const ban = abuse.authFailures.getBan(key);
     if (ban.banned) {
+      logger.warn("auth_banned", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        retryAfterSec: ban.retryAfterSec,
+      });
       res.setHeader("Retry-After", String(ban.retryAfterSec));
       res.status(429).json({
         jsonrpc: "2.0",
@@ -566,6 +658,11 @@ export function createApp(
       res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
     }
     if (!limit.allowed) {
+      logger.warn("rate_limited", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        retryAfterSec: limit.retryAfterSec,
+      });
       res.setHeader("Retry-After", String(limit.retryAfterSec));
       res.status(429).json({
         jsonrpc: "2.0",
@@ -578,21 +675,35 @@ export function createApp(
     next();
   });
 
-  if (authToken !== undefined) {
+  if (authTokens.length > 0) {
     app.use(
       "/mcp",
-      createBearerAuthMiddleware(authToken, {
+      createBearerAuthMiddleware(authTokens, {
         onFailure: (req, res) => {
+          metrics.recordAuthFailure();
+          logger.warn("auth_failure", {
+            requestId: getRequestId(req),
+            ip: req.ip ?? "unknown",
+            path: getRequestPath(req),
+          });
+
           const key = abuse.clientKey(req);
           const breaker = abuse.breaker.recordFailure();
           if (breaker.openedNow) {
-            console.warn(
-              `[security] Global authentication failure circuit breaker opened; shedding /mcp traffic for ${breaker.retryAfterSec}s.`,
-            );
+            logger.warn("auth_failure_circuit_breaker", {
+              requestId: getRequestId(req),
+              ip: req.ip ?? "unknown",
+              retryAfterSec: breaker.retryAfterSec,
+            });
           }
 
           const failure = abuse.authFailures.recordFailure(key);
           if (failure.banned) {
+            logger.warn("auth_banned", {
+              requestId: getRequestId(req),
+              ip: req.ip ?? "unknown",
+              retryAfterSec: failure.retryAfterSec,
+            });
             res.setHeader("Retry-After", String(failure.retryAfterSec));
             res.status(429).json({
               jsonrpc: "2.0",
@@ -611,7 +722,31 @@ export function createApp(
         },
       }),
     );
+
+    // /metrics uses the same bearer check but deliberately bypasses the /mcp
+    // abuse controls so a scraper cannot trip the login lockout.
+    app.use(
+      "/metrics",
+      createBearerAuthMiddleware(authTokens, {
+        onFailure: (req) => {
+          metrics.recordAuthFailure();
+          logger.warn("auth_failure", {
+            requestId: getRequestId(req),
+            ip: req.ip ?? "unknown",
+            path: getRequestPath(req),
+          });
+        },
+      }),
+    );
   }
+
+  app.get("/metrics", (_req: Request, res: Response) => {
+    res.setHeader(
+      "Content-Type",
+      "text/plain; version=0.0.4; charset=utf-8",
+    );
+    res.status(200).send(metrics.render());
+  });
 
   let inFlightMcpRequests = 0;
 
@@ -626,6 +761,11 @@ export function createApp(
       abuseConfig.maxConcurrency > 0 &&
       inFlightMcpRequests >= abuseConfig.maxConcurrency
     ) {
+      logger.warn("concurrency_limited", {
+        requestId: getRequestId(_req),
+        ip: _req.ip ?? "unknown",
+        maxConcurrency: abuseConfig.maxConcurrency,
+      });
       res.setHeader("Retry-After", "1");
       res.status(503).json({
         jsonrpc: "2.0",
@@ -652,7 +792,7 @@ export function createApp(
   app.post("/mcp", concurrencyGuard, async (req: Request, res: Response) => {
     // Create a new server and transport for each request to keep the
     // stateless endpoint free of request ID collisions.
-    const server = createTodoMcpServer(backend);
+    const server = createTodoMcpServer(backend, { readOnly });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -671,7 +811,11 @@ export function createApp(
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
-      console.error("Error handling MCP request:", error);
+      logger.error("mcp_request_error", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -738,15 +882,42 @@ export async function main() {
     return;
   }
 
-  const app = createApp(
-    backend,
-    trustProxy === undefined ? {} : { trustProxy },
-  );
+  // Resolve and validate bearer tokens before building the app so a weak or
+  // unreadable secret fails fast instead of silently disabling authentication.
+  let authTokens: string[] = [];
+  try {
+    const tokenFile = process.env.MCP_AUTH_TOKEN_FILE?.trim();
+    if (tokenFile !== undefined && tokenFile !== "") {
+      warnOnInsecureTokenFile(tokenFile);
+    }
 
-  const authToken = process.env.MCP_AUTH_TOKEN;
-  if (authToken === undefined || authToken.trim() === "") {
+    const resolvedTokens = resolveAuthTokens({}, process.env);
+    if (
+      resolvedTokens.source === "env" || resolvedTokens.source === "file"
+    ) {
+      assertStrongAuthTokens(
+        resolvedTokens.tokens,
+        isWeakTokenOverrideEnabled(process.env.MCP_ALLOW_WEAK_TOKEN),
+        resolvedTokens.source,
+      );
+    }
+    authTokens = resolvedTokens.tokens;
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const app = createApp(backend, {
+    ...(trustProxy === undefined ? {} : { trustProxy }),
+    ...(authTokens.length > 0 ? { authTokens } : {}),
+  });
+
+  if (authTokens.length === 0) {
     console.warn(
-      "⚠️  MCP_AUTH_TOKEN is not set: the /mcp endpoint is unauthenticated. Set MCP_AUTH_TOKEN when exposing the server beyond localhost.",
+      "⚠️  No MCP auth token is configured (MCP_AUTH_TOKEN, MCP_AUTH_TOKENS, or MCP_AUTH_TOKEN_FILE): the /mcp endpoint is unauthenticated. Set one when exposing the server beyond localhost.",
     );
   }
 
