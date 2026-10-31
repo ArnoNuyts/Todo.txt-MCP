@@ -329,13 +329,31 @@ describe("MCP HTTP endpoint", () => {
       .toBe("todo.txt-mcp");
   });
 
-  it("emits no CORS headers when the origin allowlist is empty", async () => {
+  it("rejects browser Origins when the origin allowlist is empty", async () => {
     await restartApp({ allowedOrigins: [] });
 
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         origin: DISALLOWED_ORIGIN,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: initializeBody(),
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    const body = (await response.json()) as RpcResponse;
+    expect(body.error?.message).toContain("Origin");
+  });
+
+  it("still accepts non-browser requests when the origin allowlist is empty", async () => {
+    await restartApp({ allowedOrigins: [] });
+
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
       },
