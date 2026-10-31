@@ -511,6 +511,13 @@ export function createApp(
     resolveHttpSecurityOptions(options);
   const app = express();
 
+  // An empty allowlist means "no browser origins allowed". The transport
+  // skips Origin validation when the list is empty, so pass a sentinel that
+  // no real Origin can match to keep the behavior fail-closed.
+  const transportOrigins = allowedOrigins.length > 0
+    ? allowedOrigins
+    : ["__no_origins_allowed__"];
+
   // Port-agnostic Host validation protects against DNS rebinding.
   app.use(hostHeaderValidation(allowedHosts));
 
@@ -539,7 +546,7 @@ export function createApp(
         enableJsonResponse: true,
         enableDnsRebindingProtection: true,
         // Host validation is handled by the port-agnostic middleware above.
-        allowedOrigins: [...allowedOrigins],
+        allowedOrigins: [...transportOrigins],
         maxRequestBodySize: 64 * 1024,
       });
 
