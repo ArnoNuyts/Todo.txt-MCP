@@ -2,13 +2,13 @@ services:
   todo-txt-mcp:
     build: .
     ports:
-      - "6000:3000"
+      - "3000:3000"
     volumes:
       - ./todo.txt:/app/todo.txt
     environment:
       # Example overrides (uncomment to use)
       - TODOTXT_MCP_BACKEND=local
-      - TODOTXT_MCP_LOCAL_FILENAME=test.txt
+      - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
       # - TODOTXT_MCP_BACKEND=webdav
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user

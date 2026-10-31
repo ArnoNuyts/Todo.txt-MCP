@@ -1,18 +1,24 @@
-import { TodoBackend } from "../backend.ts";
+import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
 import { Todos } from "../Todos.ts";
 
 export class WebDavBackend implements TodoBackend {
-  constructor(
-    private url: string,
-    private username?: string,
-    private password?: string,
-  ) {}
+  private readonly url: string;
+  private readonly username?: string;
+  private readonly password?: string;
 
-  private getHeaders(): HeadersInit {
-    const headers: HeadersInit = {};
+  constructor(url: string, username?: string, password?: string) {
+    this.url = url;
+    this.username = username;
+    this.password = password;
+  }
+
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
     if (this.username && this.password) {
-      const encoded = btoa(`${this.username}:${this.password}`);
+      const encoded = Buffer.from(
+        `${this.username}:${this.password}`,
+      ).toString("base64");
       headers["Authorization"] = `Basic ${encoded}`;
     }
     return headers;

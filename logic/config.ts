@@ -1,4 +1,7 @@
-import { z } from "npm:zod@3.25.1";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { z } from "zod";
+import { isNotFoundError } from "./fs-errors.ts";
 
 const LocalConfig = z.object({
   backend: z.literal("local"),
@@ -23,16 +26,28 @@ export const ConfigSchema = z.discriminatedUnion("backend", [
 
 export type TodoTxtMcpConfig = z.infer<typeof ConfigSchema>;
 
-export async function loadConfig(): Promise<TodoTxtMcpConfig> {
+export interface LoadConfigOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+export async function loadConfig(
+  options: LoadConfigOptions = {},
+): Promise<TodoTxtMcpConfig> {
+  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
   type ConfigMap = { [key: string]: ConfigMap | string | undefined };
   let config: ConfigMap = {};
 
   // 1. Try to load from file
   try {
-    const text = await Deno.readTextFile("todo.txt-mcp-config.json");
+    const text = await readFile(
+      join(cwd, "todo.txt-mcp-config.json"),
+      "utf8",
+    );
     config = JSON.parse(text);
   } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
+    if (!isNotFoundError(error)) {
       throw error;
     }
     console.log(
@@ -50,7 +65,7 @@ export async function loadConfig(): Promise<TodoTxtMcpConfig> {
   };
 
   for (const [envVar, path] of Object.entries(envMapping)) {
-    const value = Deno.env.get(envVar);
+    const value = env[envVar];
     if (value !== undefined) {
       const parts = path.split(".");
       let current: ConfigMap = config;

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "todo-txt-mcp": {
-      "url": "http://localhost:3000/sse"
+      "url": "http://localhost:3000/mcp"
     }
   }
 }

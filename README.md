@@ -1,32 +1,25 @@
 # Todo.txt-MCP
 
-Todo.txt-MCP is a Model Context Protocol (MCP) server designed to manage your
-todo.txt file. It enables AI agents to interact with your tasks—listing, adding,
-editing, and marking them as done. It supports storage via a local `todo.txt`
-file or synchronization over WebDAV.
+Todo.txt-MCP is a [Model Context Protocol](https://modelcontextprotocol.io)
+(MCP) server for managing a `todo.txt` file. It lets AI agents list, add, edit,
+and complete tasks. Todos can be stored in a local file or synchronized over
+WebDAV.
+
+The server runs on **Node.js 24 LTS** and executes TypeScript directly using
+Node's built-in type stripping, so there is no build step.
 
 ## 🚀 Quick Start with Docker
 
-The easiest way to run TodoTui is using Docker Compose.
-
-You can use the following `docker-compose.yml` configuration:
-
 ```yaml
-version: "3.8"
-
 services:
   todo-txt-mcp:
     build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
-
     ports:
-      - "5000:5000"
-
+      - "3000:3000"
     volumes:
       # Mount only the data file for persistence
       - ./todo.txt:/app/todo.txt
-
     environment:
-      # Configuration
       - TODOTXT_MCP_BACKEND=local
       - TODOTXT_MCP_LOCAL_FILENAME=todo.txt
       # - TODOTXT_MCP_BACKEND=webdav
@@ -37,54 +30,96 @@ services:
 
 1. **Run**:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
-2. **Access**: The server will be running at `http://localhost:5000`.
+2. **Access**: the server listens at `http://localhost:3000`.
+3. **MCP endpoint**: `http://localhost:3000/mcp`
+
+> The container runs as the unprivileged `node` user (UID 1000). If your mounted
+> `todo.txt` is not writable by that user, adjust its ownership, for example
+> `sudo chown 1000:1000 todo.txt`.
 
 ## 💻 Run Locally
 
-If you have Deno installed, you can run the server directly.
+Requirements:
 
-1. **Install Deno**: [https://deno.com/runtime](https://deno.com/runtime)
-2. **Run**:
-   ```bash
-   deno run --allow-net --allow-read --allow-write --allow-env server.ts
-   ```
-   By default, it runs on port `3000`. You can change this by setting the `PORT`
-   environment variable.
+- [Node.js](https://nodejs.org) **24.2 or newer**
+- npm 11
+
+```bash
+npm ci
+npm start
+```
+
+The default port is `3000`. Override it with the `PORT` environment variable:
+
+```bash
+PORT=8080 npm start
+```
+
+For development with automatic restarts:
+
+```bash
+npm run dev
+```
+
+## 🧪 Testing
+
+The test suite uses [Vitest](https://vitest.dev).
+
+```bash
+npm test              # run once
+npm run test:watch    # watch mode
+npm run test:coverage # coverage report
+npm run typecheck     # TypeScript type checking
+```
 
 ## ⚙️ Configuration
 
-You can configure the backend using environment variables. This is especially
-useful when running with Docker.
+Configuration is read from `todo.txt-mcp-config.json` in the working directory
+(optional), then overridden by environment variables. See
+`todo.txt-mcp-config.example.json`.
 
 ### Local File Backend (Default)
 
 Stores todos in a local text file.
 
-- `TODOTUI_BACKEND`: Set to `local`.
-- `TODOTUI_LOCAL_FILENAME`: Path to the todo file (default: `todo.txt`).
+- `TODOTXT_MCP_BACKEND`: Set to `local`.
+- `TODOTXT_MCP_LOCAL_FILENAME`: Path to the todo file (default: `todo.txt`).
 
 ### WebDAV Backend
 
 Syncs todos with a WebDAV server (e.g., Nextcloud).
 
-- `TODOTUI_BACKEND`: Set to `webdav`.
-- `TODOTUI_WEBDAV_URL`: Full URL to the WebDAV resource (e.g.,
+- `TODOTXT_MCP_BACKEND`: Set to `webdav`.
+- `TODOTXT_MCP_WEBDAV_URL`: Full URL to the WebDAV resource (e.g.,
   `https://cloud.example.com/remote.php/dav/files/user/todo.txt`).
-- `TODOTUI_WEBDAV_USERNAME`: WebDAV username.
-- `TODOTUI_WEBDAV_PASSWORD`: WebDAV password.
+- `TODOTXT_MCP_WEBDAV_USERNAME`: WebDAV username.
+- `TODOTXT_MCP_WEBDAV_PASSWORD`: WebDAV password.
+
+### File configuration example
+
+```json
+{
+  "backend": "local",
+  "local": {
+    "filename": "todo.txt"
+  }
+}
+```
+
+## 🔧 Available Tools
+
+- `list_todos` — list, filter, search, and paginate todos.
+- `add_todo` — add one or more todos.
+- `edit_todo` — replace the text of one or more todos by hash.
+- `set_todo_status` — mark todos done or active.
 
 ## 🛠️ Testing with MCP Inspector
 
-You can verify that the server is working correctly using the MCP Inspector.
-
-1. **Start the server** (Docker or Local).
+1. **Start the server** with Docker or `npm start`.
 2. **Run the Inspector**:
    ```bash
-   npx @modelcontextprotocol/inspector http://localhost:5000/mcp
+   npx @modelcontextprotocol/inspector http://localhost:3000/mcp
    ```
-   _(Replace port `5000` with `3000` if running locally without Docker)_
-
-This will open a web interface where you can list available tools (`list_todos`,
-`add_todo`, etc.) and execute them to test the functionality.
+3. Use the Inspector UI to list and execute the tools.

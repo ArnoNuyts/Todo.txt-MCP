@@ -1,15 +1,17 @@
-import { McpServer } from "npm:@modelcontextprotocol/sdk@1.22.0/server/mcp.js";
-import { z } from "npm:zod@3.25.1";
-import { StreamableHTTPServerTransport } from "npm:@modelcontextprotocol/sdk@1.22.0/server/streamableHttp.js";
-import express, { Request, Response } from "npm:express@5.1.0";
-import cors from "npm:cors@2.8.5";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
+import type { Request, Response } from "express";
+import cors from "cors";
 
 import { Todo } from "./logic/todo.ts";
 import { TodoStateEnum } from "./types/enums.ts";
-import { TodoBackend } from "./logic/backend.ts";
+import type { TodoBackend } from "./logic/backend.ts";
 import { LocalFileBackend } from "./logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "./logic/backends/webdav-backend.ts";
-import { loadConfig, TodoTxtMcpConfig } from "./logic/config.ts";
+import { loadConfig } from "./logic/config.ts";
+import type { TodoTxtMcpConfig } from "./logic/config.ts";
 
 // Schemas
 export const AddTodoSchema = z.object({
@@ -47,7 +49,7 @@ export const SetTodoStatusSchema = z.object({
   ),
 });
 
-function createBackend(config: TodoTxtMcpConfig): TodoBackend {
+export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
   switch (config.backend) {
     case "webdav":
       return new WebDavBackend(
@@ -57,6 +59,10 @@ function createBackend(config: TodoTxtMcpConfig): TodoBackend {
       );
     case "local":
       return new LocalFileBackend(config.local.filename);
+    default: {
+      const exhaustiveCheck: never = config;
+      return exhaustiveCheck;
+    }
   }
 }
 
@@ -278,7 +284,59 @@ export function createTodoMcpServer(backend: TodoBackend) {
   return server;
 }
 
-async function main() {
+export function createApp(backend: TodoBackend) {
+  const app = express();
+  app.use(cors());
+  app.use(express.json({ limit: "1mb" }));
+
+  app.post("/mcp", async (req: Request, res: Response) => {
+    // Create a new server and transport for each request to keep the
+    // stateless endpoint free of request ID collisions.
+    const server = createTodoMcpServer(backend);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    res.on("close", () => {
+      void transport.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("Error handling MCP request:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  app.get("/mcp", (_req: Request, res: Response) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    });
+  });
+
+  app.delete("/mcp", (_req: Request, res: Response) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    });
+  });
+
+  return app;
+}
+
+export async function main() {
   let config: TodoTxtMcpConfig;
   try {
     config = await loadConfig();
@@ -288,39 +346,24 @@ async function main() {
       error.issues.forEach((issue) => {
         console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
       });
-      Deno.exit(1);
-    } else if (error instanceof SyntaxError) {
+      process.exitCode = 1;
+      return;
+    }
+    if (error instanceof SyntaxError) {
       console.error(
         "❌ Configuration Error: todo.txt-mcp-config.json is not valid JSON.",
       );
       console.error(`  ${error.message}`);
-      Deno.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw error;
   }
+
   const backend = createBackend(config);
-  const server = createTodoMcpServer(backend);
+  const app = createApp(backend);
 
-  // Start the server
-  const app = express();
-  app.use(cors());
-
-  app.post("/mcp", async (req: Request, res: Response) => {
-    // Create a new transport for each request to prevent request ID collisions
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-
-    res.on("close", () => {
-      transport.close();
-    });
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  });
-
-  const port = parseInt(Deno.env.get("PORT") || "3000");
+  const port = Number.parseInt(process.env.PORT || "3000", 10);
   app.listen(port, () => {
     console.log(`todo.txt-mcp Server running on http://localhost:${port}`);
     console.log(`MCP Endpoint: http://localhost:${port}/mcp`);
@@ -328,5 +371,8 @@ async function main() {
 }
 
 if (import.meta.main) {
-  main();
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

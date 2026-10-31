@@ -1,5 +1,5 @@
 import { TodoStateEnum } from "../types/enums.ts";
-import { UpperCaseLetter } from "../types/types.ts";
+import type { UpperCaseLetter } from "../types/types.ts";
 
 const TODO_REGEX =
   /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
