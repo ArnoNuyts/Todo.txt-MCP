@@ -5,13 +5,39 @@ services:
     build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
 
     ports:
-      - "3000:3000"
+      # Bind to the loopback interface only; use a TLS reverse proxy to expose it.
+      - "127.0.0.1:3000:3000"
+
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
     volumes:
       # Mount only the data file for persistence
       - ./todo.txt:/app/todo.txt
 
     environment:
+      # Network security (see SECURITY.md)
+      - HOST=0.0.0.0
+      - MCP_ALLOWED_HOSTS=localhost,127.0.0.1
+      - MCP_ALLOWED_ORIGINS=http://localhost:3000
+      # - MCP_AUTH_TOKEN=change-me
       # Configuration
       - TODOTXT_MCP_BACKEND=local
       - TODOTXT_MCP_LOCAL_FILENAME=todo.txt

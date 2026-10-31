@@ -1,9 +1,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
 import type { Request, Response } from "express";
 import cors from "cors";
+
+import {
+  buildCorsOptions,
+  createBearerAuthMiddleware,
+  DEFAULT_HOST,
+  type HttpSecurityOptions,
+  resolveHttpSecurityOptions,
+} from "./logic/http-security.ts";
 
 import { Todo } from "./logic/todo.ts";
 import { TodoStateEnum } from "./types/enums.ts";
@@ -297,9 +306,31 @@ export function createTodoMcpServer(backend: TodoBackend) {
   return server;
 }
 
-export function createApp(backend: TodoBackend) {
+export type CreateAppOptions = HttpSecurityOptions;
+
+export function createApp(
+  backend: TodoBackend,
+  options: HttpSecurityOptions = {},
+) {
+  const { allowedHosts, allowedOrigins, authToken } =
+    resolveHttpSecurityOptions(options);
   const app = express();
-  app.use(cors());
+
+  // Port-agnostic Host validation protects against DNS rebinding.
+  app.use(hostHeaderValidation(allowedHosts));
+
+  // Never emit CORS headers when no origins are explicitly allowed.
+  if (allowedOrigins.length > 0) {
+    app.use(cors(buildCorsOptions(allowedOrigins)));
+  }
+
+  app.get("/healthz", (_req: Request, res: Response) => {
+    res.status(200).json({ status: "ok" });
+  });
+
+  if (authToken !== undefined) {
+    app.use("/mcp", createBearerAuthMiddleware(authToken));
+  }
 
   app.post("/mcp", async (req: Request, res: Response) => {
     // Create a new server and transport for each request to keep the
@@ -308,6 +339,10 @@ export function createApp(backend: TodoBackend) {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
+      enableDnsRebindingProtection: true,
+      // Host validation is handled by the port-agnostic middleware above.
+      allowedOrigins: [...allowedOrigins],
+      maxRequestBodySize: 64 * 1024,
     });
 
     res.on("close", () => {
@@ -376,6 +411,13 @@ export async function main() {
   const backend = createBackend(config);
   const app = createApp(backend);
 
+  const authToken = process.env.MCP_AUTH_TOKEN;
+  if (authToken === undefined || authToken.trim() === "") {
+    console.warn(
+      "⚠️  MCP_AUTH_TOKEN is not set: the /mcp endpoint is unauthenticated. Set MCP_AUTH_TOKEN when exposing the server beyond localhost.",
+    );
+  }
+
   const port = Number(process.env.PORT ?? "3000");
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     console.error(
@@ -385,7 +427,9 @@ export async function main() {
     return;
   }
 
-  const server = app.listen(port, () => {
+  const host = process.env.HOST ?? DEFAULT_HOST;
+
+  const server = app.listen(port, host, () => {
     const address = server.address();
     const boundPort = typeof address === "object" && address !== null
       ? address.port
