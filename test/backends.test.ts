@@ -64,10 +64,14 @@ describe("WebDavBackend", () => {
       "2024-01-01 first",
       "x done",
     ]);
-    expect(fetchMock).toHaveBeenCalledWith(url, {
-      method: "GET",
-      headers: {},
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      url,
+      expect.objectContaining({
+        method: "GET",
+        headers: {},
+        signal: expect.any(AbortSignal),
+      }),
+    );
   });
 
   it("returns an empty list when the resource does not exist", async () => {
@@ -97,14 +101,18 @@ describe("WebDavBackend", () => {
     await new WebDavBackend(url, "user", "pass").save([new Todo("task")]);
 
     const expectedAuth = `Basic ${Buffer.from("user:pass").toString("base64")}`;
-    expect(fetchMock).toHaveBeenCalledWith(url, {
-      method: "PUT",
-      headers: {
-        Authorization: expectedAuth,
-        "Content-Type": "text/plain",
-      },
-      body: "task\n",
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      url,
+      expect.objectContaining({
+        method: "PUT",
+        headers: {
+          Authorization: expectedAuth,
+          "Content-Type": "text/plain",
+        },
+        body: "task\n",
+        signal: expect.any(AbortSignal),
+      }),
+    );
   });
 
   it("throws when saving fails", async () => {
@@ -116,5 +124,76 @@ describe("WebDavBackend", () => {
     await expect(
       new WebDavBackend(url).save([new Todo("task")]),
     ).rejects.toThrow("Failed to save todos to WebDAV: 500 Oops");
+  });
+
+  it("rejects plain http URLs for remote hosts", () => {
+    expect(() => new WebDavBackend("http://dav.example.com/todo.txt"))
+      .toThrow(/https/);
+    expect(() => new WebDavBackend("ftp://dav.example.com/todo.txt"))
+      .toThrow(/https/);
+  });
+
+  it("allows plain http for loopback hosts", () => {
+    expect(() => new WebDavBackend("http://localhost:8080/todo.txt"))
+      .not.toThrow();
+    expect(() => new WebDavBackend("http://127.0.0.1/todo.txt")).not.toThrow();
+    expect(() => new WebDavBackend("http://[::1]:8080/todo.txt")).not.toThrow();
+  });
+
+  it("rejects invalid URLs", () => {
+    expect(() => new WebDavBackend("not a url")).toThrow(/Invalid WebDAV URL/);
+  });
+
+  it("sends If-Match with the ETag captured on load", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("task\n", { status: 200, headers: { ETag: '"v1"' } }),
+      )
+      .mockResolvedValueOnce(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url);
+    await backend.load();
+    await backend.save([new Todo("task")]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      url,
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.objectContaining({ "If-Match": '"v1"' }),
+      }),
+    );
+  });
+
+  it("does not send If-Match before an ETag has been seen", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new WebDavBackend(url).save([new Todo("task")]);
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(init.headers).not.toHaveProperty("If-Match");
+  });
+
+  it("reports a conflict when save fails with 412", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("task\n", { status: 200, headers: { ETag: '"v1"' } }),
+      )
+      .mockResolvedValueOnce(
+        new Response("", { status: 412, statusText: "Precondition Failed" }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url);
+    await backend.load();
+
+    await expect(
+      backend.save([new Todo("task")]),
+    ).rejects.toThrow(/conflict.*412/i);
   });
 });

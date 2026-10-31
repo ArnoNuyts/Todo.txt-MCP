@@ -8,9 +8,6 @@ const CONTEXT_REGEX = /\s+\@(?<name>[\w.\_\-]+)/g;
 const TAG_REGEX = /\s+(?<key>[A-Za-z]+):(?<value>[^\s]+)/g;
 
 export class Todo {
-  // TODO: Find something better than this
-  private signalChangeHack = 0;
-  readonly id = Symbol();
   text: string = "";
   state: TodoStateEnum = TodoStateEnum.todo;
   completionDate: undefined | Date;
@@ -187,17 +184,14 @@ export class Todo {
 
   setRecurrence(recurrence: string): void {
     this.tags.rec = recurrence;
-    this.signalChangeHack++;
   }
 
   setDue(date: Date): void {
     this.tags.due = date.toISOString().substring(0, 10);
-    this.signalChangeHack++;
   }
 
   setThreshold(date: Date): void {
     this.tags.t = date.toISOString().substring(0, 10);
-    this.signalChangeHack++;
   }
 
   toggleHidden(): void {
@@ -206,7 +200,6 @@ export class Todo {
     } else {
       this.tags.h = "1";
     }
-    this.signalChangeHack++;
   }
 
   async getHash(): Promise<string> {
@@ -216,6 +209,6 @@ export class Todo {
     const hashHex = hashArray
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-    return hashHex.substring(0, 8);
+    return hashHex.substring(0, 16);
   }
 }

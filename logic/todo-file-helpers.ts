@@ -1,5 +1,7 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { WriteFileOptions } from "node:fs";
+import { dirname, join } from "node:path";
 import { Todo } from "./todo.ts";
 import { Todos } from "./Todos.ts";
 import { isNotFoundError } from "./fs-errors.ts";
@@ -28,13 +30,24 @@ export async function readTodosFromFile(filename: string): Promise<Todos> {
   }
 }
 
+/**
+ * Writes todos atomically: the content is written to a unique temporary file
+ * in the same directory and then renamed over the target file. A partially
+ * written file is therefore never observable at `filename`.
+ */
 export const writeTodosToFile = async (
   todos: Todo[],
   filename: string,
   writeOptions: WriteFileOptions | undefined = undefined,
-) =>
-  await writeFile(
-    filename,
-    todos.map((y) => y.toString()).join("\n") + "\n",
-    writeOptions,
-  );
+) => {
+  const content = todos.map((y) => y.toString()).join("\n") + "\n";
+  const tempFilename = join(dirname(filename), `.${randomUUID()}.tmp`);
+
+  try {
+    await writeFile(tempFilename, content, writeOptions);
+    await rename(tempFilename, filename);
+  } catch (error) {
+    await rm(tempFilename, { force: true }).catch(() => undefined);
+    throw error;
+  }
+};
