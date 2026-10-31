@@ -30,6 +30,7 @@ services:
 
 1. **Run**:
    ```bash
+   touch todo.txt
    docker compose up -d
    ```
 2. **Access**: the server listens at `http://localhost:3000`.

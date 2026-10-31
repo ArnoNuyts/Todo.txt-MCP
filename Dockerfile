@@ -12,6 +12,9 @@ COPY --chown=node:node server.ts ./
 COPY --chown=node:node logic ./logic
 COPY --chown=node:node types ./types
 
+# Ensure the default data file exists and is writable when no volume is mounted.
+RUN touch /app/todo.txt && chown node:node /app/todo.txt /app
+
 USER node
 
 EXPOSE 3000

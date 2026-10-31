@@ -11,16 +11,17 @@ interface RpcResponse {
     tools?: Array<{ name: string }>;
     content?: Array<{ text?: string }>;
   };
-  error?: { message?: string };
+  error?: { code?: number; message?: string };
 }
 
-describe("POST /mcp", () => {
+describe("MCP HTTP endpoint", () => {
   let httpServer: Server;
   let backend: MockBackend;
   let baseUrl: string;
   let nextId = 1;
 
   beforeEach(async () => {
+    nextId = 1;
     backend = new MockBackend();
     httpServer = createApp(backend).listen(0, "127.0.0.1");
     await once(httpServer, "listening");
@@ -90,5 +91,27 @@ describe("POST /mcp", () => {
     expect(response.status).toBe(405);
     const body = (await response.json()) as RpcResponse;
     expect(body.error?.message).toBe("Method not allowed.");
+  });
+
+  it("rejects DELETE /mcp with method not allowed", async () => {
+    const response = await fetch(`${baseUrl}/mcp`, { method: "DELETE" });
+    expect(response.status).toBe(405);
+    const body = (await response.json()) as RpcResponse;
+    expect(body.error?.message).toBe("Method not allowed.");
+  });
+
+  it("returns a JSON-RPC parse error for malformed JSON", async () => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: "{not json",
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as RpcResponse;
+    expect(body.error?.code).toBe(-32700);
   });
 });

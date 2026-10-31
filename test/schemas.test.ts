@@ -21,6 +21,7 @@ describe("Tool schemas", () => {
     };
 
     for (const [name, schema] of Object.entries(schemas)) {
+      expect(schema).toBeInstanceOf(z.ZodObject);
       if (schema instanceof z.ZodObject) {
         for (
           const [propName, propSchema] of Object.entries(schema.shape)
