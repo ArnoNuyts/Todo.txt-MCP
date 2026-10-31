@@ -108,6 +108,17 @@ Syncs todos with a WebDAV server (e.g., Nextcloud).
 - `TODOTXT_MCP_WEBDAV_USERNAME`: WebDAV username.
 - `TODOTXT_MCP_WEBDAV_PASSWORD`: WebDAV password.
 
+### Resource Limits
+
+Both backends enforce size guardrails so a runaway file or agent cannot
+exhaust the process memory:
+
+- `TODOTXT_MCP_MAX_FILE_BYTES`: Maximum size of the todo file in bytes
+  (default: `1048576`, i.e. 1 MiB). An oversized file is rejected before it is
+  parsed.
+- `TODOTXT_MCP_MAX_TODOS`: Maximum total number of todos (default: `10000`).
+  `add_todo` rejects an add that would exceed this limit and saves nothing.
+
 ### File configuration example
 
 ```json
@@ -145,6 +156,7 @@ guidance.
 - `add_todo` — add one or more todos.
 - `edit_todo` — replace the text of one or more todos by hash.
 - `set_todo_status` — mark todos done or active.
+- `delete_todo` — delete a todo by hash.
 
 ## 🛠️ Testing with MCP Inspector
 

@@ -44,6 +44,8 @@ import { LocalFileBackend } from "./logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "./logic/backends/webdav-backend.ts";
 import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
+import { resolveMaxTodos } from "./logic/limits.ts";
+import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 
 // Schemas
 export const AddTodoSchema = z.object({
@@ -147,6 +149,22 @@ export async function addTodoHandler(
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
+
+    // Enforce the total-size cap before mutating anything so a rejected add
+    // never partially writes to the backend.
+    const maxTodos = resolveMaxTodos();
+    if (todos.length + todoTexts.length > maxTodos) {
+      return {
+        isError: true,
+        content: [{
+          type: "text" as const,
+          text: `Cannot add ${todoTexts.length} todo(s): the file already ` +
+            `contains ${todos.length} and the limit is ${maxTodos} todos ` +
+            `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
+        }],
+      };
+    }
+
     const newTodos: Todo[] = [];
     for (const text of todoTexts) {
       const newTodo = new Todo(text);
@@ -563,6 +581,13 @@ export function createApp(
   // Do not advertise the framework.
   app.disable("x-powered-by");
 
+  // An empty allowlist means "no browser origins allowed". The transport
+  // skips Origin validation when the list is empty, so pass a sentinel that
+  // no real Origin can match to keep the behavior fail-closed.
+  const transportOrigins = allowedOrigins.length > 0
+    ? allowedOrigins
+    : ["__no_origins_allowed__"];
+
   // Only opt into proxy headers when explicitly configured. Trusting
   // X-Forwarded-For without a real proxy lets clients spoof their limiter key.
   const trustProxy = parseTrustProxy(
@@ -722,7 +747,6 @@ export function createApp(
         },
       }),
     );
-
     // /metrics uses the same bearer check but deliberately bypasses the /mcp
     // abuse controls so a scraper cannot trip the login lockout.
     app.use(
@@ -789,42 +813,47 @@ export function createApp(
     next();
   };
 
-  app.post("/mcp", concurrencyGuard, async (req: Request, res: Response) => {
-    // Create a new server and transport for each request to keep the
-    // stateless endpoint free of request ID collisions.
-    const server = createTodoMcpServer(backend, { readOnly });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-      enableDnsRebindingProtection: true,
-      // Host validation is handled by the port-agnostic middleware above.
-      allowedOrigins: [...allowedOrigins],
-      maxRequestBodySize: 64 * 1024,
-    });
-
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
-
-    try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch (error) {
-      logger.error("mcp_request_error", {
-        requestId: getRequestId(req),
-        ip: req.ip ?? "unknown",
-        message: error instanceof Error ? error.message : String(error),
+  app.post(
+    "/mcp",
+    createJsonContentTypeMiddleware(),
+    concurrencyGuard,
+    async (req: Request, res: Response) => {
+      // Create a new server and transport for each request to keep the
+      // stateless endpoint free of request ID collisions.
+      const server = createTodoMcpServer(backend, { readOnly });
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+        enableDnsRebindingProtection: true,
+        // Host validation is handled by the port-agnostic middleware above.
+        allowedOrigins: [...transportOrigins],
+        maxRequestBodySize: 64 * 1024,
       });
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: "Internal server error" },
-          id: null,
+
+      res.on("close", () => {
+        void transport.close();
+        void server.close();
+      });
+
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        logger.error("mcp_request_error", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          message: error instanceof Error ? error.message : String(error),
         });
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          });
+        }
       }
-    }
-  });
+    },
+  );
 
   app.get("/mcp", (_req: Request, res: Response) => {
     res.status(405).json({
