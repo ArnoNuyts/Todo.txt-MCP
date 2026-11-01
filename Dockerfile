@@ -1,4 +1,7 @@
-# syntax=docker/dockerfile:1
+# No `# syntax=docker/dockerfile:1` on purpose: that directive makes BuildKit
+# pull the frontend image from Docker Hub on every build, which fails on hosts
+# without registry access. This Dockerfile only uses features the built-in
+# frontend supports.
 
 # ---- deps: install production dependencies only ----
 FROM node:26-alpine AS deps
