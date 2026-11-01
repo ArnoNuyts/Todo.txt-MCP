@@ -640,6 +640,49 @@ describe("Server tool handlers", () => {
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(1);
     });
+
+    it("should reject a full done line instead of corrupting the stored text", async () => {
+      const initialTodos = [new Todo("Aardappelen @Colruyt")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{
+          hash,
+          text: "x 2026-11-01 2026-11-01 Aardappelen @Colruyt",
+        }],
+      });
+
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
+      expect(errorOf(result).message).toContain("set_todo_statuses");
+      expect(backend.getTodos()[0].text).toBe("Aardappelen @Colruyt");
+      expect(backend.loadCalls).toBe(0);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it.each([
+      ["(A) keep me"],
+      ["2026-11-01 keep me"],
+    ])("should reject the metadata prefix in %s", async (text) => {
+      const initialTodos = [new Todo("keep me")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{ hash, text }],
+      });
+
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
+      expect(backend.getTodos()[0].text).toBe("keep me");
+      expect(backend.loadCalls).toBe(0);
+      expect(backend.saveCalls).toBe(0);
+    });
   });
 
   describe("deleteTodosHandler", () => {
