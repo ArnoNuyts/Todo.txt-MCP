@@ -7,6 +7,8 @@ const PROJECT_REGEX = /\s+\+(?<name>[\w.\_\-]+)/g;
 const CONTEXT_REGEX = /\s+\@(?<name>[\w.\_\-]+)/g;
 const TAG_REGEX = /\s+(?<key>[A-Za-z]+):(?<value>[^\s]+)/g;
 
+const formatDate = (date: Date) => date.toISOString().substring(0, 10);
+
 export class Todo {
   text: string = "";
   state: TodoStateEnum = TodoStateEnum.todo;
@@ -20,14 +22,22 @@ export class Todo {
   constructor(text: string) {
     const match = text.match(TODO_REGEX);
     if (match?.groups) {
-      this.completionDate =
-        match.groups.creationDate && match.groups.completionDate
-          ? new Date(match.groups.completionDate)
+      const { done, completionDate, creationDate } = match.groups;
+      if (done) {
+        // A completed todo is stored as "x <completionDate> <creationDate>":
+        // the first optional date is the completion date, the second the
+        // creation date. A lone date is therefore a completion date.
+        this.completionDate = completionDate
+          ? new Date(completionDate)
           : undefined;
-      this.creationDate =
-        match.groups.creationDate || match.groups.completionDate
-          ? new Date(match.groups.creationDate || match.groups.completionDate)
-          : undefined;
+        this.creationDate = creationDate ? new Date(creationDate) : undefined;
+      } else {
+        // An open todo has no completion date; a lone date is its creation
+        // date.
+        const date = creationDate ?? completionDate;
+        this.creationDate = date ? new Date(date) : undefined;
+        this.completionDate = undefined;
+      }
       this.priority = match.groups.prio as UpperCaseLetter;
       text = match.groups.rest as string;
       this.state = match.groups.done ? TodoStateEnum.done : TodoStateEnum.todo;
@@ -82,14 +92,21 @@ export class Todo {
     }
   }
   toString() {
+    // Completed todos must be serialized as
+    // "x [priority] <completionDate> <creationDate> <text> [tags]" so that
+    // TODO_REGEX parses the dates back into the same fields. Open todos only
+    // carry a creation date.
+    const dates: string[] = [];
+    if (this.isDone()) {
+      if (this.completionDate) dates.push(formatDate(this.completionDate));
+      if (this.creationDate) dates.push(formatDate(this.creationDate));
+    } else if (this.creationDate) {
+      dates.push(formatDate(this.creationDate));
+    }
+
     return (this.isDone() ? "x " : "") +
       (this.priority ? `(${this.priority}) ` : "") +
-      (this.creationDate
-        ? this.creationDate!.toISOString().substring(0, 10) + " "
-        : "") +
-      (this.completionDate
-        ? this.completionDate!.toISOString().substring(0, 10) + " "
-        : "") +
+      dates.map((date) => date + " ").join("") +
       this.text +
       (Object.keys(this.tags).length > 0 ? " " : "") +
       (Object.keys(this.tags).map((k) => k + ":" + this.tags[k]).join(" "));
@@ -98,9 +115,10 @@ export class Todo {
   toDisplayString() {
     return (this.isDone() ? "x " : "") +
       (this.priority ? `(${this.priority}) ` : "") +
-      // Creation date is intentionally omitted
-      (this.completionDate
-        ? this.completionDate!.toISOString().substring(0, 10) + " "
+      // Creation dates are omitted from the display string. Only a completed
+      // todo shows a date and it is always its completion date.
+      (this.isDone() && this.completionDate
+        ? formatDate(this.completionDate) + " "
         : "") +
       this.text +
       (Object.keys(this.tags).length > 0 ? " " : "") +

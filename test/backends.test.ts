@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
 import { Todo } from "../logic/todo.ts";
+import { deleteTodoHandler } from "../server.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -46,6 +47,29 @@ describe("LocalFileBackend", () => {
       "x second",
     ]);
     expect(await readFile(filename, "utf8")).toBe("first @home\nx second\n");
+  });
+
+  it("keeps a completed todo's hash when another todo is deleted", async () => {
+    const filename = join(await makeTempDirectory(), "todo.txt");
+    const completedLine = "x 2024-06-02 2024-06-01 Completed task";
+    await writeFile(filename, `${completedLine}\nOpen task\n`, "utf8");
+
+    const backend = new LocalFileBackend(filename);
+    const before = [...await backend.load()];
+    const completedBefore = before.find((todo) => todo.isDone())!;
+    const openBefore = before.find((todo) => !todo.isDone())!;
+    const completedHash = await completedBefore.getHash();
+
+    const result = await deleteTodoHandler(backend, {
+      hash: await openBefore.getHash(),
+    });
+    expect(result).not.toMatchObject({ isError: true });
+
+    const reloaded = [...await backend.load()];
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].toString()).toBe(completedLine);
+    expect(await reloaded[0].getHash()).toBe(completedHash);
+    expect(await readFile(filename, "utf8")).toBe(`${completedLine}\n`);
   });
 });
 
