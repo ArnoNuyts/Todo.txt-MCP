@@ -1,3 +1,5 @@
+import { ToolFailure } from "./tool-errors.ts";
+
 export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_TODOS = 10_000;
 
@@ -55,9 +57,11 @@ export function assertFileSizeWithinLimit(
   maxFileBytes: number,
 ): void {
   if (byteLength > maxFileBytes) {
-    throw new Error(
+    throw new ToolFailure(
+      "LIMIT_EXCEEDED",
       `${source} is too large: ${byteLength} bytes exceeds the ` +
         `${maxFileBytes}-byte limit set by TODOTXT_MCP_MAX_FILE_BYTES.`,
+      { byteLength, maxFileBytes },
     );
   }
 }

@@ -1,4 +1,7 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
@@ -50,8 +53,24 @@ import { LocalFileBackend } from "./logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "./logic/backends/webdav-backend.ts";
 import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
-import { resolveMaxTodos } from "./logic/limits.ts";
+import { resolveMaxTodos, resolveMaxFileBytes } from "./logic/limits.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
+import {
+  computeContentVersion,
+  diffTodoContent,
+  parseTodoContent,
+  serializeTodoContent,
+} from "./logic/content.ts";
+import { summarizeTodos } from "./logic/summary.ts";
+import {
+  guardTool,
+  isToolError,
+  missingHashFailure,
+  notFoundError,
+  toolError,
+  type BatchFailure,
+  type BatchResult,
+} from "./logic/tool-errors.ts";
 
 // Schemas
 export const AddTodosSchema = z.object({
@@ -162,6 +181,9 @@ export const DeleteTodosSchema = z.object({
   hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
     "Hashes of the todos to delete",
   ),
+  dryRun: z.boolean().optional().describe(
+    "When true, report what would be deleted without writing to the backend",
+  ),
 });
 
 export const DeleteCompletedSchema = z.object({
@@ -171,6 +193,41 @@ export const DeleteCompletedSchema = z.object({
   context: z.string().min(1).max(100).optional().describe(
     "Only delete todos in this context; the leading '@' is optional and " +
       "matching is case-insensitive",
+  ),
+  dryRun: z.boolean().optional().describe(
+    "When true, report what would be deleted without writing to the backend",
+  ),
+});
+
+export const GetTodoSchema = z.object({
+  hash: z.string().min(8).max(64).describe("Hash of the todo to fetch"),
+});
+
+export const SummarySchema = z.object({});
+
+export const ExportTodosSchema = z.object({});
+
+export const ChangesSinceSchema = z.object({
+  version: z.string().min(1).max(128).describe(
+    "Content version returned by a previous list_todos, get_todo, summary or " +
+      "export_todos response",
+  ),
+});
+
+export const ImportTodosSchema = z.object({
+  content: z.string().describe(
+    "todo.txt content to import, one todo per line",
+  ),
+  mode: z.enum(["merge", "replace"]).describe(
+    "Import mode: 'merge' appends the imported todos, 'replace' overwrites " +
+      "the whole file with the imported content",
+  ),
+  expectedVersion: z.string().min(1).max(128).optional().describe(
+    "Only import when the current content version matches; a mismatch fails " +
+      "with a CONFLICT error",
+  ),
+  dryRun: z.boolean().optional().describe(
+    "When true, return the diff summary without writing to the backend",
   ),
 });
 
@@ -207,6 +264,25 @@ export const ListTodosOutputShape = {
   total: z.number().int(),
   nextOffset: z.number().int().nullable(),
   nextCursor: z.string().nullable(),
+  version: z.string(),
+};
+
+const BatchFailureShape = z.object({
+  hash: z.string(),
+  code: z.enum([
+    "TODO_NOT_FOUND",
+    "INVALID_ARGUMENT",
+    "LIMIT_EXCEEDED",
+    "CONFLICT",
+    "BACKEND_ERROR",
+    "UNSUPPORTED",
+  ]),
+  message: z.string(),
+});
+
+const BatchOutputFields = {
+  succeeded: z.array(z.object(TodoSummaryShape)),
+  failed: z.array(BatchFailureShape),
 };
 
 const AddTodosOutputShape = {
@@ -217,21 +293,71 @@ const AddTodosOutputShape = {
 const UpdateTodosOutputShape = {
   edited: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
+  ...BatchOutputFields,
 };
 
 const DeleteTodosOutputShape = {
   deleted: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
+  ...BatchOutputFields,
+  dryRun: z.boolean().optional(),
 };
 
 const SetTodoStatusesOutputShape = {
   updated: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
+  ...BatchOutputFields,
 };
 
 const DeleteCompletedOutputShape = {
   deletedCount: z.number().int(),
   hashes: z.array(z.string()),
+  dryRun: z.boolean().optional(),
+};
+
+const GetTodoOutputShape = {
+  todo: z.object(TodoOutputShape),
+  version: z.string(),
+};
+
+const SummaryOutputShape = {
+  version: z.string(),
+  total: z.number().int(),
+  open: z.number().int(),
+  done: z.number().int(),
+  overdue: z.number().int(),
+  status: z.object({
+    todo: z.number().int(),
+    done: z.number().int(),
+  }),
+  contexts: z.record(z.string(), z.number().int()),
+  projects: z.record(z.string(), z.number().int()),
+  priorities: z.record(z.string(), z.number().int()),
+};
+
+const ExportTodosOutputShape = {
+  content: z.string(),
+  version: z.string(),
+};
+
+const ChangesSinceOutputShape = {
+  changed: z.boolean(),
+  version: z.string(),
+  content: z.string().optional(),
+};
+
+const ImportTodosOutputShape = {
+  dryRun: z.boolean(),
+  mode: z.enum(["merge", "replace"]),
+  changed: z.boolean(),
+  version: z.string(),
+  total: z.number().int(),
+  importedCount: z.number().int(),
+  diff: z.object({
+    added: z.number().int(),
+    removed: z.number().int(),
+    unchanged: z.number().int(),
+  }),
 };
 
 /** @deprecated Kept so the deprecated `add_todo` alias keeps its old name. */
@@ -305,6 +431,24 @@ async function summarizeTodo(todo: Todo) {
   };
 }
 
+async function summarizeTodoDetail(todo: Todo) {
+  return {
+    ...await summarizeTodo(todo),
+    priority: todo.priority,
+    creationDate: todo.creationDate?.toISOString().substring(0, 10),
+    completionDate: todo.completionDate?.toISOString().substring(0, 10),
+  };
+}
+
+/** Shared `succeeded`/`failed` fields for partially successful batches. */
+function batchFields(
+  succeeded: Awaited<ReturnType<typeof summarizeTodo>>[],
+  missing: string[],
+): BatchResult<Awaited<ReturnType<typeof summarizeTodo>>> {
+  const failed: BatchFailure[] = missing.map(missingHashFailure);
+  return { succeeded, failed };
+}
+
 function todoHasContext(todo: Todo, context: string): boolean {
   for (const todoContext of todo.contexts) {
     if (todoContext.toLowerCase() === context) {
@@ -317,18 +461,8 @@ function todoHasContext(todo: Todo, context: string): boolean {
   return new RegExp(`(?:^|\\s)@${escaped}(?=$|\\s)`, "i").test(todo.text);
 }
 
-function notFoundResult() {
-  return {
-    isError: true as const,
-    content: [{
-      type: "text" as const,
-      text: "Todo not found (file modified?)",
-    }],
-  };
-}
-
 // Tool: add_todos handler
-export async function addTodosHandler(
+async function addTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
@@ -408,30 +542,30 @@ export async function addTodosHandler(
     }
 
     if (onDuplicate === "error" && duplicates.length > 0) {
-      return {
-        isError: true as const,
-        content: [{
-          type: "text" as const,
-          text: `Cannot add ${duplicates.length} duplicate todo(s) ` +
-            `(onDuplicate: "error"): ${duplicates.join(", ")}. ` +
-            `Nothing was saved.`,
-        }],
-      };
+      return toolError(
+        "CONFLICT",
+        `Cannot add ${duplicates.length} duplicate todo(s) ` +
+          `(onDuplicate: "error"): ${duplicates.join(", ")}. ` +
+          `Nothing was saved.`,
+        { duplicates },
+      );
     }
 
     // Enforce the total-size cap before mutating anything so a rejected add
     // never partially writes to the backend.
     const maxTodos = resolveMaxTodos();
     if (todos.length + toAdd.length > maxTodos) {
-      return {
-        isError: true as const,
-        content: [{
-          type: "text" as const,
-          text: `Cannot add ${toAdd.length} todo(s): the file already ` +
-            `contains ${todos.length} and the limit is ${maxTodos} todos ` +
-            `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
-        }],
-      };
+      return toolError(
+        "LIMIT_EXCEEDED",
+        `Cannot add ${toAdd.length} todo(s): the file already ` +
+          `contains ${todos.length} and the limit is ${maxTodos} todos ` +
+          `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
+        {
+          maxTodos,
+          currentCount: todos.length,
+          requestedCount: toAdd.length,
+        },
+      );
     }
 
     for (const todo of toAdd) {
@@ -459,10 +593,14 @@ export async function addTodosHandler(
   });
 }
 
+export function addTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => addTodosOperation(backend, rawArgs));
+}
+
 /** @deprecated Use {@link addTodosHandler}; kept for the `add_todo` alias. */
 export const addTodoHandler = addTodosHandler;
 
-export async function updateTodosHandler(
+async function updateTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
@@ -507,21 +645,30 @@ export async function updateTodosHandler(
           text: results.join("\n"),
         },
       ],
-      structuredContent: { edited, missing },
+      structuredContent: {
+        edited,
+        missing,
+        ...batchFields(edited, missing),
+      },
     };
   });
+}
+
+export function updateTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => updateTodosOperation(backend, rawArgs));
 }
 
 /** @deprecated Use {@link updateTodosHandler}; kept for the `edit_todo` alias. */
 export const editTodoHandler = updateTodosHandler;
 
-export async function listTodosHandler(
+async function listTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
   const args = ListTodosSchema.parse(rawArgs);
   const { limit = 50, offset = 0, cursor, format = "both" } = args;
   const allTodos = await backend.load();
+  const version = computeContentVersion(allTodos);
 
   // Status, search, context, project, priority, tag and date filters all
   // combine with AND. Sorting preserves file order by default.
@@ -536,12 +683,7 @@ export async function listTodosHandler(
   const pagedTodos = filteredTodos.slice(start, start + limit);
 
   const todoEntries = await Promise.all(
-    pagedTodos.map(async (todo) => ({
-      ...await summarizeTodo(todo),
-      priority: todo.priority,
-      creationDate: todo.creationDate?.toISOString().substring(0, 10),
-      completionDate: todo.completionDate?.toISOString().substring(0, 10),
-    })),
+    pagedTodos.map(summarizeTodoDetail),
   );
 
   const todoStrings = todoEntries.map(({ hash, text }) =>
@@ -560,6 +702,7 @@ export async function listTodosHandler(
     total: filteredTodos.length,
     nextOffset,
     nextCursor,
+    version,
   };
 
   const text = todoStrings.length > 0
@@ -585,8 +728,12 @@ export async function listTodosHandler(
   };
 }
 
+export function listTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => listTodosOperation(backend, rawArgs));
+}
+
 // Tool: set_todo_statuses handler
-export async function setTodoStatusesHandler(
+async function setTodoStatusesOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
@@ -646,9 +793,20 @@ export async function setTodoStatusesHandler(
             : "No matching todos found.",
         },
       ],
-      structuredContent: { updated, missing },
+      structuredContent: {
+        updated,
+        missing,
+        ...batchFields(updated, missing),
+      },
     };
   });
+}
+
+export function setTodoStatusesHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => setTodoStatusesOperation(backend, rawArgs));
 }
 
 /** @deprecated Use {@link setTodoStatusesHandler}; kept for the alias. */
@@ -656,40 +814,42 @@ export async function setTodoStatusHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hash, status } = SetTodoStatusSchema.parse(rawArgs);
-  const result = await setTodoStatusesHandler(backend, {
-    hashes: [hash],
-    status,
-  });
-
-  if (!("structuredContent" in result)) {
-    return result;
-  }
-
-  const updated = result.structuredContent.updated[0];
-  if (updated === undefined) {
-    return notFoundResult();
-  }
-
-  return {
-    content: [{
-      type: "text" as const,
-      text: `Set todo [${updated.hash}] status to ${status}: ${updated.text}`,
-    }],
-    structuredContent: {
-      hash: updated.hash,
+  return guardTool(async () => {
+    const { hash, status } = SetTodoStatusSchema.parse(rawArgs);
+    const result = await setTodoStatusesHandler(backend, {
+      hashes: [hash],
       status,
-      text: updated.text,
-    },
-  };
+    });
+
+    if (isToolError(result)) {
+      return result;
+    }
+
+    const updated = result.structuredContent.updated[0];
+    if (updated === undefined) {
+      return notFoundError(hash);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Set todo [${updated.hash}] status to ${status}: ${updated.text}`,
+      }],
+      structuredContent: {
+        hash: updated.hash,
+        status,
+        text: updated.text,
+      },
+    };
+  });
 }
 
 // Tool: delete_todos handler
-export async function deleteTodosHandler(
+async function deleteTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hashes } = DeleteTodosSchema.parse(rawArgs);
+  const { hashes, dryRun = false } = DeleteTodosSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -713,13 +873,17 @@ export async function deleteTodosHandler(
       deleted.push(await summarizeTodo(todo));
     }
 
-    // Nothing matched: leave the backend untouched.
-    if (toDelete.size > 0) {
+    // Nothing matched (or this is a dry run): leave the backend untouched.
+    if (toDelete.size > 0 && !dryRun) {
       await backend.save(todos.filter((todo) => !toDelete.has(todo)));
     }
 
     const results = [
-      ...deleted.map(({ hash, text }) => `Deleted todo [${hash}]: ${text}`),
+      ...deleted.map(({ hash, text }) =>
+        dryRun
+          ? `Would delete todo [${hash}]: ${text}`
+          : `Deleted todo [${hash}]: ${text}`
+      ),
       ...missing.map((hash) => `Todo with hash ${hash} not found.`),
     ];
 
@@ -728,11 +892,22 @@ export async function deleteTodosHandler(
         type: "text" as const,
         text: results.length > 0
           ? results.join("\n")
+          : dryRun
+          ? "No matching todos found. Nothing would be deleted."
           : "No matching todos found. Nothing was deleted.",
       }],
-      structuredContent: { deleted, missing },
+      structuredContent: {
+        deleted,
+        missing,
+        ...batchFields(deleted, missing),
+        ...(dryRun ? { dryRun: true } : {}),
+      },
     };
   });
+}
+
+export function deleteTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => deleteTodosOperation(backend, rawArgs));
 }
 
 /** @deprecated Use {@link deleteTodosHandler}; kept for the `delete_todo` alias. */
@@ -740,32 +915,36 @@ export async function deleteTodoHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hash } = DeleteTodoSchema.parse(rawArgs);
-  const result = await deleteTodosHandler(backend, { hashes: [hash] });
+  return guardTool(async () => {
+    const { hash } = DeleteTodoSchema.parse(rawArgs);
+    const result = await deleteTodosHandler(backend, { hashes: [hash] });
 
-  if (!("structuredContent" in result)) {
-    return result;
-  }
+    if (isToolError(result)) {
+      return result;
+    }
 
-  if (result.structuredContent.deleted.length === 0) {
-    return notFoundResult();
-  }
+    if (result.structuredContent.deleted.length === 0) {
+      return notFoundError(hash);
+    }
 
-  return {
-    content: [{
-      type: "text" as const,
-      text: `Deleted todo [${hash}]`,
-    }],
-    structuredContent: { deleted: true as const, hash },
-  };
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Deleted todo [${hash}]`,
+      }],
+      structuredContent: { deleted: true as const, hash },
+    };
+  });
 }
 
 // Tool: delete_completed handler
-export async function deleteCompletedHandler(
+async function deleteCompletedOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { before, context } = DeleteCompletedSchema.parse(rawArgs);
+  const { before, context, dryRun = false } = DeleteCompletedSchema.parse(
+    rawArgs,
+  );
   const normalizedContext = context?.replace(/^@/, "").toLowerCase();
   const beforeTime = before === undefined
     ? undefined
@@ -790,21 +969,240 @@ export async function deleteCompletedHandler(
       }
     }
 
-    if (hashes.length > 0) {
+    if (hashes.length > 0 && !dryRun) {
       await backend.save(remaining);
     }
+
+    const action = dryRun ? "Would delete" : "Deleted";
+    const text = hashes.length > 0
+      ? `${action} ${hashes.length} completed todo(s):\n` +
+        hashes.map((hash) => `[${hash}]`).join("\n")
+      : dryRun
+      ? "No completed todos matched. Nothing would be deleted."
+      : "No completed todos matched. Nothing was deleted.";
 
     return {
       content: [{
         type: "text" as const,
-        text: hashes.length > 0
-          ? `Deleted ${hashes.length} completed todo(s):\n` +
-            hashes.map((hash) => `[${hash}]`).join("\n")
-          : "No completed todos matched. Nothing was deleted.",
+        text,
       }],
-      structuredContent: { deletedCount: hashes.length, hashes },
+      structuredContent: {
+        deletedCount: hashes.length,
+        hashes,
+        ...(dryRun ? { dryRun: true } : {}),
+      },
     };
   });
+}
+
+export function deleteCompletedHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => deleteCompletedOperation(backend, rawArgs));
+}
+
+// Tool: get_todo handler
+async function getTodoOperation(backend: TodoBackend, rawArgs: unknown) {
+  const { hash } = GetTodoSchema.parse(rawArgs);
+  const todos = await backend.load();
+  const version = computeContentVersion(todos);
+
+  for (const todo of todos) {
+    if (await todo.getHash() === hash) {
+      const summary = await summarizeTodoDetail(todo);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `[${hash}] ${summary.text}`,
+        }],
+        structuredContent: { todo: summary, version },
+      };
+    }
+  }
+
+  return notFoundError(hash);
+}
+
+export function getTodoHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => getTodoOperation(backend, rawArgs));
+}
+
+// Tool: summary handler
+async function summaryOperation(backend: TodoBackend, rawArgs: unknown) {
+  SummarySchema.parse(rawArgs ?? {});
+  const todos = await backend.load();
+  const version = computeContentVersion(todos);
+  const report = summarizeTodos(todos);
+
+  const lines = [
+    `${report.total} todos (${report.open} open, ${report.done} done, ` +
+    `${report.overdue} overdue)`,
+  ];
+  for (const [label, counts] of [
+    ["Contexts", report.contexts],
+    ["Projects", report.projects],
+    ["Priorities", report.priorities],
+  ] as const) {
+    const entries = Object.entries(counts);
+    if (entries.length > 0) {
+      lines.push(
+        `${label}: ${
+          entries.map(([name, count]) => `${name}=${count}`).join(", ")
+        }`,
+      );
+    }
+  }
+
+  return {
+    content: [{ type: "text" as const, text: lines.join("\n") }],
+    structuredContent: { version, ...report },
+  };
+}
+
+export function summaryHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => summaryOperation(backend, rawArgs));
+}
+
+// Tool: export_todos handler
+async function exportTodosOperation(backend: TodoBackend, rawArgs: unknown) {
+  ExportTodosSchema.parse(rawArgs ?? {});
+  const todos = await backend.load();
+  const content = serializeTodoContent(todos);
+  const version = computeContentVersion(todos);
+
+  return {
+    content: [{ type: "text" as const, text: content }],
+    structuredContent: { content, version },
+  };
+}
+
+export function exportTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => exportTodosOperation(backend, rawArgs));
+}
+
+// Tool: changes_since handler
+async function changesSinceOperation(backend: TodoBackend, rawArgs: unknown) {
+  const { version } = ChangesSinceSchema.parse(rawArgs);
+  const todos = await backend.load();
+  const currentVersion = computeContentVersion(todos);
+
+  if (currentVersion === version) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `No changes since version ${version}.`,
+      }],
+      structuredContent: { changed: false, version: currentVersion },
+    };
+  }
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Todo file changed. Current version: ${currentVersion}.`,
+    }],
+    structuredContent: {
+      changed: true,
+      version: currentVersion,
+      content: serializeTodoContent(todos),
+    },
+  };
+}
+
+export function changesSinceHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => changesSinceOperation(backend, rawArgs));
+}
+
+// Tool: import_todos handler
+async function importTodosOperation(backend: TodoBackend, rawArgs: unknown) {
+  const {
+    content,
+    mode,
+    expectedVersion,
+    dryRun = false,
+  } = ImportTodosSchema.parse(rawArgs);
+
+  const maxFileBytes = resolveMaxFileBytes();
+  const byteLength = Buffer.byteLength(content, "utf8");
+  if (byteLength > maxFileBytes) {
+    return toolError(
+      "LIMIT_EXCEEDED",
+      `Cannot import ${byteLength} bytes: the limit is ${maxFileBytes} ` +
+        `bytes (TODOTXT_MCP_MAX_FILE_BYTES). Nothing was saved.`,
+      { byteLength, maxFileBytes },
+    );
+  }
+
+  const imported = parseTodoContent(content);
+  const maxTodos = resolveMaxTodos();
+  if (imported.length > maxTodos) {
+    return toolError(
+      "LIMIT_EXCEEDED",
+      `Cannot import ${imported.length} todo(s): the limit is ${maxTodos} ` +
+        `todos (TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
+      { count: imported.length, maxTodos },
+    );
+  }
+
+  return await withBackendLock(backend, async () => {
+    const current = await backend.load();
+    const currentVersion = computeContentVersion(current);
+
+    if (
+      expectedVersion !== undefined && expectedVersion !== currentVersion
+    ) {
+      return toolError(
+        "CONFLICT",
+        `Version conflict: expected ${expectedVersion} but the current ` +
+          `version is ${currentVersion}. Nothing was imported.`,
+        { expectedVersion, currentVersion },
+      );
+    }
+
+    const next = mode === "replace" ? imported : [...current, ...imported];
+    if (next.length > maxTodos) {
+      return toolError(
+        "LIMIT_EXCEEDED",
+        `Cannot import: the result would contain ${next.length} todo(s), ` +
+          `which exceeds the limit of ${maxTodos} (TODOTXT_MCP_MAX_TODOS). ` +
+          `Nothing was saved.`,
+        { count: next.length, maxTodos },
+      );
+    }
+
+    const diff = diffTodoContent(current, next);
+    const changed = diff.added > 0 || diff.removed > 0;
+
+    if (changed && !dryRun) {
+      await backend.save(next);
+    }
+
+    const text = dryRun
+      ? `Dry run (${mode}): would add ${diff.added}, remove ${diff.removed}, ` +
+        `keep ${diff.unchanged} unchanged todo(s). Nothing was saved.`
+      : changed
+      ? `Imported ${imported.length} todo(s) (${mode}): added ${diff.added}, ` +
+        `removed ${diff.removed}.`
+      : `No changes: imported content matches the current todos.`;
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: {
+        dryRun,
+        mode,
+        changed,
+        version: dryRun ? currentVersion : computeContentVersion(next),
+        total: next.length,
+        importedCount: imported.length,
+        diff,
+      },
+    };
+  });
+}
+
+export function importTodosHandler(backend: TodoBackend, rawArgs: unknown) {
+  return guardTool(() => importTodosOperation(backend, rawArgs));
 }
 
 export interface CreateTodoMcpServerOptions {
@@ -863,6 +1261,68 @@ export function createTodoMcpServer(
     }),
   );
 
+  // Read-only MCP resources. They always load through the backend and never
+  // mutate it, so they are available in read-only mode too.
+  const textResource = (uri: URL, text: string) => ({
+    contents: [{ uri: uri.href, mimeType: "text/plain" as const, text }],
+  });
+
+  server.registerResource(
+    "todo-file",
+    "todo://file",
+    {
+      title: "todo.txt",
+      description: "The complete todo.txt file.",
+      mimeType: "text/plain",
+    },
+    async (uri) => {
+      const todos = await backend.load();
+      return textResource(uri, serializeTodoContent(todos));
+    },
+  );
+
+  server.registerResource(
+    "todo-active",
+    "todo://active",
+    {
+      title: "Active todos",
+      description: "Open todos only, one per line.",
+      mimeType: "text/plain",
+    },
+    async (uri) => {
+      const todos = await backend.load();
+      return textResource(
+        uri,
+        serializeTodoContent(todos.filter((todo) => !todo.isDone())),
+      );
+    },
+  );
+
+  server.registerResource(
+    "todo-context",
+    new ResourceTemplate("todo://context/{name}", { list: undefined }),
+    {
+      title: "Todos in a context",
+      description: "Open todos in one @context, one per line.",
+      mimeType: "text/plain",
+    },
+    async (uri, variables) => {
+      const rawName = String(variables.name ?? "");
+      let context = rawName;
+      try {
+        context = decodeURIComponent(rawName);
+      } catch {
+        // Keep the raw value when it is not valid percent-encoding.
+      }
+      const todos = await backend.load();
+      const normalized = context.replace(/^@/, "").toLowerCase();
+      const matching = todos.filter((todo) =>
+        !todo.isDone() && todoHasContext(todo, normalized)
+      );
+      return textResource(uri, serializeTodoContent(matching));
+    },
+  );
+
   // Tool: list_todos
   // No `outputSchema` is declared: the `format: "text"` mode returns no
   // structured content, which the MCP SDK rejects when an output schema is
@@ -873,7 +1333,8 @@ export function createTodoMcpServer(
     {
       description:
         "List todos with optional status, search, context, project, priority, " +
-        "tag, date, sort, limit, offset, and cursor filters.",
+        "tag, date, sort, limit, offset, and cursor filters. Responses include " +
+        "the current content version.",
       inputSchema: ListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
@@ -940,7 +1401,8 @@ export function createTodoMcpServer(
     "delete_todos",
     {
       description:
-        "Delete todos by hash in one batch. Loads and saves the backend once.",
+        "Delete todos by hash in one batch. Loads and saves the backend once. " +
+        "Pass dryRun to preview the deletion without writing.",
       inputSchema: DeleteTodosSchema.shape,
       outputSchema: DeleteTodosOutputShape,
       annotations: {
@@ -957,7 +1419,7 @@ export function createTodoMcpServer(
     {
       description:
         "Delete completed todos, optionally only those completed before a " +
-        "date and/or in a context.",
+        "date and/or in a context. Pass dryRun to preview without writing.",
       inputSchema: DeleteCompletedSchema.shape,
       outputSchema: DeleteCompletedOutputShape,
       annotations: {
@@ -966,6 +1428,77 @@ export function createTodoMcpServer(
       },
     },
     (rawArgs: unknown) => deleteCompletedHandler(backend, rawArgs),
+  );
+
+  // Tool: get_todo
+  server.registerTool(
+    "get_todo",
+    {
+      description:
+        "Fetch a single todo by hash, including its content version.",
+      inputSchema: GetTodoSchema.shape,
+      outputSchema: GetTodoOutputShape,
+      annotations: { readOnlyHint: true },
+    },
+    (rawArgs: unknown) => getTodoHandler(backend, rawArgs),
+  );
+
+  // Tool: summary
+  server.registerTool(
+    "summary",
+    {
+      description:
+        "Summarize todo counts by status, context, project and priority, " +
+        "plus the number of overdue open todos.",
+      inputSchema: SummarySchema.shape,
+      outputSchema: SummaryOutputShape,
+      annotations: { readOnlyHint: true },
+    },
+    (rawArgs: unknown) => summaryHandler(backend, rawArgs),
+  );
+
+  // Tool: export_todos
+  server.registerTool(
+    "export_todos",
+    {
+      description:
+        "Export the whole todo.txt content together with its content version.",
+      inputSchema: ExportTodosSchema.shape,
+      outputSchema: ExportTodosOutputShape,
+      annotations: { readOnlyHint: true },
+    },
+    (rawArgs: unknown) => exportTodosHandler(backend, rawArgs),
+  );
+
+  // Tool: changes_since
+  server.registerTool(
+    "changes_since",
+    {
+      description:
+        "Report whether the todo file changed since a version. When it did, " +
+        "the current content is included.",
+      inputSchema: ChangesSinceSchema.shape,
+      outputSchema: ChangesSinceOutputShape,
+      annotations: { readOnlyHint: true },
+    },
+    (rawArgs: unknown) => changesSinceHandler(backend, rawArgs),
+  );
+
+  // Tool: import_todos
+  server.registerTool(
+    "import_todos",
+    {
+      description:
+        "Import todo.txt content in merge or replace mode, optionally guarded " +
+        "by an expected content version. Supports a dry run diff.",
+      inputSchema: ImportTodosSchema.shape,
+      outputSchema: ImportTodosOutputShape,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: false,
+      },
+    },
+    (rawArgs: unknown) => importTodosHandler(backend, rawArgs),
   );
 
   // Deprecated aliases: delegate to the canonical handlers so existing

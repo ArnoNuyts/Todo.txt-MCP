@@ -163,7 +163,8 @@ guidance.
 
 ## 🔧 Available Tools
 
-- `list_todos` — list, filter, search, and paginate todos.
+- `list_todos` — list, filter, search, and paginate todos. Responses include
+  the current content `version`.
 - `add_todos` — add one or more todos. Accepts `onDuplicate`
   (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
   stored as an `idem:<key>` tag so retries return the previously added todos.
@@ -171,8 +172,33 @@ guidance.
 - `set_todo_statuses` — mark a batch of todos done or active with one
   load/save cycle.
 - `delete_todos` — delete a batch of todos by hash with one load/save cycle.
+  Pass `dryRun: true` to preview the deletion without writing.
 - `delete_completed` — delete completed todos, optionally filtered by
-  `before: "YYYY-MM-DD"` and/or `context`.
+  `before: "YYYY-MM-DD"` and/or `context`. Supports `dryRun`.
+- `get_todo` — fetch one todo and the current content `version`.
+- `summary` — counts by status, context, project, and priority, plus overdue.
+- `export_todos` — return the whole todo.txt `content` and its `version`.
+- `changes_since` — compare a known `version` with the current one; when it
+  changed, the new content is included.
+- `import_todos` — import todo.txt content in `merge` or `replace` mode.
+  Supports `expectedVersion` (a mismatch fails with `CONFLICT`) and `dryRun`,
+  which returns an add/remove/unchanged diff without writing.
+
+Batch tools return `succeeded` and `failed` arrays alongside their legacy
+`edited`/`updated`/`deleted`/`missing` fields. A missing hash is reported with
+the `TODO_NOT_FOUND` code and a hint to refresh hashes with `list_todos`.
+
+Failures return `isError: true` with a stable machine-readable code in
+`structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
+`LIMIT_EXCEEDED`, `CONFLICT`, `BACKEND_ERROR`, or `UNSUPPORTED`.
+
+### MCP resources
+
+Read-only resources are always available, including in read-only mode:
+
+- `todo://file` — the complete todo.txt content.
+- `todo://active` — open todos only.
+- `todo://context/{name}` — open todos in one `@context`.
 
 The former singular tool names (`add_todo`, `edit_todo`, `set_todo_status`,
 `delete_todo`) remain registered as deprecated aliases that delegate to the

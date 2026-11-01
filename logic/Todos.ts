@@ -1,5 +1,6 @@
 import { Todo } from "./todo.ts";
 import { TodoStateEnum } from "../types/enums.ts";
+import { ToolFailure } from "./tool-errors.ts";
 
 export type TodoSortOrder = "creation" | "completion" | "priority" | "text";
 
@@ -199,11 +200,11 @@ export function decodeListCursor(cursor: string): number {
   const decoded = Buffer.from(cursor, "base64url").toString("utf8");
   const match = /^offset:(\d+)$/.exec(decoded);
   if (match === null) {
-    throw new Error("Invalid cursor");
+    throw new ToolFailure("INVALID_ARGUMENT", "Invalid cursor");
   }
   const offset = Number(match[1]);
   if (!Number.isSafeInteger(offset)) {
-    throw new Error("Invalid cursor");
+    throw new ToolFailure("INVALID_ARGUMENT", "Invalid cursor");
   }
   return offset;
 }
