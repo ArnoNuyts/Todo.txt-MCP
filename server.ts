@@ -1297,7 +1297,7 @@ export function createTodoMcpServer(
 
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "2.0.0",
+    version: "2.1.0",
   });
 
   // Register a prompt describing the todo.txt format

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { BackendConflictError } from "./backend-errors.ts";
+import { FileLockTimeoutError } from "./file-lock.ts";
 
 /**
  * Stable error codes returned in `structuredContent.error.code`. Clients can
@@ -108,6 +110,22 @@ export function missingHashFailure(hash: string): BatchFailure {
 export function mapError(error: unknown): ToolErrorResult {
   if (error instanceof ToolFailure) {
     return toolError(error.code, error.message, error.details);
+  }
+
+  if (error instanceof BackendConflictError) {
+    return toolError("CONFLICT", error.message, {
+      ...error.details,
+      hint: "reload with list_todos and retry",
+    });
+  }
+
+  if (error instanceof FileLockTimeoutError) {
+    return toolError("CONFLICT", error.message, {
+      reason: "lock-timeout",
+      lockPath: error.lockPath,
+      timeoutMs: error.timeoutMs,
+      hint: "another writer is busy; retry the operation",
+    });
   }
 
   if (error instanceof z.ZodError) {
