@@ -91,10 +91,30 @@ export const AddTodosSchema = z.object({
   ),
 });
 
+/**
+ * `Todo`'s parser reads a leading `x `, `(A) ` priority, or `YYYY-MM-DD `
+ * date as metadata and re-adds it in `toString()`, so accepting those
+ * prefixes in a body would silently duplicate them. Keep this exactly as
+ * case-sensitive as `TODO_REGEX` in `logic/todo.ts`.
+ */
+const TODO_METADATA_PREFIX_REGEX =
+  /^(?:x\s|\([A-Z]\)\s|\d{4}-[0-1][0-9]-[0-3][0-9]\s)/;
+
+/** Todo body text without the metadata prefixes the parser owns. */
+export const TodoBodySchema = z.string().max(2000).refine(
+  (value) => !TODO_METADATA_PREFIX_REGEX.test(value),
+  "Pass the todo body only: remove the leading 'x ' done marker, '(A) ' " +
+    "priority, or YYYY-MM-DD date. Use set_todo_statuses to change a todo's " +
+    "status.",
+).describe(
+  "The todo body text only. Do not include an 'x ' done marker, a priority " +
+    "like '(A) ', or leading dates; those are managed separately.",
+);
+
 export const UpdateTodosSchema = z.object({
   edits: z.array(z.object({
     hash: z.string().describe("Hash of the todo to edit"),
-    text: z.string().max(2000).describe("New text for the todo"),
+    text: TodoBodySchema,
   })).max(100).describe("An array of todo edits"),
 });
 
@@ -1444,7 +1464,10 @@ export function createTodoMcpServer(
     server.registerTool(
       "update_todos",
       {
-        description: "Edit one or more existing todos by hash.",
+        description:
+          "Edit the body text of one or more existing todos by hash. Pass the " +
+          "body only: status markers, priorities, and dates are managed " +
+          "separately.",
         inputSchema: UpdateTodosSchema.shape,
         ...outputSchema(UpdateTodosOutputShape),
         annotations: {

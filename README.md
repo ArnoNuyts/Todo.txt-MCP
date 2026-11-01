@@ -177,7 +177,9 @@ guidance.
 - `add_todos` — add one or more todos. Accepts `onDuplicate`
   (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
   stored as an `idem:<key>` tag so retries return the previously added todos.
-- `update_todos` — replace the text of one or more todos by hash.
+- `update_todos` — replace the body text of one or more todos by hash. Pass
+  the body only: no `x ` done marker, `(A) ` priority, or leading dates; use
+  `set_todo_statuses` to change status.
 - `set_todo_statuses` — mark a batch of todos done or active with one
   load/save cycle.
 - `delete_todos` — delete a batch of todos by hash with one load/save cycle.
