@@ -717,7 +717,12 @@ async function listTodosOperation(
 
   if (format === "structured") {
     return {
-      content: [{ type: "text" as const, text: `${filteredTodos.length} todos` }],
+      content: [{
+        type: "text" as const,
+        text: filteredTodos.length === 1
+          ? "1 todo"
+          : `${filteredTodos.length} todos`,
+      }],
       structuredContent,
     };
   }
