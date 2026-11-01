@@ -194,6 +194,11 @@ describe("MCP HTTP endpoint", () => {
     expect(listed.result?.tools?.map((tool) => tool.name))
       .toEqual([
         "list_todos",
+        "add_todos",
+        "update_todos",
+        "set_todo_statuses",
+        "delete_todos",
+        "delete_completed",
         "add_todo",
         "edit_todo",
         "set_todo_status",

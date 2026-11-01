@@ -128,7 +128,7 @@ exhaust the process memory:
   (default: `1048576`, i.e. 1 MiB). An oversized file is rejected before it is
   parsed.
 - `TODOTXT_MCP_MAX_TODOS`: Maximum total number of todos (default: `10000`).
-  `add_todo` rejects an add that would exceed this limit and saves nothing.
+  `add_todos` rejects an add that would exceed this limit and saves nothing.
 
 ### File configuration example
 
@@ -164,10 +164,19 @@ guidance.
 ## 🔧 Available Tools
 
 - `list_todos` — list, filter, search, and paginate todos.
-- `add_todo` — add one or more todos.
-- `edit_todo` — replace the text of one or more todos by hash.
-- `set_todo_status` — mark todos done or active.
-- `delete_todo` — delete a todo by hash.
+- `add_todos` — add one or more todos. Accepts `onDuplicate`
+  (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
+  stored as an `idem:<key>` tag so retries return the previously added todos.
+- `update_todos` — replace the text of one or more todos by hash.
+- `set_todo_statuses` — mark a batch of todos done or active with one
+  load/save cycle.
+- `delete_todos` — delete a batch of todos by hash with one load/save cycle.
+- `delete_completed` — delete completed todos, optionally filtered by
+  `before: "YYYY-MM-DD"` and/or `context`.
+
+The former singular tool names (`add_todo`, `edit_todo`, `set_todo_status`,
+`delete_todo`) remain registered as deprecated aliases that delegate to the
+canonical handlers.
 
 ## 🛠️ Testing with MCP Inspector
 
