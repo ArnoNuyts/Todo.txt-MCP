@@ -123,7 +123,7 @@ function assertTodoBody(text: string, index: number) {
     const path = `edits.${index}.text`;
     throw new ToolFailure(
       "INVALID_ARGUMENT",
-      `Invalid arguments: ${path}: ${BODY_ONLY_MESSAGE}.`,
+      `Invalid arguments: ${path}: ${BODY_ONLY_MESSAGE}`,
       { issues: [{ path, message: BODY_ONLY_MESSAGE }] },
     );
   }

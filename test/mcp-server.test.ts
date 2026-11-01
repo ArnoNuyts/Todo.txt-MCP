@@ -573,6 +573,8 @@ describe("createTodoMcpServer", () => {
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error?.code).toBe("INVALID_ARGUMENT");
+    expect(result.structuredContent?.error?.message).not.toContain("..");
+    expect(result.structuredContent?.error?.message).toMatch(/status\.$/);
     expect(backend.getTodos()[0].text).toBe("keep me");
   });
 });
