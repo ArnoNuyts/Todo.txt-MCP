@@ -139,6 +139,11 @@ describe("max total todos cap", () => {
 
     expect(result).toMatchObject({ isError: true });
     expect(result.content[0].text).toContain("limit is 2");
+    expect(
+      (result as {
+        structuredContent?: { error?: { code?: string } };
+      }).structuredContent?.error?.code,
+    ).toBe("LIMIT_EXCEEDED");
     expect(backend.getTodos()).toHaveLength(2);
     expect(saveSpy).not.toHaveBeenCalled();
   });
