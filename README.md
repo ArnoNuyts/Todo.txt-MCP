@@ -201,9 +201,9 @@ guidance.
   Supports `expectedVersion` (a mismatch fails with `CONFLICT`) and `dryRun`,
   which returns an add/remove/unchanged diff without writing.
 
-Batch tools return `succeeded` and `failed` arrays alongside their legacy
-`edited`/`updated`/`deleted`/`missing` fields. A missing hash is reported with
-the `TODO_NOT_FOUND` code and a hint to refresh hashes with `list_todos`.
+Batch tools return `succeeded` and `failed` arrays. A missing hash is reported
+in `failed` with the `TODO_NOT_FOUND` code and a hint to refresh hashes with
+`list_todos`.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,

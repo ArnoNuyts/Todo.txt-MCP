@@ -147,7 +147,6 @@ describe("createTodoMcpServer", () => {
         todos: Array<{
           hash: string;
           text: string;
-          state: number;
           status: string;
         }>;
         total: number;
@@ -161,7 +160,6 @@ describe("createTodoMcpServer", () => {
     expect(listResult.structuredContent?.todos[0]).toMatchObject({
       hash,
       text: "structured todo",
-      state: 1,
       status: "todo",
     });
 
@@ -172,12 +170,12 @@ describe("createTodoMcpServer", () => {
       },
     }) as {
       structuredContent?: {
-        edited: Array<{ hash: string; text: string }>;
-        missing: string[];
+        succeeded: Array<{ hash: string; text: string }>;
+        failed: Array<{ hash: string; code: string }>;
       };
     };
-    expect(editResult.structuredContent?.missing).toEqual([]);
-    const edited = editResult.structuredContent!.edited[0];
+    expect(editResult.structuredContent?.failed).toEqual([]);
+    const edited = editResult.structuredContent!.succeeded[0];
     expect(edited.text).toBe("structured todo edited");
 
     const statusResult = await client.callTool({
@@ -185,12 +183,12 @@ describe("createTodoMcpServer", () => {
       arguments: { hashes: [edited.hash], status: "done" },
     }) as {
       structuredContent?: {
-        updated: Array<{ hash: string; status: string; text: string }>;
-        missing: string[];
+        succeeded: Array<{ hash: string; status: string; text: string }>;
+        failed: Array<{ hash: string; code: string }>;
       };
     };
-    expect(statusResult.structuredContent?.missing).toEqual([]);
-    expect(statusResult.structuredContent?.updated[0]).toMatchObject({
+    expect(statusResult.structuredContent?.failed).toEqual([]);
+    expect(statusResult.structuredContent?.succeeded[0]).toMatchObject({
       status: "done",
       text: expect.stringContaining("structured todo edited"),
     });
@@ -276,18 +274,18 @@ describe("createTodoMcpServer", () => {
     }) as {
       isError?: boolean;
       structuredContent?: {
-        deleted: Array<{ hash: string; text: string }>;
-        missing: string[];
+        succeeded: Array<{ hash: string; text: string }>;
+        failed: Array<{ hash: string; code: string }>;
       };
     };
 
     expect(deleteResult.isError).not.toBe(true);
-    expect(deleteResult.structuredContent?.deleted).toHaveLength(1);
-    expect(deleteResult.structuredContent?.deleted[0]).toMatchObject({
+    expect(deleteResult.structuredContent?.succeeded).toHaveLength(1);
+    expect(deleteResult.structuredContent?.succeeded[0]).toMatchObject({
       hash,
       text: "delete me",
     });
-    expect(deleteResult.structuredContent?.missing).toEqual([]);
+    expect(deleteResult.structuredContent?.failed).toEqual([]);
     expect(textOf(deleteResult)).toBe(`Deleted todo [${hash}]: delete me`);
     expect(backend.getTodos()).toHaveLength(0);
 
@@ -296,12 +294,17 @@ describe("createTodoMcpServer", () => {
       arguments: { hashes: [hash] },
     }) as {
       isError?: boolean;
-      structuredContent?: { deleted: unknown[]; missing: string[] };
+      structuredContent?: {
+        succeeded: unknown[];
+        failed: Array<{ hash: string; code: string }>;
+      };
     };
 
     expect(missingResult.isError).not.toBe(true);
-    expect(missingResult.structuredContent?.deleted).toEqual([]);
-    expect(missingResult.structuredContent?.missing).toEqual([hash]);
+    expect(missingResult.structuredContent?.succeeded).toEqual([]);
+    expect(missingResult.structuredContent?.failed).toEqual([
+      expect.objectContaining({ hash, code: "TODO_NOT_FOUND" }),
+    ]);
     expect(textOf(missingResult)).toBe(`Todo with hash ${hash} not found.`);
   });
 
@@ -320,36 +323,40 @@ describe("createTodoMcpServer", () => {
       arguments: { hashes: [hashes[0], hashes[1], missingHash], status: "done" },
     }) as {
       structuredContent?: {
-        updated: Array<{ hash: string; status: string }>;
-        missing: string[];
+        succeeded: Array<{ hash: string; status: string }>;
+        failed: Array<{ hash: string; code: string }>;
       };
     };
-    expect(statusResult.structuredContent?.updated).toHaveLength(2);
+    expect(statusResult.structuredContent?.succeeded).toHaveLength(2);
     expect(
-      statusResult.structuredContent?.updated.every((todo) =>
+      statusResult.structuredContent?.succeeded.every((todo) =>
         todo.status === "done"
       ),
     ).toBe(true);
-    expect(statusResult.structuredContent?.missing).toEqual([missingHash]);
+    expect(statusResult.structuredContent?.failed).toEqual([
+      expect.objectContaining({ hash: missingHash, code: "TODO_NOT_FOUND" }),
+    ]);
 
     // Completing a todo changes its hash, so delete using the hash returned by
     // the status call instead of the pre-update hash.
-    const completedHash = statusResult.structuredContent!.updated[0].hash;
+    const completedHash = statusResult.structuredContent!.succeeded[0].hash;
     const deleteResult = await client.callTool({
       name: "delete_todos",
       arguments: { hashes: [completedHash, missingHash] },
     }) as {
       structuredContent?: {
-        deleted: Array<{ hash: string; status: string }>;
-        missing: string[];
+        succeeded: Array<{ hash: string; status: string }>;
+        failed: Array<{ hash: string; code: string }>;
       };
     };
-    expect(deleteResult.structuredContent?.deleted).toHaveLength(1);
-    expect(deleteResult.structuredContent?.deleted[0].hash).toBe(
+    expect(deleteResult.structuredContent?.succeeded).toHaveLength(1);
+    expect(deleteResult.structuredContent?.succeeded[0].hash).toBe(
       completedHash,
     );
-    expect(deleteResult.structuredContent?.deleted[0].status).toBe("done");
-    expect(deleteResult.structuredContent?.missing).toEqual([missingHash]);
+    expect(deleteResult.structuredContent?.succeeded[0].status).toBe("done");
+    expect(deleteResult.structuredContent?.failed).toEqual([
+      expect.objectContaining({ hash: missingHash, code: "TODO_NOT_FOUND" }),
+    ]);
     expect(backend.getTodos()).toHaveLength(2);
   });
 

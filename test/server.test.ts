@@ -22,12 +22,17 @@ import { MockBackend } from "./helpers/mock-backend.ts";
 interface TodoSummary {
   hash: string;
   text: string;
-  state: number;
   status: "todo" | "done";
 }
 
 interface UpdatedTodoSummary extends TodoSummary {
   previousHash: string;
+}
+
+interface BatchFailure {
+  hash: string;
+  code: string;
+  message: string;
 }
 
 function structured<T>(result: unknown): T {
@@ -67,7 +72,6 @@ describe("Server tool handlers", () => {
         added: [{
           hash: todo1Hash,
           text: storedTodos[0].toDisplayString(),
-          state: TodoStateEnum.todo,
           status: "todo",
         }],
         skipped: [],
@@ -171,19 +175,10 @@ describe("Server tool handlers", () => {
         `Edited todo [${newHash}]: ${storedTodos[0].toDisplayString()}`,
       );
       expect(result.structuredContent).toEqual({
-        edited: [{
-          hash: newHash,
-          previousHash: hash,
-          text: storedTodos[0].toDisplayString(),
-          state: TodoStateEnum.todo,
-          status: "todo",
-        }],
-        missing: [],
         succeeded: [{
           hash: newHash,
           previousHash: hash,
           text: storedTodos[0].toDisplayString(),
-          state: TodoStateEnum.todo,
           status: "todo",
         }],
         failed: [],
@@ -262,19 +257,10 @@ describe("Server tool handlers", () => {
       expect(storedTodos[0].text).toBe("edited text");
 
       expect(result.structuredContent).toEqual({
-        edited: [{
-          hash: newHash,
-          previousHash: hash,
-          text: storedTodos[0].toDisplayString(),
-          state: TodoStateEnum.todo,
-          status: "todo",
-        }],
-        missing: ["nonexistent"],
         succeeded: [{
           hash: newHash,
           previousHash: hash,
           text: storedTodos[0].toDisplayString(),
-          state: TodoStateEnum.todo,
           status: "todo",
         }],
         failed: [{
@@ -356,7 +342,7 @@ describe("Server tool handlers", () => {
         todo.text === "x Done Task 1"
       );
       expect(done).toBeDefined();
-      expect(done!.state).toBe(TodoStateEnum.done);
+      expect(done!.status).toBe("done");
       expect(done!.hash).toMatch(/^[0-9a-f]{16}$/);
     });
 
@@ -636,15 +622,15 @@ describe("Server tool handlers", () => {
         ],
       });
       const content = structured<
-        { edited: TodoSummary[]; missing: string[] }
+        { succeeded: TodoSummary[]; failed: BatchFailure[] }
       >(result);
 
-      expect(content.edited.map((todo) => todo.text).sort()).toEqual([
+      expect(content.succeeded.map((todo) => todo.text).sort()).toEqual([
         "edited first",
         "edited second",
       ]);
-      expect(content.edited.every((todo) => todo.status === "todo")).toBe(true);
-      expect(content.missing).toEqual([]);
+      expect(content.succeeded.every((todo) => todo.status === "todo")).toBe(true);
+      expect(content.failed).toEqual([]);
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(1);
     });
@@ -704,16 +690,16 @@ describe("Server tool handlers", () => {
         dryRun: true,
       });
       const content = structured<
-        { edited: TodoSummary[]; missing: string[]; dryRun?: boolean }
+        { succeeded: TodoSummary[]; failed: BatchFailure[]; dryRun?: boolean }
       >(result);
 
       expect(content.dryRun).toBe(true);
-      expect(content.missing).toEqual([]);
-      expect(content.edited).toHaveLength(1);
-      expect(content.edited[0].text).toBe("preview only");
-      expect(content.edited[0].hash).not.toBe(hash);
+      expect(content.failed).toEqual([]);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].text).toBe("preview only");
+      expect(content.succeeded[0].hash).not.toBe(hash);
       expect(result.content[0].text).toBe(
-        `Would edit todo [${content.edited[0].hash}]: preview only`,
+        `Would edit todo [${content.succeeded[0].hash}]: preview only`,
       );
 
       // The backend still holds the original, unmutated todo.
@@ -734,12 +720,12 @@ describe("Server tool handlers", () => {
         dryRun: true,
       });
       const content = structured<
-        { edited: TodoSummary[]; missing: string[]; dryRun?: boolean }
+        { succeeded: TodoSummary[]; failed: BatchFailure[]; dryRun?: boolean }
       >(result);
 
       expect(content.dryRun).toBe(true);
-      expect(content.edited).toEqual([]);
-      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(content.succeeded).toEqual([]);
+      expect(content.failed).toEqual([expect.objectContaining({ hash: "0123456789abcdef", code: "TODO_NOT_FOUND" })]);
       expect(result.content[0].text).toBe(
         "Todo with hash 0123456789abcdef not found.",
       );
@@ -756,20 +742,20 @@ describe("Server tool handlers", () => {
       const result = await updateTodosHandler(backend, {
         edits: [{ hash, text: "edited text" }],
       });
-      const content = structured<{ edited: UpdatedTodoSummary[] }>(result);
+      const content = structured<{ succeeded: UpdatedTodoSummary[] }>(result);
       const storedHash = await backend.getTodos()[0].getHash();
 
-      expect(content.edited).toHaveLength(1);
-      expect(content.edited[0].previousHash).toBe(hash);
-      expect(content.edited[0].hash).toBe(storedHash);
-      expect(content.edited[0].hash).not.toBe(hash);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].previousHash).toBe(hash);
+      expect(content.succeeded[0].hash).toBe(storedHash);
+      expect(content.succeeded[0].hash).not.toBe(hash);
     });
 
     it("should allow chaining an edit into a status change", async () => {
       await backend.save([new Todo("chain me")]);
       const hash = await backend.getTodos()[0].getHash();
 
-      const edited = structured<{ edited: UpdatedTodoSummary[] }>(
+      const edited = structured<{ succeeded: UpdatedTodoSummary[] }>(
         await updateTodosHandler(backend, {
           edits: [{ hash, text: "chained edit" }],
         }),
@@ -777,16 +763,16 @@ describe("Server tool handlers", () => {
 
       // No re-list between the two calls: use the hash returned by the edit.
       const statusResult = await setTodoStatusesHandler(backend, {
-        hashes: [edited.edited[0].hash],
+        hashes: [edited.succeeded[0].hash],
         status: "done",
       });
-      const updated = structured<{ updated: UpdatedTodoSummary[] }>(
+      const updated = structured<{ succeeded: UpdatedTodoSummary[] }>(
         statusResult,
       );
 
-      expect(updated.updated).toHaveLength(1);
-      expect(updated.updated[0].previousHash).toBe(edited.edited[0].hash);
-      expect(updated.updated[0].hash).not.toBe(edited.edited[0].hash);
+      expect(updated.succeeded).toHaveLength(1);
+      expect(updated.succeeded[0].previousHash).toBe(edited.succeeded[0].hash);
+      expect(updated.succeeded[0].hash).not.toBe(edited.succeeded[0].hash);
       expect(backend.getTodos()[0].isDone()).toBe(true);
     });
 
@@ -799,11 +785,11 @@ describe("Server tool handlers", () => {
         edits: [{ hash, text: "preview only" }],
         dryRun: true,
       });
-      const content = structured<{ edited: UpdatedTodoSummary[] }>(result);
+      const content = structured<{ succeeded: UpdatedTodoSummary[] }>(result);
 
-      expect(content.edited).toHaveLength(1);
-      expect(content.edited[0].previousHash).toBe(hash);
-      expect(content.edited[0].hash).not.toBe(hash);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].previousHash).toBe(hash);
+      expect(content.succeeded[0].hash).not.toBe(hash);
       expect(backend.getTodos()[0].text).toBe("original text");
     });
   });
@@ -825,19 +811,18 @@ describe("Server tool handlers", () => {
         hashes: [hash1, hash3, "0123456789abcdef"],
       });
       const content = structured<
-        { deleted: TodoSummary[]; missing: string[] }
+        { succeeded: TodoSummary[]; failed: BatchFailure[] }
       >(result);
 
-      expect(content.deleted).toEqual([
-        { hash: hash1, text: "one", state: TodoStateEnum.todo, status: "todo" },
+      expect(content.succeeded).toEqual([
+        { hash: hash1, text: "one", status: "todo" },
         {
           hash: hash3,
           text: "three",
-          state: TodoStateEnum.todo,
           status: "todo",
         },
       ]);
-      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(content.failed).toEqual([expect.objectContaining({ hash: "0123456789abcdef", code: "TODO_NOT_FOUND" })]);
       expect(backend.getTodos().map((todo) => todo.text)).toEqual(["two"]);
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(1);
@@ -868,11 +853,11 @@ describe("Server tool handlers", () => {
         hashes: ["0123456789abcdef"],
       });
       const content = structured<
-        { deleted: TodoSummary[]; missing: string[] }
+        { succeeded: TodoSummary[]; failed: BatchFailure[] }
       >(result);
 
-      expect(content.deleted).toEqual([]);
-      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(content.succeeded).toEqual([]);
+      expect(content.failed).toEqual([expect.objectContaining({ hash: "0123456789abcdef", code: "TODO_NOT_FOUND" })]);
       expect(backend.getTodos()).toHaveLength(1);
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(0);
@@ -893,16 +878,14 @@ describe("Server tool handlers", () => {
         status: "done",
       });
       const content = structured<
-        { updated: TodoSummary[]; missing: string[] }
+        { succeeded: TodoSummary[]; failed: BatchFailure[] }
       >(result);
 
-      expect(content.updated).toHaveLength(2);
-      expect(content.updated.every((todo) => todo.status === "done")).toBe(
+      expect(content.succeeded).toHaveLength(2);
+      expect(content.succeeded.every((todo) => todo.status === "done")).toBe(
         true,
       );
-      expect(content.updated.every((todo) => todo.state === TodoStateEnum.done))
-        .toBe(true);
-      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(content.failed).toEqual([expect.objectContaining({ hash: "0123456789abcdef", code: "TODO_NOT_FOUND" })]);
       expect(backend.getTodos().every((todo) => todo.isDone())).toBe(true);
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(1);
@@ -934,16 +917,15 @@ describe("Server tool handlers", () => {
         dryRun: true,
       });
       const content = structured<
-        { updated: TodoSummary[]; missing: string[]; dryRun?: boolean }
+        { succeeded: TodoSummary[]; failed: BatchFailure[]; dryRun?: boolean }
       >(result);
 
       expect(content.dryRun).toBe(true);
-      expect(content.missing).toEqual([]);
-      expect(content.updated).toHaveLength(1);
-      expect(content.updated[0].status).toBe("done");
-      expect(content.updated[0].state).toBe(TodoStateEnum.done);
+      expect(content.failed).toEqual([]);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].status).toBe("done");
       expect(result.content[0].text).toBe(
-        `Would set todo [${content.updated[0].hash}] status to done: x one`,
+        `Would set todo [${content.succeeded[0].hash}] status to done: x one`,
       );
 
       // The backend still holds the original, unmutated todo.
@@ -966,12 +948,12 @@ describe("Server tool handlers", () => {
         dryRun: true,
       });
       const content = structured<
-        { updated: TodoSummary[]; missing: string[]; dryRun?: boolean }
+        { succeeded: TodoSummary[]; failed: BatchFailure[]; dryRun?: boolean }
       >(result);
 
       expect(content.dryRun).toBe(true);
-      expect(content.updated).toHaveLength(1);
-      expect(content.updated[0].status).toBe("done");
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].status).toBe("done");
       expect(result.content[0].text).toContain("Would set todo");
       expect(backend.getTodos()).toHaveLength(1);
       expect(backend.getTodos()[0].isDone()).toBe(false);
@@ -987,13 +969,13 @@ describe("Server tool handlers", () => {
         hashes: [hash],
         status: "done",
       });
-      const content = structured<{ updated: UpdatedTodoSummary[] }>(result);
+      const content = structured<{ succeeded: UpdatedTodoSummary[] }>(result);
       const storedHash = await backend.getTodos()[0].getHash();
 
-      expect(content.updated).toHaveLength(1);
-      expect(content.updated[0].previousHash).toBe(hash);
-      expect(content.updated[0].hash).toBe(storedHash);
-      expect(content.updated[0].hash).not.toBe(hash);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].previousHash).toBe(hash);
+      expect(content.succeeded[0].hash).toBe(storedHash);
+      expect(content.succeeded[0].hash).not.toBe(hash);
     });
 
     it("should return previousHash for a dry run", async () => {
@@ -1005,11 +987,11 @@ describe("Server tool handlers", () => {
         status: "done",
         dryRun: true,
       });
-      const content = structured<{ updated: UpdatedTodoSummary[] }>(result);
+      const content = structured<{ succeeded: UpdatedTodoSummary[] }>(result);
 
-      expect(content.updated).toHaveLength(1);
-      expect(content.updated[0].previousHash).toBe(hash);
-      expect(content.updated[0].hash).not.toBe(hash);
+      expect(content.succeeded).toHaveLength(1);
+      expect(content.succeeded[0].previousHash).toBe(hash);
+      expect(content.succeeded[0].hash).not.toBe(hash);
       expect(backend.getTodos()[0].isDone()).toBe(false);
     });
   });
