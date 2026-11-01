@@ -87,6 +87,13 @@ describe("Tool schemas", () => {
     expect(() => ListTodosSchema.parse({ offset: -1 })).toThrow();
     expect(() => ListTodosSchema.parse({ search: "a".repeat(201) })).toThrow();
     expect(() => ListTodosSchema.parse({ limit: 1.5 })).toThrow();
+    expect(() => ListTodosSchema.parse({ priority: "a" })).toThrow();
+    expect(() => ListTodosSchema.parse({ priority: "AB" })).toThrow();
+    expect(() => ListTodosSchema.parse({ dueBefore: "2026-02-30" })).toThrow();
+    expect(() => ListTodosSchema.parse({ createdAfter: "02-01-2026" }))
+      .toThrow();
+    expect(() => ListTodosSchema.parse({ sort: "alphabetical" })).toThrow();
+    expect(() => ListTodosSchema.parse({ format: "json" })).toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "short" })).toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "a".repeat(65) })).toThrow();
     expect(() =>
@@ -131,6 +138,19 @@ describe("Tool schemas", () => {
     ).not.toThrow();
     expect(() => ListTodosSchema.parse({ limit: 1, offset: 0 })).not.toThrow();
     expect(() => ListTodosSchema.parse({ limit: 500 })).not.toThrow();
+    expect(() =>
+      ListTodosSchema.parse({
+        context: "@home",
+        project: "work",
+        priority: "A",
+        tag: { due: "2026-02-28" },
+        dueBefore: "2026-03-01",
+        createdAfter: "2026-01-01",
+        sort: "priority",
+        cursor: "b2Zmc2V0OjI",
+        format: "text",
+      })
+    ).not.toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "01234567" })).not.toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "a".repeat(64) })).not.toThrow();
     expect(() =>

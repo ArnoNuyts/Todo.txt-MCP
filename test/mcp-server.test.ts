@@ -100,6 +100,13 @@ describe("createTodoMcpServer", () => {
     });
 
     for (const tool of tools) {
+      if (tool.name === "list_todos") {
+        // list_todos supports text-only output (`format: "text"`), which the
+        // MCP SDK forbids together with a declared output schema. It still
+        // returns structured content by default.
+        expect(tool.outputSchema).toBeUndefined();
+        continue;
+      }
       expect(tool.outputSchema, `${tool.name} output schema`).toBeDefined();
     }
   });
@@ -164,6 +171,73 @@ describe("createTodoMcpServer", () => {
       status: "done",
       text: expect.stringContaining("structured todo edited"),
     });
+  });
+
+  it("should support list filters, cursor paging and output formats over MCP", async () => {
+    await client.callTool({
+      name: "add_todo",
+      arguments: {
+        todos: [
+          "alpha +proj @ctx prio:high",
+          "beta +proj @other",
+          "gamma +proj @ctx",
+        ],
+      },
+    });
+
+    const filtered = await client.callTool({
+      name: "list_todos",
+      arguments: {
+        context: "@CTX",
+        project: "+PROJ",
+        sort: "text",
+        format: "structured",
+      },
+    }) as {
+      isError?: boolean;
+      content: Array<{ type: string; text?: string }>;
+      structuredContent?: {
+        todos: Array<{ text: string }>;
+        total: number;
+        nextCursor: string | null;
+      };
+    };
+    expect(filtered.isError).not.toBe(true);
+    expect(filtered.content[0].text).toBe("2 todos");
+    expect(filtered.structuredContent?.total).toBe(2);
+    expect(
+      filtered.structuredContent?.todos.map((todo) => todo.text),
+    ).toEqual(["alpha +proj @ctx prio:high", "gamma +proj @ctx"]);
+
+    const firstPage = await client.callTool({
+      name: "list_todos",
+      arguments: { limit: 2 },
+    }) as { structuredContent?: { nextCursor: string | null } };
+    expect(firstPage.structuredContent?.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await client.callTool({
+      name: "list_todos",
+      arguments: {
+        limit: 2,
+        cursor: firstPage.structuredContent?.nextCursor,
+        offset: 99,
+      },
+    }) as { structuredContent?: { todos: Array<{ text: string }> } };
+    expect(secondPage.structuredContent?.todos.map((todo) => todo.text)).toEqual(
+      ["gamma +proj @ctx"],
+    );
+
+    const textOnly = await client.callTool({
+      name: "list_todos",
+      arguments: { format: "text" },
+    }) as {
+      isError?: boolean;
+      content: Array<{ type: string; text?: string }>;
+      structuredContent?: unknown;
+    };
+    expect(textOnly.isError).not.toBe(true);
+    expect(textOnly.structuredContent).toBeUndefined();
+    expect(textOnly.content[0].text).toContain("alpha +proj @ctx");
   });
 
   it("should delete a todo by hash", async () => {
