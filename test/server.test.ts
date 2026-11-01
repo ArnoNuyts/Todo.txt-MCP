@@ -683,6 +683,62 @@ describe("Server tool handlers", () => {
       expect(backend.loadCalls).toBe(0);
       expect(backend.saveCalls).toBe(0);
     });
+
+    it("should preview an edit without changing or saving the todo", async () => {
+      const initialTodos = [new Todo("original text")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{ hash, text: "preview only" }],
+        dryRun: true,
+      });
+      const content = structured<
+        { edited: TodoSummary[]; missing: string[]; dryRun?: boolean }
+      >(result);
+
+      expect(content.dryRun).toBe(true);
+      expect(content.missing).toEqual([]);
+      expect(content.edited).toHaveLength(1);
+      expect(content.edited[0].text).toBe("preview only");
+      expect(content.edited[0].hash).not.toBe(hash);
+      expect(result.content[0].text).toBe(
+        `Would edit todo [${content.edited[0].hash}]: preview only`,
+      );
+
+      // The backend still holds the original, unmutated todo.
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.getTodos()[0].text).toBe("original text");
+      expect(backend.getTodos()[0].toDisplayString()).toBe("original text");
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should report missing hashes in a dry run without saving", async () => {
+      await backend.save([new Todo("keep me")]);
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{ hash: "0123456789abcdef", text: "preview only" }],
+        dryRun: true,
+      });
+      const content = structured<
+        { edited: TodoSummary[]; missing: string[]; dryRun?: boolean }
+      >(result);
+
+      expect(content.dryRun).toBe(true);
+      expect(content.edited).toEqual([]);
+      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(result.content[0].text).toBe(
+        "Todo with hash 0123456789abcdef not found.",
+      );
+      expect(backend.getTodos()[0].text).toBe("keep me");
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
   });
 
   describe("deleteTodosHandler", () => {
@@ -795,6 +851,64 @@ describe("Server tool handlers", () => {
       });
 
       expect(backend.getTodos()[0].isDone()).toBe(false);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should preview a status change without changing or saving the todo", async () => {
+      const initialTodos = [new Todo("one")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await setTodoStatusesHandler(backend, {
+        hashes: [hash],
+        status: "done",
+        dryRun: true,
+      });
+      const content = structured<
+        { updated: TodoSummary[]; missing: string[]; dryRun?: boolean }
+      >(result);
+
+      expect(content.dryRun).toBe(true);
+      expect(content.missing).toEqual([]);
+      expect(content.updated).toHaveLength(1);
+      expect(content.updated[0].status).toBe("done");
+      expect(content.updated[0].state).toBe(TodoStateEnum.done);
+      expect(result.content[0].text).toBe(
+        `Would set todo [${content.updated[0].hash}] status to done: x one`,
+      );
+
+      // The backend still holds the original, unmutated todo.
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.getTodos()[0].isDone()).toBe(false);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should not append a recurrence follow-up during a dry run", async () => {
+      const recurring = new Todo("water plants rec:1w");
+      await backend.save([recurring]);
+      const hash = await recurring.getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await setTodoStatusesHandler(backend, {
+        hashes: [hash],
+        status: "done",
+        dryRun: true,
+      });
+      const content = structured<
+        { updated: TodoSummary[]; missing: string[]; dryRun?: boolean }
+      >(result);
+
+      expect(content.dryRun).toBe(true);
+      expect(content.updated).toHaveLength(1);
+      expect(content.updated[0].status).toBe("done");
+      expect(result.content[0].text).toContain("Would set todo");
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.getTodos()[0].isDone()).toBe(false);
+      expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(0);
     });
   });
