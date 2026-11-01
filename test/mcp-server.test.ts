@@ -515,4 +515,64 @@ describe("createTodoMcpServer", () => {
     expect(textOf(doneList)).toContain(`[${doneHash}] x`);
     expect(textOf(doneList)).toContain("write more tests");
   });
+
+  it("should expose a body field that can be fed back into update_todos", async () => {
+    await client.callTool({
+      name: "add_todos",
+      arguments: {
+        todos: ["x 2026-11-01 2026-10-01 done task @Home due:2026-12-01"],
+      },
+    });
+
+    const list = await client.callTool({
+      name: "list_todos",
+      arguments: { status: "all" },
+    }) as {
+      structuredContent?: {
+        todos: Array<{ hash: string; text: string; body: string }>;
+      };
+    };
+    const todo = list.structuredContent!.todos[0];
+
+    // `text` is for display; `body` is what update_todos accepts. Tags are
+    // excluded from `body` because update_todos preserves them separately.
+    expect(todo.text).toBe("x 2026-11-01 done task @Home due:2026-12-01");
+    expect(todo.body).toBe("done task @Home");
+
+    const got = await client.callTool({
+      name: "get_todo",
+      arguments: { hash: todo.hash },
+    }) as {
+      structuredContent?: { todo: { body: string } };
+    };
+    expect(got.structuredContent?.todo.body).toBe("done task @Home");
+
+    const edit = await client.callTool({
+      name: "update_todos",
+      arguments: { edits: [{ hash: todo.hash, text: `${todo.body} @Work` }] },
+    });
+    expect(edit.isError).not.toBe(true);
+    expect(backend.getTodos()[0].text).toBe("done task @Home @Work");
+    expect(backend.getTodos()[0].tags.due).toBe("2026-12-01");
+  });
+
+  it("should return a structured INVALID_ARGUMENT for a metadata prefix", async () => {
+    await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["keep me"] },
+    });
+    const hash = await backend.getTodos()[0].getHash();
+
+    const result = await client.callTool({
+      name: "update_todos",
+      arguments: { edits: [{ hash, text: "x 2026-11-01 keep me" }] },
+    }) as {
+      isError?: boolean;
+      structuredContent?: { error?: { code?: string; message?: string } };
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error?.code).toBe("INVALID_ARGUMENT");
+    expect(backend.getTodos()[0].text).toBe("keep me");
+  });
 });

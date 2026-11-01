@@ -173,7 +173,8 @@ guidance.
 
 - `list_todos` — list, filter, search, and paginate todos. Responses include
   the current content `version`. `limit` defaults to `50`; `format` defaults to
-  `"structured"` (use `"text"` or `"both"` when needed).
+  `"structured"` (use `"text"` or `"both"` when needed). Structured results
+  carry `body` (what `update_todos` accepts) next to the display `text`.
 - `add_todos` — add one or more todos. Accepts `onDuplicate`
   (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
   stored as an `idem:<key>` tag so retries return the previously added todos.
@@ -190,7 +191,8 @@ guidance.
   Pass `dryRun: true` to preview the deletion without writing.
 - `delete_completed` — delete completed todos, optionally filtered by
   `before: "YYYY-MM-DD"` and/or `context`. Supports `dryRun`.
-- `get_todo` — fetch one todo and the current content `version`.
+- `get_todo` — fetch one todo (including `body`) and the current content
+  `version`.
 - `summary` — counts by status, context, project, and priority, plus overdue.
 - `export_todos` — return the whole todo.txt `content` and its `version`.
 - `changes_since` — compare a known `version` with the current one; when it
