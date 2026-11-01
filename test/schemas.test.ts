@@ -3,13 +3,18 @@ import { z } from "zod";
 import {
   AddTodosSchema,
   AddTodoSchema,
+  ChangesSinceSchema,
   DeleteCompletedSchema,
   DeleteTodosSchema,
   DeleteTodoSchema,
   EditTodoSchema,
+  ExportTodosSchema,
+  GetTodoSchema,
+  ImportTodosSchema,
   ListTodosSchema,
   SetTodoStatusesSchema,
   SetTodoStatusSchema,
+  SummarySchema,
   UpdateTodosSchema,
 } from "../server.ts";
 
@@ -30,6 +35,11 @@ describe("Tool schemas", () => {
       delete_todos: DeleteTodosSchema,
       delete_todo: DeleteTodoSchema,
       delete_completed: DeleteCompletedSchema,
+      get_todo: GetTodoSchema,
+      summary: SummarySchema,
+      export_todos: ExportTodosSchema,
+      changes_since: ChangesSinceSchema,
+      import_todos: ImportTodosSchema,
     };
 
     for (const [name, schema] of Object.entries(schemas)) {

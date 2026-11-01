@@ -220,9 +220,13 @@ describe("list_todos filters, sorting, paging and output format", () => {
   });
 
   it("rejects an invalid cursor", async () => {
-    await expect(
-      listTodosHandler(backend, { cursor: "not-a-cursor" }),
-    ).rejects.toThrow("Invalid cursor");
+    const result = await listTodosHandler(backend, { cursor: "not-a-cursor" });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "INVALID_ARGUMENT", message: "Invalid cursor" },
+      },
+    });
   });
 
   it("returns text and structured content by default", async () => {

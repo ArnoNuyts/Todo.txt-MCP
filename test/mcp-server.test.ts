@@ -55,13 +55,18 @@ describe("createTodoMcpServer", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_todo",
       "add_todos",
+      "changes_since",
       "delete_completed",
       "delete_todo",
       "delete_todos",
       "edit_todo",
+      "export_todos",
+      "get_todo",
+      "import_todos",
       "list_todos",
       "set_todo_status",
       "set_todo_statuses",
+      "summary",
       "update_todos",
     ]);
 
@@ -266,7 +271,9 @@ describe("createTodoMcpServer", () => {
     }) as { isError?: boolean };
 
     expect(missingResult.isError).toBe(true);
-    expect(textOf(missingResult)).toBe("Todo not found (file modified?)");
+    expect(textOf(missingResult)).toBe(
+      `Todo with hash ${hash} not found. Call list_todos to refresh hashes.`,
+    );
   });
 
   it("should batch status updates and deletions", async () => {

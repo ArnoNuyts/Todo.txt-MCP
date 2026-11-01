@@ -30,6 +30,11 @@ function structured<T>(result: unknown): T {
   return (result as { structuredContent: T }).structuredContent;
 }
 
+function errorOf(result: unknown): { code: string; message: string } {
+  return (result as { structuredContent: { error: { code: string; message: string } } })
+    .structuredContent.error;
+}
+
 describe("Server tool handlers", () => {
   const backend = new MockBackend();
 
@@ -107,14 +112,16 @@ describe("Server tool handlers", () => {
         todos: Array.from({ length: 101 }, (_, i) => `todo ${i}`),
       };
 
-      await expect(addTodoHandler(backend, args)).rejects.toThrow();
+      const result = await addTodoHandler(backend, args);
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
       expect(backend.getTodos()).toHaveLength(0);
     });
 
     it("should reject an overlong todo", async () => {
-      await expect(
-        addTodoHandler(backend, { todos: ["a".repeat(2001)] }),
-      ).rejects.toThrow();
+      const result = await addTodoHandler(backend, { todos: ["a".repeat(2001)] });
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
       expect(backend.getTodos()).toHaveLength(0);
     });
 
@@ -167,6 +174,13 @@ describe("Server tool handlers", () => {
           status: "todo",
         }],
         missing: [],
+        succeeded: [{
+          hash: newHash,
+          text: storedTodos[0].toDisplayString(),
+          state: TodoStateEnum.todo,
+          status: "todo",
+        }],
+        failed: [],
       });
     });
 
@@ -249,6 +263,17 @@ describe("Server tool handlers", () => {
           status: "todo",
         }],
         missing: ["nonexistent"],
+        succeeded: [{
+          hash: newHash,
+          text: storedTodos[0].toDisplayString(),
+          state: TodoStateEnum.todo,
+          status: "todo",
+        }],
+        failed: [{
+          hash: "nonexistent",
+          code: "TODO_NOT_FOUND",
+          message: "Todo with hash nonexistent not found.",
+        }],
       });
     });
   });
@@ -327,8 +352,11 @@ describe("Server tool handlers", () => {
     });
 
     it("should reject an out-of-range limit", async () => {
-      await expect(listTodosHandler(backend, { limit: 0 })).rejects.toThrow();
-      await expect(listTodosHandler(backend, { limit: 501 })).rejects.toThrow();
+      for (const limit of [0, 501]) {
+        const result = await listTodosHandler(backend, { limit });
+        expect(result).toMatchObject({ isError: true });
+        expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
+      }
     });
   });
 
@@ -394,7 +422,16 @@ describe("Server tool handlers", () => {
       });
 
       expect(result).toMatchObject({ isError: true });
-      expect(result.content[0].text).toBe("Todo not found (file modified?)");
+      expect(result.content[0].text).toBe(
+        "Todo with hash nonexistent not found. Call list_todos to refresh hashes.",
+      );
+      expect(errorOf(result)).toMatchObject({
+        code: "TODO_NOT_FOUND",
+        details: {
+          hash: "nonexistent",
+          hint: "call list_todos to refresh hashes",
+        },
+      });
 
       // The existing todo should be untouched.
       const storedTodos = backend.getTodos();
@@ -430,7 +467,11 @@ describe("Server tool handlers", () => {
       });
 
       expect(result).toMatchObject({ isError: true });
-      expect(result.content[0].text).toBe("Todo not found (file modified?)");
+      expect(result.content[0].text).toBe(
+        "Todo with hash 0123456789abcdef not found. " +
+          "Call list_todos to refresh hashes.",
+      );
+      expect(errorOf(result).code).toBe("TODO_NOT_FOUND");
 
       const storedTodos = backend.getTodos();
       expect(storedTodos).toHaveLength(1);
@@ -438,8 +479,9 @@ describe("Server tool handlers", () => {
     });
 
     it("should reject a hash outside the allowed length", async () => {
-      await expect(deleteTodoHandler(backend, { hash: "short" })).rejects
-        .toThrow();
+      const result = await deleteTodoHandler(backend, { hash: "short" });
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
     });
   });
 
@@ -559,12 +601,12 @@ describe("Server tool handlers", () => {
     });
 
     it("should require a whitespace-free idempotency key", async () => {
-      await expect(
-        addTodosHandler(backend, {
-          todos: ["task"],
-          idempotencyKey: "not a key",
-        }),
-      ).rejects.toThrow();
+      const result = await addTodosHandler(backend, {
+        todos: ["task"],
+        idempotencyKey: "not a key",
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
       expect(backend.getTodos()).toHaveLength(0);
     });
   });
@@ -639,11 +681,11 @@ describe("Server tool handlers", () => {
       backend.loadCalls = 0;
       backend.saveCalls = 0;
 
-      await expect(
-        deleteTodosHandler(backend, {
-          hashes: ["0123456789abcdef", "short"],
-        }),
-      ).rejects.toThrow();
+      const result = await deleteTodosHandler(backend, {
+        hashes: ["0123456789abcdef", "short"],
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
 
       expect(backend.getTodos()).toHaveLength(1);
       expect(backend.loadCalls).toBe(0);
@@ -798,12 +840,11 @@ describe("Server tool handlers", () => {
     });
 
     it("should reject invalid dates", async () => {
-      await expect(
-        deleteCompletedHandler(backend, { before: "2026-02-30" }),
-      ).rejects.toThrow();
-      await expect(
-        deleteCompletedHandler(backend, { before: "01-02-2026" }),
-      ).rejects.toThrow();
+      for (const before of ["2026-02-30", "01-02-2026"]) {
+        const result = await deleteCompletedHandler(backend, { before });
+        expect(result).toMatchObject({ isError: true });
+        expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
+      }
     });
   });
 
