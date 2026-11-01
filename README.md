@@ -180,10 +180,12 @@ guidance.
 - `update_todos` — replace the body text of one or more todos by hash. Pass
   the body only: no `x ` done marker, `(A) ` priority, or leading dates; use
   `set_todo_statuses` to change status. Supports `dryRun`, which reports the
-  resulting hashes and text without writing.
+  resulting hashes and text without writing. Each result includes the input
+  hash as `previousHash` next to the new `hash`.
 - `set_todo_statuses` — mark a batch of todos done or active with one
   load/save cycle. Supports `dryRun`, which previews the resulting statuses
-  without writing.
+  without writing. Each result includes the input hash as `previousHash` next
+  to the new `hash`.
 - `delete_todos` — delete a batch of todos by hash with one load/save cycle.
   Pass `dryRun: true` to preview the deletion without writing.
 - `delete_completed` — delete completed todos, optionally filtered by
@@ -224,9 +226,18 @@ overwrite each other. The lock is released in a `finally`; a lock older than
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
 reload with `list_todos` before retrying. Item-scoped tools do **not** require a
-client-supplied `expectedVersion`: they address the exact version through the
-item hash. `import_todos` keeps `expectedVersion` because it replaces or merges
-a full-file snapshot supplied by the client.
+client-supplied `expectedVersion`: they address the item by the hash from a
+recent read and return that input hash as `previousHash` next to the new
+`hash`. `import_todos` keeps `expectedVersion` because it replaces or merges a
+full-file snapshot supplied by the client.
+
+### Hash stability
+
+A todo hash is the first 16 hex characters of the SHA-256 of the serialized
+todo line, so it changes on every mutation. Batch mutations return the input
+hash as `previousHash` alongside the new `hash`, which lets you chain calls
+without a `list_todos` in between. If you cache hashes across calls, refresh
+them with `list_todos`.
 
 ### Exposing the server on demand
 

@@ -26,6 +26,10 @@ interface TodoSummary {
   status: "todo" | "done";
 }
 
+interface UpdatedTodoSummary extends TodoSummary {
+  previousHash: string;
+}
+
 function structured<T>(result: unknown): T {
   return (result as { structuredContent: T }).structuredContent;
 }
@@ -169,6 +173,7 @@ describe("Server tool handlers", () => {
       expect(result.structuredContent).toEqual({
         edited: [{
           hash: newHash,
+          previousHash: hash,
           text: storedTodos[0].toDisplayString(),
           state: TodoStateEnum.todo,
           status: "todo",
@@ -176,6 +181,7 @@ describe("Server tool handlers", () => {
         missing: [],
         succeeded: [{
           hash: newHash,
+          previousHash: hash,
           text: storedTodos[0].toDisplayString(),
           state: TodoStateEnum.todo,
           status: "todo",
@@ -258,6 +264,7 @@ describe("Server tool handlers", () => {
       expect(result.structuredContent).toEqual({
         edited: [{
           hash: newHash,
+          previousHash: hash,
           text: storedTodos[0].toDisplayString(),
           state: TodoStateEnum.todo,
           status: "todo",
@@ -265,6 +272,7 @@ describe("Server tool handlers", () => {
         missing: ["nonexistent"],
         succeeded: [{
           hash: newHash,
+          previousHash: hash,
           text: storedTodos[0].toDisplayString(),
           state: TodoStateEnum.todo,
           status: "todo",
@@ -739,6 +747,65 @@ describe("Server tool handlers", () => {
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(0);
     });
+
+    it("should return previousHash next to the new hash", async () => {
+      const initialTodos = [new Todo("original text")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{ hash, text: "edited text" }],
+      });
+      const content = structured<{ edited: UpdatedTodoSummary[] }>(result);
+      const storedHash = await backend.getTodos()[0].getHash();
+
+      expect(content.edited).toHaveLength(1);
+      expect(content.edited[0].previousHash).toBe(hash);
+      expect(content.edited[0].hash).toBe(storedHash);
+      expect(content.edited[0].hash).not.toBe(hash);
+    });
+
+    it("should allow chaining an edit into a status change", async () => {
+      await backend.save([new Todo("chain me")]);
+      const hash = await backend.getTodos()[0].getHash();
+
+      const edited = structured<{ edited: UpdatedTodoSummary[] }>(
+        await updateTodosHandler(backend, {
+          edits: [{ hash, text: "chained edit" }],
+        }),
+      );
+
+      // No re-list between the two calls: use the hash returned by the edit.
+      const statusResult = await setTodoStatusesHandler(backend, {
+        hashes: [edited.edited[0].hash],
+        status: "done",
+      });
+      const updated = structured<{ updated: UpdatedTodoSummary[] }>(
+        statusResult,
+      );
+
+      expect(updated.updated).toHaveLength(1);
+      expect(updated.updated[0].previousHash).toBe(edited.edited[0].hash);
+      expect(updated.updated[0].hash).not.toBe(edited.edited[0].hash);
+      expect(backend.getTodos()[0].isDone()).toBe(true);
+    });
+
+    it("should return previousHash for a dry run", async () => {
+      const initialTodos = [new Todo("original text")];
+      await backend.save(initialTodos);
+      const hash = await initialTodos[0].getHash();
+
+      const result = await updateTodosHandler(backend, {
+        edits: [{ hash, text: "preview only" }],
+        dryRun: true,
+      });
+      const content = structured<{ edited: UpdatedTodoSummary[] }>(result);
+
+      expect(content.edited).toHaveLength(1);
+      expect(content.edited[0].previousHash).toBe(hash);
+      expect(content.edited[0].hash).not.toBe(hash);
+      expect(backend.getTodos()[0].text).toBe("original text");
+    });
   });
 
   describe("deleteTodosHandler", () => {
@@ -910,6 +977,40 @@ describe("Server tool handlers", () => {
       expect(backend.getTodos()[0].isDone()).toBe(false);
       expect(backend.loadCalls).toBe(1);
       expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should return previousHash next to the new hash", async () => {
+      await backend.save([new Todo("one")]);
+      const hash = await backend.getTodos()[0].getHash();
+
+      const result = await setTodoStatusesHandler(backend, {
+        hashes: [hash],
+        status: "done",
+      });
+      const content = structured<{ updated: UpdatedTodoSummary[] }>(result);
+      const storedHash = await backend.getTodos()[0].getHash();
+
+      expect(content.updated).toHaveLength(1);
+      expect(content.updated[0].previousHash).toBe(hash);
+      expect(content.updated[0].hash).toBe(storedHash);
+      expect(content.updated[0].hash).not.toBe(hash);
+    });
+
+    it("should return previousHash for a dry run", async () => {
+      await backend.save([new Todo("one")]);
+      const hash = await backend.getTodos()[0].getHash();
+
+      const result = await setTodoStatusesHandler(backend, {
+        hashes: [hash],
+        status: "done",
+        dryRun: true,
+      });
+      const content = structured<{ updated: UpdatedTodoSummary[] }>(result);
+
+      expect(content.updated).toHaveLength(1);
+      expect(content.updated[0].previousHash).toBe(hash);
+      expect(content.updated[0].hash).not.toBe(hash);
+      expect(backend.getTodos()[0].isDone()).toBe(false);
     });
   });
 
