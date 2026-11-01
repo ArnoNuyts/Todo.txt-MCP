@@ -287,6 +287,11 @@ const TodoOutputShape = {
   completionDate: z.string().optional(),
 };
 
+const UpdatedTodoSummaryShape = {
+  ...TodoSummaryShape,
+  previousHash: z.string(),
+};
+
 export const ListTodosOutputShape = {
   todos: z.array(z.object(TodoOutputShape)),
   total: z.number().int(),
@@ -319,9 +324,10 @@ const AddTodosOutputShape = {
 };
 
 const UpdateTodosOutputShape = {
-  edited: z.array(z.object(TodoSummaryShape)),
+  edited: z.array(z.object(UpdatedTodoSummaryShape)),
   missing: z.array(z.string()),
   ...BatchOutputFields,
+  succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
   dryRun: z.boolean().optional(),
 };
 
@@ -333,9 +339,10 @@ const DeleteTodosOutputShape = {
 };
 
 const SetTodoStatusesOutputShape = {
-  updated: z.array(z.object(TodoSummaryShape)),
+  updated: z.array(z.object(UpdatedTodoSummaryShape)),
   missing: z.array(z.string()),
   ...BatchOutputFields,
+  succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
   dryRun: z.boolean().optional(),
 };
 
@@ -470,11 +477,13 @@ async function summarizeTodoDetail(todo: Todo) {
   };
 }
 
+/** A mutated todo's summary plus the input hash it was addressed by. */
+type UpdatedTodoSummary = Awaited<ReturnType<typeof summarizeTodo>> & {
+  previousHash: string;
+};
+
 /** Shared `succeeded`/`failed` fields for partially successful batches. */
-function batchFields(
-  succeeded: Awaited<ReturnType<typeof summarizeTodo>>[],
-  missing: string[],
-): BatchResult<Awaited<ReturnType<typeof summarizeTodo>>> {
+function batchFields<T>(succeeded: T[], missing: string[]): BatchResult<T> {
   const failed: BatchFailure[] = missing.map(missingHashFailure);
   return { succeeded, failed };
 }
@@ -639,7 +648,7 @@ async function updateTodosOperation(
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
     const results: string[] = [];
-    const edited: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const edited: UpdatedTodoSummary[] = [];
     const missing: string[] = [];
     let changesMade = false;
 
@@ -658,7 +667,7 @@ async function updateTodosOperation(
         const target = dryRun ? new Todo(todo.toString()) : todo;
         target.setText(text);
         const summary = await summarizeTodo(target);
-        edited.push(summary);
+        edited.push({ ...summary, previousHash: hash });
         results.push(
           dryRun
             ? `Would edit todo [${summary.hash}]: ${summary.text}`
@@ -796,7 +805,7 @@ async function setTodoStatusesOperation(
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
 
-    const updated: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const updated: UpdatedTodoSummary[] = [];
     const missing: string[] = [];
     const results: string[] = [];
     let changesMade = false;
@@ -823,7 +832,7 @@ async function setTodoStatusesOperation(
       }
 
       const summary = await summarizeTodo(target);
-      updated.push(summary);
+      updated.push({ ...summary, previousHash: hash });
       results.push(
         dryRun
           ? `Would set todo [${summary.hash}] status to ${status}: ${summary.text}`
@@ -1494,8 +1503,10 @@ export function createTodoMcpServer(
         description:
           "Edit the body text of one or more existing todos by hash. Pass the " +
           "body only: status markers, priorities, and dates are managed " +
-          "separately. Pass dryRun to preview the resulting hashes and text " +
-          "without writing.",
+          "separately. Each edited item returns its input hash as " +
+          "`previousHash` next to the new `hash`, so follow-up mutations can " +
+          "be chained without a re-read. Pass dryRun to preview the resulting " +
+          "hashes and text without writing.",
         inputSchema: UpdateTodosSchema.shape,
         ...outputSchema(UpdateTodosOutputShape),
         annotations: {
@@ -1512,8 +1523,10 @@ export function createTodoMcpServer(
       {
         description:
           "Mark todos done or active by hash. Loads and saves the backend once " +
-          "for the whole batch. Pass dryRun to preview the resulting statuses " +
-          "without writing.",
+          "for the whole batch. Each updated item returns its input hash as " +
+          "`previousHash` next to the new `hash`, so follow-up mutations can " +
+          "be chained without a re-read. Pass dryRun to preview the resulting " +
+          "statuses without writing.",
         inputSchema: SetTodoStatusesSchema.shape,
         ...outputSchema(SetTodoStatusesOutputShape),
         annotations: {
