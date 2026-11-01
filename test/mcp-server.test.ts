@@ -49,31 +49,22 @@ describe("createTodoMcpServer", () => {
     await Promise.allSettled([client.close(), server.close()]);
   });
 
-  it("should expose the canonical tools plus deprecated aliases", async () => {
+  it("should expose the canonical tools only", async () => {
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
-      "add_todo",
       "add_todos",
       "changes_since",
       "delete_completed",
-      "delete_todo",
       "delete_todos",
-      "edit_todo",
       "export_todos",
       "get_todo",
       "import_todos",
       "list_todos",
-      "set_todo_status",
       "set_todo_statuses",
       "summary",
       "update_todos",
     ]);
-
-    const byName = new Map(tools.map((tool) => [tool.name, tool]));
-    for (const name of ["add_todo", "edit_todo", "delete_todo", "set_todo_status"]) {
-      expect(byName.get(name)?.description).toContain("Deprecated");
-    }
   });
 
   it("should expose annotations and output schemas for each tool", async () => {
@@ -105,20 +96,43 @@ describe("createTodoMcpServer", () => {
     });
 
     for (const tool of tools) {
-      if (tool.name === "list_todos") {
-        // list_todos supports text-only output (`format: "text"`), which the
-        // MCP SDK forbids together with a declared output schema. It still
-        // returns structured content by default.
-        expect(tool.outputSchema).toBeUndefined();
-        continue;
+      expect(tool.outputSchema, `${tool.name} output schema`).toBeUndefined();
+    }
+  });
+
+  it("should expose output schemas when explicitly enabled", async () => {
+    const schemaServer = createTodoMcpServer(backend, { outputSchemas: true });
+    const [schemaClientTransport, schemaServerTransport] = InMemoryTransport
+      .createLinkedPair();
+    const schemaClient = new Client({
+      name: "todo-txt-mcp-schema-client",
+      version: "2.0.0",
+    });
+    try {
+      await Promise.all([
+        schemaClient.connect(schemaClientTransport),
+        schemaServer.connect(schemaServerTransport),
+      ]);
+
+      const { tools } = await schemaClient.listTools();
+      for (const tool of tools) {
+        if (tool.name === "list_todos") {
+          expect(tool.outputSchema).toBeUndefined();
+          continue;
+        }
+        expect(tool.outputSchema, `${tool.name} output schema`).toBeDefined();
       }
-      expect(tool.outputSchema, `${tool.name} output schema`).toBeDefined();
+    } finally {
+      await Promise.allSettled([
+        schemaClient.close(),
+        schemaServer.close(),
+      ]);
     }
   });
 
   it("should return structured content for each tool", async () => {
     const addResult = await client.callTool({
-      name: "add_todo",
+      name: "add_todos",
       arguments: { todos: ["structured todo"] },
     }) as { structuredContent?: { added: Array<{ hash: string }> } };
     expect(addResult.structuredContent?.added).toHaveLength(1);
@@ -152,7 +166,7 @@ describe("createTodoMcpServer", () => {
     });
 
     const editResult = await client.callTool({
-      name: "edit_todo",
+      name: "update_todos",
       arguments: {
         edits: [{ hash, text: "structured todo edited" }],
       },
@@ -167,12 +181,16 @@ describe("createTodoMcpServer", () => {
     expect(edited.text).toBe("structured todo edited");
 
     const statusResult = await client.callTool({
-      name: "set_todo_status",
-      arguments: { hash: edited.hash, status: "done" },
+      name: "set_todo_statuses",
+      arguments: { hashes: [edited.hash], status: "done" },
     }) as {
-      structuredContent?: { hash: string; status: string; text: string };
+      structuredContent?: {
+        updated: Array<{ hash: string; status: string; text: string }>;
+        missing: string[];
+      };
     };
-    expect(statusResult.structuredContent).toMatchObject({
+    expect(statusResult.structuredContent?.missing).toEqual([]);
+    expect(statusResult.structuredContent?.updated[0]).toMatchObject({
       status: "done",
       text: expect.stringContaining("structured todo edited"),
     });
@@ -180,7 +198,7 @@ describe("createTodoMcpServer", () => {
 
   it("should support list filters, cursor paging and output formats over MCP", async () => {
     await client.callTool({
-      name: "add_todo",
+      name: "add_todos",
       arguments: {
         todos: [
           "alpha +proj @ctx prio:high",
@@ -247,33 +265,44 @@ describe("createTodoMcpServer", () => {
 
   it("should delete a todo by hash", async () => {
     const addResult = await client.callTool({
-      name: "add_todo",
+      name: "add_todos",
       arguments: { todos: ["delete me"] },
     });
     const hash = firstHash(addResult, "Added");
 
     const deleteResult = await client.callTool({
-      name: "delete_todo",
-      arguments: { hash },
+      name: "delete_todos",
+      arguments: { hashes: [hash] },
     }) as {
       isError?: boolean;
-      structuredContent?: { deleted: boolean; hash: string };
+      structuredContent?: {
+        deleted: Array<{ hash: string; text: string }>;
+        missing: string[];
+      };
     };
 
     expect(deleteResult.isError).not.toBe(true);
-    expect(deleteResult.structuredContent).toEqual({ deleted: true, hash });
-    expect(textOf(deleteResult)).toBe(`Deleted todo [${hash}]`);
+    expect(deleteResult.structuredContent?.deleted).toHaveLength(1);
+    expect(deleteResult.structuredContent?.deleted[0]).toMatchObject({
+      hash,
+      text: "delete me",
+    });
+    expect(deleteResult.structuredContent?.missing).toEqual([]);
+    expect(textOf(deleteResult)).toBe(`Deleted todo [${hash}]: delete me`);
     expect(backend.getTodos()).toHaveLength(0);
 
     const missingResult = await client.callTool({
-      name: "delete_todo",
-      arguments: { hash },
-    }) as { isError?: boolean };
+      name: "delete_todos",
+      arguments: { hashes: [hash] },
+    }) as {
+      isError?: boolean;
+      structuredContent?: { deleted: unknown[]; missing: string[] };
+    };
 
-    expect(missingResult.isError).toBe(true);
-    expect(textOf(missingResult)).toBe(
-      `Todo with hash ${hash} not found. Call list_todos to refresh hashes.`,
-    );
+    expect(missingResult.isError).not.toBe(true);
+    expect(missingResult.structuredContent?.deleted).toEqual([]);
+    expect(missingResult.structuredContent?.missing).toEqual([hash]);
+    expect(textOf(missingResult)).toBe(`Todo with hash ${hash} not found.`);
   });
 
   it("should batch status updates and deletions", async () => {
@@ -438,7 +467,7 @@ describe("createTodoMcpServer", () => {
   it("should support an add -> list -> edit -> set_todo_status flow", async () => {
     // add_todo
     const addResult = await client.callTool({
-      name: "add_todo",
+      name: "add_todos",
       arguments: { todos: ["write tests"] },
     });
     const addedHash = firstHash(addResult, "Added");
@@ -447,14 +476,14 @@ describe("createTodoMcpServer", () => {
     // list_todos
     const listResult = await client.callTool({
       name: "list_todos",
-      arguments: {},
+      arguments: { format: "both" },
     });
     expect(textOf(listResult)).toContain(addedHash);
     expect(textOf(listResult)).toContain("write tests");
 
     // edit_todo
     const editResult = await client.callTool({
-      name: "edit_todo",
+      name: "update_todos",
       arguments: {
         edits: [{ hash: addedHash, text: "write more tests" }],
       },
@@ -462,10 +491,10 @@ describe("createTodoMcpServer", () => {
     expect(textOf(editResult)).toContain("write more tests");
     const editedHash = firstHash(editResult, "Edited");
 
-    // set_todo_status
+    // set_todo_statuses
     const statusResult = await client.callTool({
-      name: "set_todo_status",
-      arguments: { hash: editedHash, status: "done" },
+      name: "set_todo_statuses",
+      arguments: { hashes: [editedHash], status: "done" },
     });
     expect(statusResult.isError).not.toBe(true);
     expect(textOf(statusResult)).toContain("status to done");
@@ -479,7 +508,7 @@ describe("createTodoMcpServer", () => {
     // ...and listing done todos shows it.
     const doneList = await client.callTool({
       name: "list_todos",
-      arguments: { status: "done" },
+      arguments: { status: "done", format: "both" },
     });
     // Completing the todo changes its text (and therefore its hash).
     const doneHash = await storedTodos[0].getHash();

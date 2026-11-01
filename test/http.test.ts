@@ -204,16 +204,12 @@ describe("MCP HTTP endpoint", () => {
         "export_todos",
         "changes_since",
         "import_todos",
-        "add_todo",
-        "edit_todo",
-        "set_todo_status",
-        "delete_todo",
       ]);
   });
 
   it("adds and lists a todo over HTTP", async () => {
     const added = await rpc("tools/call", {
-      name: "add_todo",
+      name: "add_todos",
       arguments: { todos: ["http todo"] },
     });
     expect(added.result?.content?.[0]?.text).toContain("Added todo [");
@@ -222,7 +218,7 @@ describe("MCP HTTP endpoint", () => {
 
     const listed = await rpc("tools/call", {
       name: "list_todos",
-      arguments: {},
+      arguments: { format: "both" },
     });
     expect(listed.result?.content?.[0]?.text).toContain("http todo");
   });
@@ -492,7 +488,7 @@ describe("MCP HTTP endpoint", () => {
     ]);
 
     const attempted = await rpc("tools/call", {
-      name: "add_todo",
+      name: "add_todos",
       arguments: { todos: ["should not be added"] },
     });
     const attemptMessage = attempted.error?.message ??

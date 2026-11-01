@@ -141,10 +141,18 @@ exhaust the process memory:
 }
 ```
 
-## 🔐 Read-only mode, token rotation, and observability
+## 🔐 Read-only mode, tool profiles, and token footprint
 
 - **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
   not registered.
+- **Tool profiles:** `MCP_TOOLSET=full|core|readonly|off` controls the exposed
+  toolset. `off` exposes resources only, `readonly` the five read tools, `core`
+  the read tools plus add/update/status/delete, and `full` (default) every
+  tool. Combine this with a gateway or per-agent MCP config to expose the server
+  only on demand.
+- **Output schemas:** `MCP_OUTPUT_SCHEMAS=1` adds `outputSchema` to
+  `tools/list`. Off by default because it is roughly half of the tool-definition
+  payload; structured content is returned either way.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
   `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
@@ -164,7 +172,8 @@ guidance.
 ## 🔧 Available Tools
 
 - `list_todos` — list, filter, search, and paginate todos. Responses include
-  the current content `version`.
+  the current content `version`. `limit` defaults to `50`; `format` defaults to
+  `"structured"` (use `"text"` or `"both"` when needed).
 - `add_todos` — add one or more todos. Accepts `onDuplicate`
   (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
   stored as an `idem:<key>` tag so retries return the previously added todos.
@@ -200,9 +209,21 @@ Read-only resources are always available, including in read-only mode:
 - `todo://active` — open todos only.
 - `todo://context/{name}` — open todos in one `@context`.
 
-The former singular tool names (`add_todo`, `edit_todo`, `set_todo_status`,
-`delete_todo`) remain registered as deprecated aliases that delegate to the
-canonical handlers.
+### Exposing the server on demand
+
+The smallest footprint is not connecting the MCP server at all until it is
+needed. Two supported patterns:
+
+1. **Client/agent profile:** keep the server disabled in the default agent
+   configuration (`enabled: false`) and enable it per agent, command, or
+   session. This removes all tool definitions from every request where the
+   server is not used.
+2. **Gateway or profile:** run behind an MCP gateway that connects servers on
+   demand, or start the container with `MCP_TOOLSET=off` and switch to
+   `core`/`full` only for the sessions that need write access.
+
+Version 2.0 removes the deprecated singular aliases (`add_todo`, `edit_todo`,
+`set_todo_status`, `delete_todo`). Use the plural canonical names instead.
 
 ## 🛠️ Testing with MCP Inspector
 
