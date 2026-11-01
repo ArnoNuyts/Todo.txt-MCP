@@ -318,6 +318,56 @@ describe("import_todos", () => {
     ]);
   });
 
+  it("does not duplicate existing todos in merge mode", async () => {
+    const before = computeContentVersion(backend.getTodos());
+    const existing = serializeTodoContent(backend.getTodos());
+
+    const result = await importTodosHandler(backend, {
+      content: existing,
+      mode: "merge",
+    });
+    const content = structured<{
+      changed: boolean;
+      version: string;
+      total: number;
+      diff: { added: number; removed: number; unchanged: number };
+    }>(result);
+
+    expect(content).toMatchObject({
+      changed: false,
+      version: before,
+      total: 1,
+      diff: { added: 0, removed: 0, unchanged: 1 },
+    });
+    expect(backend.getTodos().map((todo) => todo.text)).toEqual(["one"]);
+    expect(backend.saveCalls).toBe(0);
+  });
+
+  it("adds only new todos and collapses duplicates in the import payload", async () => {
+    const result = await importTodosHandler(backend, {
+      content: "one\ntwo\ntwo\nthree\n",
+      mode: "merge",
+    });
+    const content = structured<{
+      changed: boolean;
+      total: number;
+      importedCount: number;
+      diff: { added: number; removed: number; unchanged: number };
+    }>(result);
+
+    expect(content).toMatchObject({
+      changed: true,
+      total: 3,
+      importedCount: 4,
+      diff: { added: 2, removed: 0, unchanged: 1 },
+    });
+    expect(backend.getTodos().map((todo) => todo.text)).toEqual([
+      "one",
+      "two",
+      "three",
+    ]);
+  });
+
   it("replaces all content in replace mode", async () => {
     await importTodosHandler(backend, {
       content: "fresh\n",

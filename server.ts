@@ -1114,6 +1114,24 @@ export function changesSinceHandler(backend: TodoBackend, rawArgs: unknown) {
   return guardTool(() => changesSinceOperation(backend, rawArgs));
 }
 
+/**
+ * Merges imported todos into the current list without duplicating items that
+ * already exist (by normalized text). Duplicates inside the imported payload
+ * are collapsed too, keeping the first occurrence.
+ */
+export function mergeTodoLists(current: Todo[], imported: Todo[]): Todo[] {
+  const seen = new Set(current.map((todo) => normalizeTodoText(todo.toString())));
+  const additions = imported.filter((todo) => {
+    const key = normalizeTodoText(todo.toString());
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+  return [...current, ...additions];
+}
+
 // Tool: import_todos handler
 async function importTodosOperation(backend: TodoBackend, rawArgs: unknown) {
   const {
@@ -1160,7 +1178,7 @@ async function importTodosOperation(backend: TodoBackend, rawArgs: unknown) {
       );
     }
 
-    const next = mode === "replace" ? imported : [...current, ...imported];
+    const next = mode === "replace" ? imported : mergeTodoLists(current, imported);
     if (next.length > maxTodos) {
       return toolError(
         "LIMIT_EXCEEDED",
@@ -1182,8 +1200,8 @@ async function importTodosOperation(backend: TodoBackend, rawArgs: unknown) {
       ? `Dry run (${mode}): would add ${diff.added}, remove ${diff.removed}, ` +
         `keep ${diff.unchanged} unchanged todo(s). Nothing was saved.`
       : changed
-      ? `Imported ${imported.length} todo(s) (${mode}): added ${diff.added}, ` +
-        `removed ${diff.removed}.`
+      ? `Imported content (${mode}): added ${diff.added}, ` +
+        `removed ${diff.removed}, unchanged ${diff.unchanged}.`
       : `No changes: imported content matches the current todos.`;
 
     return {
