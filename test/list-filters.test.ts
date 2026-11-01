@@ -250,6 +250,13 @@ describe("list_todos filters, sorting, paging and output format", () => {
     expect(structured.total).toBe(5);
   });
 
+  it("uses the singular form for a one-todo summary", async () => {
+    const result = await listTodosHandler(backend, { search: "Buy milk" });
+
+    expect(result.content[0].text).toBe("1 todo");
+    expect(structuredOf(result).total).toBe(1);
+  });
+
   it("returns only a one-line summary in structured format", async () => {
     const result = await listTodosHandler(backend, {
       status: "all",
