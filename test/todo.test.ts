@@ -104,7 +104,10 @@ describe("Todo", () => {
         input: "x 2024-06-02 2024-06-01 Happy path",
         expected: new Date("2024-06-02T00:00:00.000Z"),
       },
-      { input: "x 2024-06-02 No completion date", expected: undefined },
+      {
+        input: "x 2024-06-02 Only completion date",
+        expected: new Date("2024-06-02T00:00:00.000Z"),
+      },
       {
         input: "2024-06-02 No completion date, not completed",
         expected: undefined,
@@ -128,7 +131,10 @@ describe("Todo", () => {
         input: "x 2024-06-02 2024-06-01 Buy groceries",
         expected: new Date("2024-06-02T00:00:00.000Z"),
       },
-      { input: "x 2024-06-02 Buy groceries", expected: undefined },
+      {
+        input: "x 2024-06-02 Buy groceries",
+        expected: new Date("2024-06-02T00:00:00.000Z"),
+      },
     ];
 
     for (const { input, expected } of testCases) {
@@ -141,10 +147,13 @@ describe("Todo", () => {
     }
   });
 
-  it("Todo constructor - keeps completion date empty", () => {
+  it("Todo constructor - treats a lone date on a done todo as its completion date", () => {
     const input = "x 2024-06-01 Buy groceries";
     const todo = new Todo(input);
-    expect(todo.completionDate).toBe(undefined);
+    expect(todo.completionDate?.toISOString()).toBe(
+      "2024-06-01T00:00:00.000Z",
+    );
+    expect(todo.creationDate).toBe(undefined);
   });
 
   // Test for `creationDate`
@@ -420,6 +429,86 @@ describe("Todo", () => {
   it("toDisplayString - should NOT include creation date", () => {
     const todo = new Todo("2023-10-27 Test todo");
     expect(todo.toDisplayString().includes("2023-10-27")).toBe(false);
+  });
+
+  describe("toString - date serialization round-trip", () => {
+    const expectStableRoundTrip = (input: string) => {
+      const first = new Todo(input);
+      const serialized = first.toString();
+      const second = new Todo(serialized);
+
+      // Re-serializing the parsed todo must be byte-identical, otherwise every
+      // save/load cycle changes the todo and its hash.
+      expect(serialized, `Input "${input}" should serialize unchanged`).toBe(
+        input,
+      );
+      expect(second.toString()).toBe(input);
+
+      return second;
+    };
+
+    it("preserves completion and creation dates of a done todo", async () => {
+      const todo = expectStableRoundTrip(
+        "x 2024-06-02 2024-06-01 Buy groceries",
+      );
+
+      expect(todo.isDone()).toBe(true);
+      expect(todo.completionDate?.toISOString()).toBe(
+        "2024-06-02T00:00:00.000Z",
+      );
+      expect(todo.creationDate?.toISOString()).toBe(
+        "2024-06-01T00:00:00.000Z",
+      );
+      expect(await todo.getHash()).toBe(
+        await new Todo("x 2024-06-02 2024-06-01 Buy groceries").getHash(),
+      );
+    });
+
+    it("preserves a done todo that only has a completion date", () => {
+      const todo = expectStableRoundTrip("x 2024-06-02 Buy groceries");
+
+      expect(todo.isDone()).toBe(true);
+      expect(todo.completionDate?.toISOString()).toBe(
+        "2024-06-02T00:00:00.000Z",
+      );
+      expect(todo.creationDate).toBe(undefined);
+    });
+
+    it("preserves an open todo that only has a creation date", () => {
+      const todo = expectStableRoundTrip("2024-06-01 Buy groceries");
+
+      expect(todo.isDone()).toBe(false);
+      expect(todo.creationDate?.toISOString()).toBe(
+        "2024-06-01T00:00:00.000Z",
+      );
+      expect(todo.completionDate).toBe(undefined);
+    });
+
+    it("preserves a todo without any dates", () => {
+      const todo = expectStableRoundTrip("Buy groceries");
+
+      expect(todo.creationDate).toBe(undefined);
+      expect(todo.completionDate).toBe(undefined);
+    });
+
+    it("preserves priority, projects, contexts and tags", () => {
+      const input =
+        "x (A) 2024-06-02 2024-06-01 Buy groceries +home @errands due:2024-06-30 rec:1w";
+      const todo = expectStableRoundTrip(input);
+
+      expect(todo.isDone()).toBe(true);
+      expect(todo.priority).toBe("A");
+      expect(todo.text).toBe("Buy groceries +home @errands");
+      expect(Array.from(todo.projects)).toEqual(["home"]);
+      expect(Array.from(todo.contexts)).toEqual(["errands"]);
+      expect(todo.tags).toEqual({ due: "2024-06-30", rec: "1w" });
+    });
+
+    it("toDisplayString shows the completion date, never the creation date", () => {
+      const todo = new Todo("x 2024-06-02 2024-06-01 Buy groceries");
+
+      expect(todo.toDisplayString()).toBe("x 2024-06-02 Buy groceries");
+    });
   });
 
   it("getHash - returns 16 lowercase hex characters", async () => {
