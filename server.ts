@@ -68,6 +68,7 @@ import {
   missingHashFailure,
   notFoundError,
   toolError,
+  ToolFailure,
   type BatchFailure,
   type BatchResult,
 } from "./logic/tool-errors.ts";
@@ -101,15 +102,32 @@ const TODO_METADATA_PREFIX_REGEX =
   /^(?:x\s|\([A-Z]\)\s|\d{4}-[0-1][0-9]-[0-3][0-9]\s)/;
 
 /** Todo body text without the metadata prefixes the parser owns. */
-export const TodoBodySchema = z.string().max(2000).refine(
-  (value) => !TODO_METADATA_PREFIX_REGEX.test(value),
-  "Pass the todo body only: remove the leading 'x ' done marker, '(A) ' " +
-    "priority, or YYYY-MM-DD date. Use set_todo_statuses to change a todo's " +
-    "status.",
-).describe(
+export const TodoBodySchema = z.string().max(2000).describe(
   "The todo body text only. Do not include an 'x ' done marker, a priority " +
     "like '(A) ', or leading dates; those are managed separately.",
 );
+
+const BODY_ONLY_MESSAGE =
+  "Pass the todo body only: remove the leading 'x ' done marker, '(A) ' " +
+  "priority, or YYYY-MM-DD date. Use set_todo_statuses to change a todo's " +
+  "status.";
+
+/**
+ * Semantic validation lives in the handler, not in the input schema. The MCP
+ * SDK validates arguments against the schema before the tool handler runs and
+ * reports failures as a protocol-level error without `structuredContent.error`,
+ * which would bypass the stable error codes clients branch on.
+ */
+function assertTodoBody(text: string, index: number) {
+  if (TODO_METADATA_PREFIX_REGEX.test(text)) {
+    const path = `edits.${index}.text`;
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `Invalid arguments: ${path}: ${BODY_ONLY_MESSAGE}.`,
+      { issues: [{ path, message: BODY_ONLY_MESSAGE }] },
+    );
+  }
+}
 
 export const UpdateTodosSchema = z.object({
   edits: z.array(z.object({
@@ -282,6 +300,7 @@ const TodoSummaryShape = {
 
 const TodoOutputShape = {
   ...TodoSummaryShape,
+  body: z.string(),
   priority: z.string().optional(),
   creationDate: z.string().optional(),
   completionDate: z.string().optional(),
@@ -471,6 +490,9 @@ async function summarizeTodo(todo: Todo) {
 async function summarizeTodoDetail(todo: Todo) {
   return {
     ...await summarizeTodo(todo),
+    // Body only: no status marker, priority, dates, or key:value tags. This is
+    // exactly what update_todos accepts, so read -> write needs no parsing.
+    body: todo.text,
     priority: todo.priority,
     creationDate: todo.creationDate?.toISOString().substring(0, 10),
     completionDate: todo.completionDate?.toISOString().substring(0, 10),
@@ -644,6 +666,7 @@ async function updateTodosOperation(
   rawArgs: unknown,
 ) {
   const { edits, dryRun = false } = UpdateTodosSchema.parse(rawArgs);
+  edits.forEach((edit, index) => assertTodoBody(edit.text, index));
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
