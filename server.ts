@@ -38,6 +38,11 @@ import {
 import { createMetrics } from "./logic/metrics.ts";
 
 import { Todo } from "./logic/todo.ts";
+import {
+  decodeListCursor,
+  encodeListCursor,
+  selectTodos,
+} from "./logic/Todos.ts";
 import { TodoStateEnum } from "./types/enums.ts";
 import type { TodoBackend } from "./logic/backend.ts";
 import { withBackendLock } from "./logic/backend-lock.ts";
@@ -79,18 +84,68 @@ export const AddTodoSchema = AddTodosSchema;
 /** @deprecated Use {@link UpdateTodosSchema}. */
 export const EditTodoSchema = UpdateTodosSchema;
 
+const DateOnlySchema = z.string().regex(
+  /^\d{4}-\d{2}-\d{2}$/,
+  "Expected a date in YYYY-MM-DD format",
+).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+}, "Expected a valid calendar date (YYYY-MM-DD)");
+
 export const ListTodosSchema = z.object({
   status: z.enum(["todo", "done", "all"]).optional().describe(
     "Filter by status: 'todo' (default), 'done', or 'all'",
   ),
   search: z.string().max(200).optional().describe(
-    "Search query to filter todos by text",
+    "Search query to filter todos by display text",
   ),
+  context: z.string().min(1).max(100).optional().describe(
+    "Only list todos in this exact context; the leading '@' is optional and " +
+      "matching is case-insensitive",
+  ),
+  project: z.string().min(1).max(100).optional().describe(
+    "Only list todos in this exact project; the leading '+' is optional and " +
+      "matching is case-insensitive",
+  ),
+  priority: z.string().regex(
+    /^[A-Z]$/,
+    "Expected a single uppercase priority letter (A-Z)",
+  ).optional().describe("Only list todos with this priority letter (A-Z)"),
+  tag: z.record(
+    z.string().min(1).max(64),
+    z.string().max(500),
+  ).optional().describe(
+    "Only list todos matching every given key:value tag exactly",
+  ),
+  dueBefore: DateOnlySchema.optional().describe(
+    "Only list todos whose due: date is strictly before this date " +
+      "(YYYY-MM-DD)",
+  ),
+  createdAfter: DateOnlySchema.optional().describe(
+    "Only list todos created strictly after this date (YYYY-MM-DD)",
+  ),
+  sort: z.enum(["creation", "completion", "priority", "text"]).optional()
+    .describe(
+      "Sort order: 'creation', 'completion', 'priority' or 'text' " +
+        "(default: file order)",
+    ),
   limit: z.number().int().min(1).max(500).optional().describe(
     "Maximum number of todos to return (default: 50)",
   ),
   offset: z.number().int().min(0).optional().describe(
-    "Number of todos to skip (default: 0)",
+    "Number of todos to skip (default: 0); ignored when 'cursor' is set",
+  ),
+  cursor: z.string().min(1).max(512).optional().describe(
+    "Opaque cursor from a previous response's 'nextCursor'; when set, " +
+      "'offset' is ignored",
+  ),
+  format: z.enum(["text", "structured", "both"]).optional().describe(
+    "Output format: 'both' (default) returns the text list and structured " +
+      "content, 'structured' returns a one-line summary plus structured " +
+      "content, and 'text' returns only the text list",
   ),
 });
 
@@ -108,17 +163,6 @@ export const DeleteTodosSchema = z.object({
     "Hashes of the todos to delete",
   ),
 });
-
-const DateOnlySchema = z.string().regex(
-  /^\d{4}-\d{2}-\d{2}$/,
-  "Expected a date in YYYY-MM-DD format",
-).refine((value) => {
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day;
-}, "Expected a valid calendar date (YYYY-MM-DD)");
 
 export const DeleteCompletedSchema = z.object({
   before: DateOnlySchema.optional().describe(
@@ -158,10 +202,11 @@ const TodoOutputShape = {
   completionDate: z.string().optional(),
 };
 
-const ListTodosOutputShape = {
+export const ListTodosOutputShape = {
   todos: z.array(z.object(TodoOutputShape)),
   total: z.number().int(),
   nextOffset: z.number().int().nullable(),
+  nextCursor: z.string().nullable(),
 };
 
 const AddTodosOutputShape = {
@@ -474,30 +519,21 @@ export async function listTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { status = "todo", search, limit = 50, offset = 0 } = ListTodosSchema
-    .parse(rawArgs);
+  const args = ListTodosSchema.parse(rawArgs);
+  const { limit = 50, offset = 0, cursor, format = "both" } = args;
   const allTodos = await backend.load();
 
-  let filteredTodos = allTodos;
+  // Status, search, context, project, priority, tag and date filters all
+  // combine with AND. Sorting preserves file order by default.
+  const filteredTodos = selectTodos(allTodos, {
+    ...args,
+    status: args.status ?? "todo",
+  });
 
-  // Filter by status
-  if (status !== "all") {
-    const targetState = status === "done"
-      ? TodoStateEnum.done
-      : TodoStateEnum.todo;
-    filteredTodos = filteredTodos.filter((t) => t.state === targetState);
-  }
-
-  // Filter by search query
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    filteredTodos = filteredTodos.filter((t) =>
-      t.text.toLowerCase().includes(lowerSearch)
-    );
-  }
-
-  // Apply pagination
-  const pagedTodos = filteredTodos.slice(offset, offset + limit);
+  // A cursor is an opaque offset. When present it wins over `offset`, which
+  // stays supported for clients that have not migrated yet.
+  const start = cursor === undefined ? offset : decodeListCursor(cursor);
+  const pagedTodos = filteredTodos.slice(start, start + limit);
 
   const todoEntries = await Promise.all(
     pagedTodos.map(async (todo) => ({
@@ -512,24 +548,40 @@ export async function listTodosHandler(
     `[${hash}] ${text}`
   );
 
-  const nextOffset = offset + pagedTodos.length < filteredTodos.length
-    ? offset + pagedTodos.length
+  const nextOffset = start + pagedTodos.length < filteredTodos.length
+    ? start + pagedTodos.length
     : null;
+  const nextCursor = nextOffset === null
+    ? null
+    : encodeListCursor(nextOffset);
+
+  const structuredContent = {
+    todos: todoEntries,
+    total: filteredTodos.length,
+    nextOffset,
+    nextCursor,
+  };
+
+  const text = todoStrings.length > 0
+    ? todoStrings.join("\n")
+    : "No todos found matching criteria.";
+
+  if (format === "text") {
+    return {
+      content: [{ type: "text" as const, text }],
+    };
+  }
+
+  if (format === "structured") {
+    return {
+      content: [{ type: "text" as const, text: `${filteredTodos.length} todos` }],
+      structuredContent,
+    };
+  }
 
   return {
-    content: [
-      {
-        type: "text" as const,
-        text: todoStrings.length > 0
-          ? todoStrings.join("\n")
-          : "No todos found matching criteria.",
-      },
-    ],
-    structuredContent: {
-      todos: todoEntries,
-      total: filteredTodos.length,
-      nextOffset,
-    },
+    content: [{ type: "text" as const, text }],
+    structuredContent,
   };
 }
 
@@ -812,13 +864,17 @@ export function createTodoMcpServer(
   );
 
   // Tool: list_todos
+  // No `outputSchema` is declared: the `format: "text"` mode returns no
+  // structured content, which the MCP SDK rejects when an output schema is
+  // present. Default ("both") and "structured" responses still include
+  // structured content matching `ListTodosOutputShape`.
   server.registerTool(
     "list_todos",
     {
       description:
-        "List todos with optional status, search, limit, and offset filters.",
+        "List todos with optional status, search, context, project, priority, " +
+        "tag, date, sort, limit, offset, and cursor filters.",
       inputSchema: ListTodosSchema.shape,
-      outputSchema: ListTodosOutputShape,
       annotations: { readOnlyHint: true },
     },
     (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
