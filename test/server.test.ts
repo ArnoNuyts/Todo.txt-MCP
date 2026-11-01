@@ -5,14 +5,30 @@ import { join } from "node:path";
 import { Todo } from "../logic/todo.ts";
 import {
   addTodoHandler,
+  addTodosHandler,
+  deleteCompletedHandler,
   deleteTodoHandler,
+  deleteTodosHandler,
   editTodoHandler,
   listTodosHandler,
+  setTodoStatusesHandler,
   setTodoStatusHandler,
+  updateTodosHandler,
 } from "../server.ts";
 import { TodoStateEnum } from "../types/enums.ts";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
+
+interface TodoSummary {
+  hash: string;
+  text: string;
+  state: number;
+  status: "todo" | "done";
+}
+
+function structured<T>(result: unknown): T {
+  return (result as { structuredContent: T }).structuredContent;
+}
 
 describe("Server tool handlers", () => {
   const backend = new MockBackend();
@@ -42,7 +58,10 @@ describe("Server tool handlers", () => {
         added: [{
           hash: todo1Hash,
           text: storedTodos[0].toDisplayString(),
+          state: TodoStateEnum.todo,
+          status: "todo",
         }],
+        skipped: [],
       });
     });
 
@@ -144,6 +163,8 @@ describe("Server tool handlers", () => {
         edited: [{
           hash: newHash,
           text: storedTodos[0].toDisplayString(),
+          state: TodoStateEnum.todo,
+          status: "todo",
         }],
         missing: [],
       });
@@ -224,6 +245,8 @@ describe("Server tool handlers", () => {
         edited: [{
           hash: newHash,
           text: storedTodos[0].toDisplayString(),
+          state: TodoStateEnum.todo,
+          status: "todo",
         }],
         missing: ["nonexistent"],
       });
@@ -329,7 +352,10 @@ describe("Server tool handlers", () => {
       expect(result.content[0].text).toBe(
         `Set todo [${newHash}] status to done: ${storedTodos[0].toDisplayString()}`,
       );
-      expect(result.structuredContent).toEqual({
+      expect("structuredContent" in result).toBe(true);
+      expect(
+        (result as { structuredContent: unknown }).structuredContent,
+      ).toEqual({
         hash: newHash,
         status: "done",
         text: storedTodos[0].toDisplayString(),
@@ -387,7 +413,9 @@ describe("Server tool handlers", () => {
 
       expect(result).not.toMatchObject({ isError: true });
       expect(result.content[0].text).toBe(`Deleted todo [${hash}]`);
-      expect(result.structuredContent).toEqual({ deleted: true, hash });
+      expect(
+        (result as { structuredContent?: unknown }).structuredContent,
+      ).toEqual({ deleted: true, hash });
 
       const storedTodos = backend.getTodos();
       expect(storedTodos).toHaveLength(1);
@@ -412,6 +440,370 @@ describe("Server tool handlers", () => {
     it("should reject a hash outside the allowed length", async () => {
       await expect(deleteTodoHandler(backend, { hash: "short" })).rejects
         .toThrow();
+    });
+  });
+
+  describe("addTodosHandler", () => {
+    it("should allow duplicates by default", async () => {
+      await backend.save([new Todo("Buy Milk")]);
+
+      const result = await addTodosHandler(backend, { todos: ["buy milk"] });
+      const content = structured<
+        { added: TodoSummary[]; skipped: Array<{ text: string; hash: string }> }
+      >(result);
+
+      expect(content.added).toHaveLength(1);
+      expect(content.skipped).toEqual([]);
+      expect(backend.getTodos()).toHaveLength(2);
+    });
+
+    it("should skip duplicates and report them", async () => {
+      const existing = new Todo("Buy Milk");
+      await backend.save([existing]);
+      const existingHash = await existing.getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await addTodosHandler(backend, {
+        todos: ["  BUY   milk "],
+        onDuplicate: "skip",
+      });
+      const content = structured<
+        { added: TodoSummary[]; skipped: Array<{ text: string; hash: string }> }
+      >(result);
+
+      expect(content.added).toEqual([]);
+      expect(content.skipped).toEqual([{
+        text: "  BUY   milk ",
+        hash: existingHash,
+      }]);
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should ignore the x marker, dates, and idem tags when detecting duplicates", async () => {
+      const done = new Todo("x 2025-01-01 2024-06-01 buy milk idem:old");
+      await backend.save([done]);
+      const doneHash = await done.getHash();
+
+      const result = await addTodosHandler(backend, {
+        todos: ["2025-01-01 BUY MILK idem:new"],
+        onDuplicate: "skip",
+      });
+      const content = structured<
+        { added: TodoSummary[]; skipped: Array<{ text: string; hash: string }> }
+      >(result);
+
+      expect(content.added).toEqual([]);
+      expect(content.skipped).toEqual([{
+        text: "2025-01-01 BUY MILK idem:new",
+        hash: doneHash,
+      }]);
+      expect(backend.getTodos()).toHaveLength(1);
+    });
+
+    it("should skip duplicates within the same request", async () => {
+      const result = await addTodosHandler(backend, {
+        todos: ["same task", "same task"],
+        onDuplicate: "skip",
+      });
+      const content = structured<
+        { added: TodoSummary[]; skipped: Array<{ text: string; hash: string }> }
+      >(result);
+
+      expect(content.added).toHaveLength(1);
+      expect(content.skipped).toHaveLength(1);
+      expect(content.skipped[0].hash).toBe(content.added[0].hash);
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("should reject every duplicate with onDuplicate error and write nothing", async () => {
+      await backend.save([new Todo("buy milk")]);
+      backend.saveCalls = 0;
+
+      const result = await addTodosHandler(backend, {
+        todos: ["buy milk", "fresh task"],
+        onDuplicate: "error",
+      });
+
+      expect(result).toMatchObject({ isError: true });
+      expect(result.content[0].text).toContain("duplicate");
+      expect(result.content[0].text).toContain("Nothing was saved");
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should persist the idempotency key and replay it", async () => {
+      const first = await addTodosHandler(backend, {
+        todos: ["buy milk"],
+        idempotencyKey: "request-1",
+      });
+      const firstContent = structured<{ added: TodoSummary[] }>(first);
+      expect(firstContent.added).toHaveLength(1);
+
+      const [stored] = backend.getTodos();
+      expect(stored.tags.idem).toBe("request-1");
+      expect(stored.toString()).toContain("idem:request-1");
+
+      const second = await addTodosHandler(backend, {
+        todos: ["a different task"],
+        idempotencyKey: "request-1",
+      });
+      const secondContent = structured<{ added: TodoSummary[] }>(second);
+
+      expect(secondContent.added).toEqual(firstContent.added);
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("should require a whitespace-free idempotency key", async () => {
+      await expect(
+        addTodosHandler(backend, {
+          todos: ["task"],
+          idempotencyKey: "not a key",
+        }),
+      ).rejects.toThrow();
+      expect(backend.getTodos()).toHaveLength(0);
+    });
+  });
+
+  describe("updateTodosHandler", () => {
+    it("should edit multiple todos with one save", async () => {
+      const initialTodos = [new Todo("first todo"), new Todo("second todo")];
+      await backend.save(initialTodos);
+      const hash1 = await initialTodos[0].getHash();
+      const hash2 = await initialTodos[1].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await updateTodosHandler(backend, {
+        edits: [
+          { hash: hash1, text: "edited first" },
+          { hash: hash2, text: "edited second" },
+        ],
+      });
+      const content = structured<
+        { edited: TodoSummary[]; missing: string[] }
+      >(result);
+
+      expect(content.edited.map((todo) => todo.text).sort()).toEqual([
+        "edited first",
+        "edited second",
+      ]);
+      expect(content.edited.every((todo) => todo.status === "todo")).toBe(true);
+      expect(content.missing).toEqual([]);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(1);
+    });
+  });
+
+  describe("deleteTodosHandler", () => {
+    it("should delete a batch with one load and one save", async () => {
+      const initialTodos = [
+        new Todo("one"),
+        new Todo("two"),
+        new Todo("three"),
+      ];
+      await backend.save(initialTodos);
+      const hash1 = await initialTodos[0].getHash();
+      const hash3 = await initialTodos[2].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await deleteTodosHandler(backend, {
+        hashes: [hash1, hash3, "0123456789abcdef"],
+      });
+      const content = structured<
+        { deleted: TodoSummary[]; missing: string[] }
+      >(result);
+
+      expect(content.deleted).toEqual([
+        { hash: hash1, text: "one", state: TodoStateEnum.todo, status: "todo" },
+        {
+          hash: hash3,
+          text: "three",
+          state: TodoStateEnum.todo,
+          status: "todo",
+        },
+      ]);
+      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(backend.getTodos().map((todo) => todo.text)).toEqual(["two"]);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("should reject the whole batch before touching the backend", async () => {
+      await backend.save([new Todo("keep me")]);
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      await expect(
+        deleteTodosHandler(backend, {
+          hashes: ["0123456789abcdef", "short"],
+        }),
+      ).rejects.toThrow();
+
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.loadCalls).toBe(0);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should not save when no hash matches", async () => {
+      await backend.save([new Todo("keep me")]);
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await deleteTodosHandler(backend, {
+        hashes: ["0123456789abcdef"],
+      });
+      const content = structured<
+        { deleted: TodoSummary[]; missing: string[] }
+      >(result);
+
+      expect(content.deleted).toEqual([]);
+      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+  });
+
+  describe("setTodoStatusesHandler", () => {
+    it("should update a batch with one load and one save", async () => {
+      const initialTodos = [new Todo("one"), new Todo("two")];
+      await backend.save(initialTodos);
+      const hash1 = await initialTodos[0].getHash();
+      const hash2 = await initialTodos[1].getHash();
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await setTodoStatusesHandler(backend, {
+        hashes: [hash1, hash2, "0123456789abcdef"],
+        status: "done",
+      });
+      const content = structured<
+        { updated: TodoSummary[]; missing: string[] }
+      >(result);
+
+      expect(content.updated).toHaveLength(2);
+      expect(content.updated.every((todo) => todo.status === "done")).toBe(
+        true,
+      );
+      expect(content.updated.every((todo) => todo.state === TodoStateEnum.done))
+        .toBe(true);
+      expect(content.missing).toEqual(["0123456789abcdef"]);
+      expect(backend.getTodos().every((todo) => todo.isDone())).toBe(true);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("should not save when no hash matches", async () => {
+      await backend.save([new Todo("keep me")]);
+      backend.saveCalls = 0;
+
+      await setTodoStatusesHandler(backend, {
+        hashes: ["0123456789abcdef"],
+        status: "done",
+      });
+
+      expect(backend.getTodos()[0].isDone()).toBe(false);
+      expect(backend.saveCalls).toBe(0);
+    });
+  });
+
+  describe("deleteCompletedHandler", () => {
+    it("should delete completed todos before a date in a context", async () => {
+      const old = new Todo("x 2025-01-01 2024-12-01 Old done @Home");
+      const boundary = new Todo("x 2026-01-01 2025-12-01 Boundary done @home");
+      const recent = new Todo("x 2026-05-01 2026-04-01 Recent done @Work");
+      const active = new Todo("active @home");
+      await backend.save([old, boundary, recent, active]);
+      const oldHash = await old.getHash();
+      backend.saveCalls = 0;
+
+      const result = await deleteCompletedHandler(backend, {
+        before: "2026-01-01",
+        context: "@HOME",
+      });
+      const content = structured<{ deletedCount: number; hashes: string[] }>(
+        result,
+      );
+
+      expect(content).toEqual({ deletedCount: 1, hashes: [oldHash] });
+      expect(backend.getTodos().map((todo) => todo.text).sort()).toEqual([
+        "Boundary done @home",
+        "Recent done @Work",
+        "active @home",
+      ].sort());
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("should match contexts case-insensitively without the @ prefix", async () => {
+      const first = new Todo("x 2025-01-01 2024-12-01 first @Home");
+      const second = new Todo("x 2026-05-01 2026-04-01 second @home");
+      const other = new Todo("x 2025-01-01 2024-12-01 third @Work");
+      await backend.save([first, second, other]);
+
+      const result = await deleteCompletedHandler(backend, {
+        context: "HOME",
+      });
+      const content = structured<{ deletedCount: number; hashes: string[] }>(
+        result,
+      );
+
+      expect(content.deletedCount).toBe(2);
+      expect(content.hashes).toHaveLength(2);
+      expect(backend.getTodos().map((todo) => todo.text)).toEqual([
+        "third @Work",
+      ]);
+    });
+
+    it("should be a no-op when nothing matches", async () => {
+      await backend.save([
+        new Todo("x 2025-01-01 2024-12-01 done @home"),
+        new Todo("active"),
+      ]);
+      backend.loadCalls = 0;
+      backend.saveCalls = 0;
+
+      const result = await deleteCompletedHandler(backend, {
+        before: "2000-01-01",
+      });
+      const content = structured<{ deletedCount: number; hashes: string[] }>(
+        result,
+      );
+
+      expect(content).toEqual({ deletedCount: 0, hashes: [] });
+      expect(backend.getTodos()).toHaveLength(2);
+      expect(backend.loadCalls).toBe(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("should delete every completed todo when no filter is given", async () => {
+      await backend.save([
+        new Todo("x 2025-01-01 2024-12-01 first"),
+        new Todo("x 2026-05-01 2026-04-01 second @work"),
+        new Todo("active"),
+      ]);
+
+      const result = await deleteCompletedHandler(backend, {});
+      const content = structured<{ deletedCount: number; hashes: string[] }>(
+        result,
+      );
+
+      expect(content.deletedCount).toBe(2);
+      expect(backend.getTodos().map((todo) => todo.text)).toEqual(["active"]);
+    });
+
+    it("should reject invalid dates", async () => {
+      await expect(
+        deleteCompletedHandler(backend, { before: "2026-02-30" }),
+      ).rejects.toThrow();
+      await expect(
+        deleteCompletedHandler(backend, { before: "01-02-2026" }),
+      ).rejects.toThrow();
     });
   });
 

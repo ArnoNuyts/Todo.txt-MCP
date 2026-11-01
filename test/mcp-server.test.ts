@@ -49,16 +49,26 @@ describe("createTodoMcpServer", () => {
     await Promise.allSettled([client.close(), server.close()]);
   });
 
-  it("should expose the five todo tools", async () => {
+  it("should expose the canonical tools plus deprecated aliases", async () => {
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_todo",
+      "add_todos",
+      "delete_completed",
       "delete_todo",
+      "delete_todos",
       "edit_todo",
       "list_todos",
       "set_todo_status",
+      "set_todo_statuses",
+      "update_todos",
     ]);
+
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    for (const name of ["add_todo", "edit_todo", "delete_todo", "set_todo_status"]) {
+      expect(byName.get(name)?.description).toContain("Deprecated");
+    }
   });
 
   it("should expose annotations and output schemas for each tool", async () => {
@@ -68,19 +78,23 @@ describe("createTodoMcpServer", () => {
     expect(byName.get("list_todos")?.annotations).toMatchObject({
       readOnlyHint: true,
     });
-    expect(byName.get("add_todo")?.annotations).toMatchObject({
+    expect(byName.get("add_todos")?.annotations).toMatchObject({
       destructiveHint: false,
       idempotentHint: false,
     });
-    expect(byName.get("edit_todo")?.annotations).toMatchObject({
+    expect(byName.get("update_todos")?.annotations).toMatchObject({
       destructiveHint: true,
       idempotentHint: false,
     });
-    expect(byName.get("set_todo_status")?.annotations).toMatchObject({
+    expect(byName.get("set_todo_statuses")?.annotations).toMatchObject({
       destructiveHint: true,
       idempotentHint: true,
     });
-    expect(byName.get("delete_todo")?.annotations).toMatchObject({
+    expect(byName.get("delete_todos")?.annotations).toMatchObject({
+      destructiveHint: true,
+      idempotentHint: true,
+    });
+    expect(byName.get("delete_completed")?.annotations).toMatchObject({
       destructiveHint: true,
       idempotentHint: true,
     });
@@ -104,7 +118,12 @@ describe("createTodoMcpServer", () => {
       arguments: {},
     }) as {
       structuredContent?: {
-        todos: Array<{ hash: string; text: string; state: number }>;
+        todos: Array<{
+          hash: string;
+          text: string;
+          state: number;
+          status: string;
+        }>;
         total: number;
         nextOffset: number | null;
       };
@@ -117,6 +136,7 @@ describe("createTodoMcpServer", () => {
       hash,
       text: "structured todo",
       state: 1,
+      status: "todo",
     });
 
     const editResult = await client.callTool({
@@ -173,6 +193,130 @@ describe("createTodoMcpServer", () => {
 
     expect(missingResult.isError).toBe(true);
     expect(textOf(missingResult)).toBe("Todo not found (file modified?)");
+  });
+
+  it("should batch status updates and deletions", async () => {
+    const addResult = await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["batch one", "batch two", "batch three"] },
+    }) as {
+      structuredContent?: { added: Array<{ hash: string }> };
+    };
+    const hashes = addResult.structuredContent!.added.map((todo) => todo.hash);
+    const missingHash = "0".repeat(16);
+
+    const statusResult = await client.callTool({
+      name: "set_todo_statuses",
+      arguments: { hashes: [hashes[0], hashes[1], missingHash], status: "done" },
+    }) as {
+      structuredContent?: {
+        updated: Array<{ hash: string; status: string }>;
+        missing: string[];
+      };
+    };
+    expect(statusResult.structuredContent?.updated).toHaveLength(2);
+    expect(
+      statusResult.structuredContent?.updated.every((todo) =>
+        todo.status === "done"
+      ),
+    ).toBe(true);
+    expect(statusResult.structuredContent?.missing).toEqual([missingHash]);
+
+    // Completing a todo changes its hash, so delete using the hash returned by
+    // the status call instead of the pre-update hash.
+    const completedHash = statusResult.structuredContent!.updated[0].hash;
+    const deleteResult = await client.callTool({
+      name: "delete_todos",
+      arguments: { hashes: [completedHash, missingHash] },
+    }) as {
+      structuredContent?: {
+        deleted: Array<{ hash: string; status: string }>;
+        missing: string[];
+      };
+    };
+    expect(deleteResult.structuredContent?.deleted).toHaveLength(1);
+    expect(deleteResult.structuredContent?.deleted[0].hash).toBe(
+      completedHash,
+    );
+    expect(deleteResult.structuredContent?.deleted[0].status).toBe("done");
+    expect(deleteResult.structuredContent?.missing).toEqual([missingHash]);
+    expect(backend.getTodos()).toHaveLength(2);
+  });
+
+  it("should delete completed todos by date and context", async () => {
+    await client.callTool({
+      name: "add_todos",
+      arguments: {
+        todos: [
+          "x 2025-01-01 2024-12-01 old done @Home",
+          "x 2026-05-01 2026-04-01 recent done @home",
+          "active @home",
+        ],
+      },
+    });
+
+    const result = await client.callTool({
+      name: "delete_completed",
+      arguments: { before: "2026-01-01", context: "@home" },
+    }) as {
+      structuredContent?: { deletedCount: number; hashes: string[] };
+    };
+
+    expect(result.structuredContent?.deletedCount).toBe(1);
+    expect(result.structuredContent?.hashes).toHaveLength(1);
+    const remaining = backend.getTodos().map((todo) => todo.text);
+    expect(remaining).toHaveLength(2);
+    expect(remaining).toContain("recent done @home");
+    expect(remaining).toContain("active @home");
+  });
+
+  it("should replay an idempotency key over MCP", async () => {
+    const first = await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["idempotent task"], idempotencyKey: "key-1" },
+    }) as {
+      structuredContent?: { added: Array<{ hash: string }> };
+    };
+
+    const second = await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["another task"], idempotencyKey: "key-1" },
+    }) as {
+      structuredContent?: { added: Array<{ hash: string }> };
+    };
+
+    expect(second.structuredContent?.added).toEqual(
+      first.structuredContent?.added,
+    );
+    expect(backend.getTodos()).toHaveLength(1);
+    expect(backend.getTodos()[0].text).toBe("idempotent task");
+  });
+
+  it("should skip duplicates and fail on duplicates when asked", async () => {
+    await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["dup task"] },
+    });
+
+    const skipped = await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["  DUP   task"], onDuplicate: "skip" },
+    }) as {
+      structuredContent?: {
+        added: unknown[];
+        skipped: Array<{ text: string; hash: string }>;
+      };
+    };
+    expect(skipped.structuredContent?.added).toEqual([]);
+    expect(skipped.structuredContent?.skipped).toHaveLength(1);
+    expect(backend.getTodos()).toHaveLength(1);
+
+    const errored = await client.callTool({
+      name: "add_todos",
+      arguments: { todos: ["dup task"], onDuplicate: "error" },
+    }) as { isError?: boolean };
+    expect(errored.isError).toBe(true);
+    expect(backend.getTodos()).toHaveLength(1);
   });
 
   it("should only expose list_todos in read-only mode", async () => {

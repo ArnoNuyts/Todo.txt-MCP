@@ -49,18 +49,35 @@ import { resolveMaxTodos } from "./logic/limits.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 
 // Schemas
-export const AddTodoSchema = z.object({
+export const AddTodosSchema = z.object({
   todos: z.array(z.string().max(2000)).max(100).describe(
     "The todo texts, each supports todo.txt format",
   ),
+  idempotencyKey: z.string().min(1).max(128).regex(
+    /^\S+$/,
+    "An idempotency key must not contain whitespace",
+  ).optional().describe(
+    "Optional key persisted as an idem:<key> tag; repeating the same key " +
+      "returns the previously added todos instead of adding them again",
+  ),
+  onDuplicate: z.enum(["allow", "skip", "error"]).optional().describe(
+    "How to handle a todo whose normalized text already exists: 'allow' " +
+      "(default) adds it, 'skip' reports it in 'skipped', 'error' fails the " +
+      "whole call without writing",
+  ),
 });
 
-export const EditTodoSchema = z.object({
+export const UpdateTodosSchema = z.object({
   edits: z.array(z.object({
     hash: z.string().describe("Hash of the todo to edit"),
     text: z.string().max(2000).describe("New text for the todo"),
   })).max(100).describe("An array of todo edits"),
 });
+
+/** @deprecated Use {@link AddTodosSchema}. */
+export const AddTodoSchema = AddTodosSchema;
+/** @deprecated Use {@link UpdateTodosSchema}. */
+export const EditTodoSchema = UpdateTodosSchema;
 
 export const ListTodosSchema = z.object({
   status: z.enum(["todo", "done", "all"]).optional().describe(
@@ -77,6 +94,43 @@ export const ListTodosSchema = z.object({
   ),
 });
 
+export const SetTodoStatusesSchema = z.object({
+  hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
+    "Hashes of the todos to update",
+  ),
+  status: z.enum(["done", "todo"]).describe(
+    "New status for every matched todo ('done' or 'todo')",
+  ),
+});
+
+export const DeleteTodosSchema = z.object({
+  hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
+    "Hashes of the todos to delete",
+  ),
+});
+
+const DateOnlySchema = z.string().regex(
+  /^\d{4}-\d{2}-\d{2}$/,
+  "Expected a date in YYYY-MM-DD format",
+).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+}, "Expected a valid calendar date (YYYY-MM-DD)");
+
+export const DeleteCompletedSchema = z.object({
+  before: DateOnlySchema.optional().describe(
+    "Only delete todos completed strictly before this date (YYYY-MM-DD)",
+  ),
+  context: z.string().min(1).max(100).optional().describe(
+    "Only delete todos in this context; the leading '@' is optional and " +
+      "matching is case-insensitive",
+  ),
+});
+
+/** @deprecated Use {@link SetTodoStatusesSchema} plus the deprecated single-hash shape. */
 export const SetTodoStatusSchema = z.object({
   hash: z.string().describe("Hash of the todo to update"),
   status: z.enum(["done", "todo"]).describe(
@@ -84,15 +138,21 @@ export const SetTodoStatusSchema = z.object({
   ),
 });
 
+/** @deprecated Use {@link DeleteTodosSchema} plus the deprecated single-hash shape. */
 export const DeleteTodoSchema = z.object({
   hash: z.string().min(8).max(64).describe("Hash of the todo to delete"),
 });
 
 // Output schemas (raw shapes, as expected by registerTool)
-const TodoOutputShape = {
+const TodoSummaryShape = {
   hash: z.string(),
   text: z.string(),
   state: z.number().int(),
+  status: z.enum(["todo", "done"]),
+};
+
+const TodoOutputShape = {
+  ...TodoSummaryShape,
   priority: z.string().optional(),
   creationDate: z.string().optional(),
   completionDate: z.string().optional(),
@@ -104,21 +164,42 @@ const ListTodosOutputShape = {
   nextOffset: z.number().int().nullable(),
 };
 
-const AddTodoOutputShape = {
-  added: z.array(z.object({ hash: z.string(), text: z.string() })),
+const AddTodosOutputShape = {
+  added: z.array(z.object(TodoSummaryShape)),
+  skipped: z.array(z.object({ text: z.string(), hash: z.string() })),
 };
 
-const EditTodoOutputShape = {
-  edited: z.array(z.object({ hash: z.string(), text: z.string() })),
+const UpdateTodosOutputShape = {
+  edited: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
 };
 
+const DeleteTodosOutputShape = {
+  deleted: z.array(z.object(TodoSummaryShape)),
+  missing: z.array(z.string()),
+};
+
+const SetTodoStatusesOutputShape = {
+  updated: z.array(z.object(TodoSummaryShape)),
+  missing: z.array(z.string()),
+};
+
+const DeleteCompletedOutputShape = {
+  deletedCount: z.number().int(),
+  hashes: z.array(z.string()),
+};
+
+/** @deprecated Kept so the deprecated `add_todo` alias keeps its old name. */
+const AddTodoOutputShape = AddTodosOutputShape;
+/** @deprecated Kept so the deprecated `edit_todo` alias keeps its old name. */
+const EditTodoOutputShape = UpdateTodosOutputShape;
+/** Deprecated single-hash response shape for `set_todo_status`. */
 const SetTodoStatusOutputShape = {
   hash: z.string(),
   status: z.enum(["done", "todo"]),
   text: z.string(),
 };
-
+/** Deprecated single-hash response shape for `delete_todo`. */
 const DeleteTodoOutputShape = {
   deleted: z.literal(true),
   hash: z.string(),
@@ -141,74 +222,211 @@ export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
   }
 }
 
-// Tool: add_todo handler
-export async function addTodoHandler(
+const DATE_TOKEN_REGEX = /\b\d{4}-[0-1][0-9]-[0-3][0-9]\b/g;
+const IDEM_TAG_REGEX = /(?:^|\s+)idem:[^\s]+/g;
+
+/**
+ * Normalizes todo text for duplicate detection: trims, collapses whitespace,
+ * lowercases, and ignores the leading `x` marker, dates, and `idem:<key>` tags.
+ */
+export function normalizeTodoText(text: string): string {
+  return text
+    .replace(IDEM_TAG_REGEX, " ")
+    .replace(DATE_TOKEN_REGEX, " ")
+    .replace(/^\s*x\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function statusOf(todo: Todo): "todo" | "done" {
+  return todo.isDone() ? "done" : "todo";
+}
+
+function idempotencyKeysOf(todo: Todo): string[] {
+  const value = todo.tags.idem;
+  if (typeof value === "string") {
+    return [value];
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+async function summarizeTodo(todo: Todo) {
+  return {
+    hash: await todo.getHash(),
+    text: todo.toDisplayString(),
+    state: todo.state,
+    status: statusOf(todo),
+  };
+}
+
+function todoHasContext(todo: Todo, context: string): boolean {
+  for (const todoContext of todo.contexts) {
+    if (todoContext.toLowerCase() === context) {
+      return true;
+    }
+  }
+  // The parser only recognizes contexts preceded by whitespace, so also check
+  // the raw text with an explicit start anchor.
+  const escaped = context.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)@${escaped}(?=$|\\s)`, "i").test(todo.text);
+}
+
+function notFoundResult() {
+  return {
+    isError: true as const,
+    content: [{
+      type: "text" as const,
+      text: "Todo not found (file modified?)",
+    }],
+  };
+}
+
+// Tool: add_todos handler
+export async function addTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { todos: todoTexts } = AddTodoSchema.parse(rawArgs);
+  const {
+    todos: todoTexts,
+    idempotencyKey,
+    onDuplicate = "allow",
+  } = AddTodosSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
 
+    // A repeated idempotency key replays the previously added todos instead of
+    // adding them again.
+    if (idempotencyKey !== undefined) {
+      const previous = todos.filter((todo) =>
+        idempotencyKeysOf(todo).includes(idempotencyKey)
+      );
+      if (previous.length > 0) {
+        const added = await Promise.all(previous.map(summarizeTodo));
+        return {
+          content: [{
+            type: "text" as const,
+            text: added.map(({ hash, text }) => `Added todo [${hash}]: ${text}`)
+              .join("\n"),
+          }],
+          structuredContent: { added, skipped: [] },
+        };
+      }
+    }
+
+    const existingByText = new Map<string, Todo>();
+    for (const todo of todos) {
+      const key = normalizeTodoText(todo.toString());
+      if (!existingByText.has(key)) {
+        existingByText.set(key, todo);
+      }
+    }
+
+    const toAdd: Todo[] = [];
+    const skipped: Array<{ text: string; hash: string }> = [];
+    const duplicates: string[] = [];
+    // Tracks texts added earlier in this same call so a request cannot sneak
+    // duplicates past the onDuplicate policy.
+    const seenInRequest = new Map<string, Todo>();
+
+    for (const text of todoTexts) {
+      const key = normalizeTodoText(text);
+      const newTodo = new Todo(text);
+      if (!newTodo.creationDate) {
+        newTodo.creationDate = new Date();
+      }
+      if (idempotencyKey !== undefined) {
+        newTodo.tags.idem = idempotencyKey;
+      }
+
+      const existing = existingByText.get(key);
+      const earlierInRequest = seenInRequest.get(key);
+      if (existing || earlierInRequest) {
+        if (onDuplicate === "skip") {
+          skipped.push({
+            text,
+            hash: await (existing ?? earlierInRequest!).getHash(),
+          });
+          continue;
+        }
+        if (onDuplicate === "error") {
+          duplicates.push(text);
+          continue;
+        }
+      }
+
+      if (!seenInRequest.has(key)) {
+        seenInRequest.set(key, newTodo);
+      }
+      toAdd.push(newTodo);
+    }
+
+    if (onDuplicate === "error" && duplicates.length > 0) {
+      return {
+        isError: true as const,
+        content: [{
+          type: "text" as const,
+          text: `Cannot add ${duplicates.length} duplicate todo(s) ` +
+            `(onDuplicate: "error"): ${duplicates.join(", ")}. ` +
+            `Nothing was saved.`,
+        }],
+      };
+    }
+
     // Enforce the total-size cap before mutating anything so a rejected add
     // never partially writes to the backend.
     const maxTodos = resolveMaxTodos();
-    if (todos.length + todoTexts.length > maxTodos) {
+    if (todos.length + toAdd.length > maxTodos) {
       return {
-        isError: true,
+        isError: true as const,
         content: [{
           type: "text" as const,
-          text: `Cannot add ${todoTexts.length} todo(s): the file already ` +
+          text: `Cannot add ${toAdd.length} todo(s): the file already ` +
             `contains ${todos.length} and the limit is ${maxTodos} todos ` +
             `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
         }],
       };
     }
 
-    const newTodos: Todo[] = [];
-    for (const text of todoTexts) {
-      const newTodo = new Todo(text);
-      if (!newTodo.creationDate) {
-        newTodo.creationDate = new Date();
-      }
-      todos.push(newTodo);
-      newTodos.push(newTodo);
+    for (const todo of toAdd) {
+      todos.push(todo);
     }
-    await backend.save(todos);
+    if (toAdd.length > 0) {
+      await backend.save(todos);
+    }
 
-    const added = await Promise.all(
-      newTodos.map(async (todo) => ({
-        hash: await todo.getHash(),
-        text: todo.toDisplayString(),
-      })),
-    );
-    const newTodoStrings = added.map(({ hash, text }) =>
-      `Added todo [${hash}]: ${text}`
-    );
+    const added = await Promise.all(toAdd.map(summarizeTodo));
+    const resultLines = [
+      ...added.map(({ hash, text }) => `Added todo [${hash}]: ${text}`),
+      ...skipped.map(({ text }) => `Skipped duplicate todo: ${text}`),
+    ];
 
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: newTodoStrings.join("\n"),
-        },
-      ],
-      structuredContent: { added },
+      content: [{
+        type: "text" as const,
+        text: resultLines.length > 0
+          ? resultLines.join("\n")
+          : "No todos were added.",
+      }],
+      structuredContent: { added, skipped },
     };
   });
 }
 
-export async function editTodoHandler(
+/** @deprecated Use {@link addTodosHandler}; kept for the `add_todo` alias. */
+export const addTodoHandler = addTodosHandler;
+
+export async function updateTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { edits } = EditTodoSchema.parse(rawArgs);
+  const { edits } = UpdateTodosSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
     const results: string[] = [];
-    const edited: Array<{ hash: string; text: string }> = [];
+    const edited: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
     const missing: string[] = [];
     let changesMade = false;
 
@@ -223,10 +441,9 @@ export async function editTodoHandler(
 
       if (todo) {
         todo.setText(text);
-        const newHash = await todo.getHash();
-        const displayText = todo.toDisplayString();
-        edited.push({ hash: newHash, text: displayText });
-        results.push(`Edited todo [${newHash}]: ${displayText}`);
+        const summary = await summarizeTodo(todo);
+        edited.push(summary);
+        results.push(`Edited todo [${summary.hash}]: ${summary.text}`);
         changesMade = true;
       } else {
         missing.push(hash);
@@ -249,6 +466,9 @@ export async function editTodoHandler(
     };
   });
 }
+
+/** @deprecated Use {@link updateTodosHandler}; kept for the `edit_todo` alias. */
+export const editTodoHandler = updateTodosHandler;
 
 export async function listTodosHandler(
   backend: TodoBackend,
@@ -281,9 +501,7 @@ export async function listTodosHandler(
 
   const todoEntries = await Promise.all(
     pagedTodos.map(async (todo) => ({
-      hash: await todo.getHash(),
-      text: todo.toDisplayString(),
-      state: todo.state,
+      ...await summarizeTodo(todo),
       priority: todo.priority,
       creationDate: todo.creationDate?.toISOString().substring(0, 10),
       completionDate: todo.completionDate?.toISOString().substring(0, 10),
@@ -315,11 +533,12 @@ export async function listTodosHandler(
   };
 }
 
-export async function setTodoStatusHandler(
+// Tool: set_todo_statuses handler
+export async function setTodoStatusesHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hash, status } = SetTodoStatusSchema.parse(rawArgs);
+  const { hashes, status } = SetTodoStatusesSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -329,88 +548,209 @@ export async function setTodoStatusHandler(
       todoHashMap.set(await todo.getHash(), todo);
     }
 
-    const todo = todoHashMap.get(hash);
-
-    if (!todo) {
-      return {
-        isError: true,
-        content: [{
-          type: "text" as const,
-          text: "Todo not found (file modified?)",
-        }],
-      };
-    }
-
     const targetState = status === "done"
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
 
-    if (todo.state !== targetState) {
-      const newTodo = todo.toggleState();
-      if (newTodo) {
-        todos.push(newTodo);
+    const updated: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const missing: string[] = [];
+    const results: string[] = [];
+    let changesMade = false;
+
+    for (const hash of new Set(hashes)) {
+      const todo = todoHashMap.get(hash);
+
+      if (!todo) {
+        missing.push(hash);
+        results.push(`Todo with hash ${hash} not found.`);
+        continue;
       }
-      await backend.save(todos);
+
+      if (todo.state !== targetState) {
+        const newTodo = todo.toggleState();
+        if (newTodo) {
+          todos.push(newTodo);
+        }
+        changesMade = true;
+      }
+
+      const summary = await summarizeTodo(todo);
+      updated.push(summary);
+      results.push(
+        `Set todo [${summary.hash}] status to ${status}: ${summary.text}`,
+      );
     }
 
-    const newHash = await todo.getHash();
-    const displayText = todo.toDisplayString();
+    if (changesMade) {
+      await backend.save(todos);
+    }
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `Set todo [${newHash}] status to ${status}: ${displayText}`,
+          text: results.length > 0
+            ? results.join("\n")
+            : "No matching todos found.",
         },
       ],
-      structuredContent: {
-        hash: newHash,
-        status,
-        text: displayText,
-      },
+      structuredContent: { updated, missing },
     };
   });
 }
 
-// Tool: delete_todo handler
+/** @deprecated Use {@link setTodoStatusesHandler}; kept for the alias. */
+export async function setTodoStatusHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { hash, status } = SetTodoStatusSchema.parse(rawArgs);
+  const result = await setTodoStatusesHandler(backend, {
+    hashes: [hash],
+    status,
+  });
+
+  if (!("structuredContent" in result)) {
+    return result;
+  }
+
+  const updated = result.structuredContent.updated[0];
+  if (updated === undefined) {
+    return notFoundResult();
+  }
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Set todo [${updated.hash}] status to ${status}: ${updated.text}`,
+    }],
+    structuredContent: {
+      hash: updated.hash,
+      status,
+      text: updated.text,
+    },
+  };
+}
+
+// Tool: delete_todos handler
+export async function deleteTodosHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { hashes } = DeleteTodosSchema.parse(rawArgs);
+
+  return await withBackendLock(backend, async () => {
+    const todos = await backend.load();
+
+    const todoHashMap = new Map<string, Todo>();
+    for (const todo of todos) {
+      todoHashMap.set(await todo.getHash(), todo);
+    }
+
+    const deleted: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const missing: string[] = [];
+    const toDelete = new Set<Todo>();
+
+    for (const hash of new Set(hashes)) {
+      const todo = todoHashMap.get(hash);
+      if (todo === undefined) {
+        missing.push(hash);
+        continue;
+      }
+      toDelete.add(todo);
+      deleted.push(await summarizeTodo(todo));
+    }
+
+    // Nothing matched: leave the backend untouched.
+    if (toDelete.size > 0) {
+      await backend.save(todos.filter((todo) => !toDelete.has(todo)));
+    }
+
+    const results = [
+      ...deleted.map(({ hash, text }) => `Deleted todo [${hash}]: ${text}`),
+      ...missing.map((hash) => `Todo with hash ${hash} not found.`),
+    ];
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: results.length > 0
+          ? results.join("\n")
+          : "No matching todos found. Nothing was deleted.",
+      }],
+      structuredContent: { deleted, missing },
+    };
+  });
+}
+
+/** @deprecated Use {@link deleteTodosHandler}; kept for the `delete_todo` alias. */
 export async function deleteTodoHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
   const { hash } = DeleteTodoSchema.parse(rawArgs);
+  const result = await deleteTodosHandler(backend, { hashes: [hash] });
+
+  if (!("structuredContent" in result)) {
+    return result;
+  }
+
+  if (result.structuredContent.deleted.length === 0) {
+    return notFoundResult();
+  }
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Deleted todo [${hash}]`,
+    }],
+    structuredContent: { deleted: true as const, hash },
+  };
+}
+
+// Tool: delete_completed handler
+export async function deleteCompletedHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { before, context } = DeleteCompletedSchema.parse(rawArgs);
+  const normalizedContext = context?.replace(/^@/, "").toLowerCase();
+  const beforeTime = before === undefined
+    ? undefined
+    : new Date(`${before}T00:00:00.000Z`).getTime();
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
+    const remaining: Todo[] = [];
+    const hashes: string[] = [];
 
-    let index = -1;
-    for (let i = 0; i < todos.length; i++) {
-      if (await todos[i].getHash() === hash) {
-        index = i;
-        break;
+    for (const todo of todos) {
+      const completedBefore = beforeTime === undefined ||
+        (todo.completionDate !== undefined &&
+          todo.completionDate.getTime() < beforeTime);
+      const inContext = normalizedContext === undefined ||
+        todoHasContext(todo, normalizedContext);
+
+      if (todo.isDone() && completedBefore && inContext) {
+        hashes.push(await todo.getHash());
+      } else {
+        remaining.push(todo);
       }
     }
 
-    if (index === -1) {
-      return {
-        isError: true,
-        content: [{
-          type: "text" as const,
-          text: "Todo not found (file modified?)",
-        }],
-      };
+    if (hashes.length > 0) {
+      await backend.save(remaining);
     }
 
-    todos.splice(index, 1);
-    await backend.save(todos);
-
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Deleted todo [${hash}]`,
-        },
-      ],
-      structuredContent: { deleted: true as const, hash },
+      content: [{
+        type: "text" as const,
+        text: hashes.length > 0
+          ? `Deleted ${hashes.length} completed todo(s):\n` +
+            hashes.map((hash) => `[${hash}]`).join("\n")
+          : "No completed todos matched. Nothing was deleted.",
+      }],
+      structuredContent: { deletedCount: hashes.length, hashes },
     };
   });
 }
@@ -490,11 +830,96 @@ export function createTodoMcpServer(
     return server;
   }
 
-  // Tool: add_todo
+  // Tool: add_todos
+  server.registerTool(
+    "add_todos",
+    {
+      description:
+        "Add one or more todos in todo.txt format. Supports duplicate " +
+        "handling and an idempotency key for safe retries.",
+      inputSchema: AddTodosSchema.shape,
+      outputSchema: AddTodosOutputShape,
+      annotations: {
+        destructiveHint: false,
+        idempotentHint: false,
+      },
+    },
+    (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
+  );
+
+  // Tool: update_todos
+  server.registerTool(
+    "update_todos",
+    {
+      description: "Edit one or more existing todos by hash.",
+      inputSchema: UpdateTodosSchema.shape,
+      outputSchema: UpdateTodosOutputShape,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: false,
+      },
+    },
+    (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
+  );
+
+  // Tool: set_todo_statuses
+  server.registerTool(
+    "set_todo_statuses",
+    {
+      description:
+        "Mark todos done or active by hash. Loads and saves the backend once " +
+        "for the whole batch.",
+      inputSchema: SetTodoStatusesSchema.shape,
+      outputSchema: SetTodoStatusesOutputShape,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+      },
+    },
+    (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
+  );
+
+  // Tool: delete_todos
+  server.registerTool(
+    "delete_todos",
+    {
+      description:
+        "Delete todos by hash in one batch. Loads and saves the backend once.",
+      inputSchema: DeleteTodosSchema.shape,
+      outputSchema: DeleteTodosOutputShape,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+      },
+    },
+    (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
+  );
+
+  // Tool: delete_completed
+  server.registerTool(
+    "delete_completed",
+    {
+      description:
+        "Delete completed todos, optionally only those completed before a " +
+        "date and/or in a context.",
+      inputSchema: DeleteCompletedSchema.shape,
+      outputSchema: DeleteCompletedOutputShape,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+      },
+    },
+    (rawArgs: unknown) => deleteCompletedHandler(backend, rawArgs),
+  );
+
+  // Deprecated aliases: delegate to the canonical handlers so existing
+  // clients keep working while new clients use the plural tool names.
   server.registerTool(
     "add_todo",
     {
-      description: "Add one or more todos in todo.txt format.",
+      description:
+        "Deprecated alias for add_todos. Add one or more todos in todo.txt " +
+        "format.",
       inputSchema: AddTodoSchema.shape,
       outputSchema: AddTodoOutputShape,
       annotations: {
@@ -505,11 +930,10 @@ export function createTodoMcpServer(
     (rawArgs: unknown) => addTodoHandler(backend, rawArgs),
   );
 
-  // Tool: edit_todo
   server.registerTool(
     "edit_todo",
     {
-      description: "Edit one or more existing todos by hash.",
+      description: "Deprecated alias for update_todos. Edit existing todos.",
       inputSchema: EditTodoSchema.shape,
       outputSchema: EditTodoOutputShape,
       annotations: {
@@ -520,11 +944,12 @@ export function createTodoMcpServer(
     (rawArgs: unknown) => editTodoHandler(backend, rawArgs),
   );
 
-  // Tool: set_todo_status
   server.registerTool(
     "set_todo_status",
     {
-      description: "Mark a todo done or active by hash.",
+      description:
+        "Deprecated alias for set_todo_statuses. Mark one todo done or " +
+        "active by hash.",
       inputSchema: SetTodoStatusSchema.shape,
       outputSchema: SetTodoStatusOutputShape,
       annotations: {
@@ -535,11 +960,11 @@ export function createTodoMcpServer(
     (rawArgs: unknown) => setTodoStatusHandler(backend, rawArgs),
   );
 
-  // Tool: delete_todo
   server.registerTool(
     "delete_todo",
     {
-      description: "Delete a todo by hash.",
+      description:
+        "Deprecated alias for delete_todos. Delete a single todo by hash.",
       inputSchema: DeleteTodoSchema.shape,
       outputSchema: DeleteTodoOutputShape,
       annotations: {
