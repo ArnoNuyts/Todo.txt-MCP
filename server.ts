@@ -116,6 +116,10 @@ export const UpdateTodosSchema = z.object({
     hash: z.string().describe("Hash of the todo to edit"),
     text: TodoBodySchema,
   })).max(100).describe("An array of todo edits"),
+  dryRun: z.boolean().optional().describe(
+    "When true, report the resulting hashes and text without writing to the " +
+      "backend",
+  ),
 });
 
 /** @deprecated Use {@link AddTodosSchema}. */
@@ -194,6 +198,10 @@ export const SetTodoStatusesSchema = z.object({
   ),
   status: z.enum(["done", "todo"]).describe(
     "New status for every matched todo ('done' or 'todo')",
+  ),
+  dryRun: z.boolean().optional().describe(
+    "When true, report the resulting hashes and text without writing to the " +
+      "backend",
   ),
 });
 
@@ -314,6 +322,7 @@ const UpdateTodosOutputShape = {
   edited: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
   ...BatchOutputFields,
+  dryRun: z.boolean().optional(),
 };
 
 const DeleteTodosOutputShape = {
@@ -327,6 +336,7 @@ const SetTodoStatusesOutputShape = {
   updated: z.array(z.object(TodoSummaryShape)),
   missing: z.array(z.string()),
   ...BatchOutputFields,
+  dryRun: z.boolean().optional(),
 };
 
 const DeleteCompletedOutputShape = {
@@ -624,7 +634,7 @@ async function updateTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { edits } = UpdateTodosSchema.parse(rawArgs);
+  const { edits, dryRun = false } = UpdateTodosSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -643,10 +653,17 @@ async function updateTodosOperation(
       const todo = todoHashMap.get(hash);
 
       if (todo) {
-        todo.setText(text);
-        const summary = await summarizeTodo(todo);
+        // Preview on a copy: the backend may hand out live references, so
+        // mutating the loaded todo would leak state even without a save.
+        const target = dryRun ? new Todo(todo.toString()) : todo;
+        target.setText(text);
+        const summary = await summarizeTodo(target);
         edited.push(summary);
-        results.push(`Edited todo [${summary.hash}]: ${summary.text}`);
+        results.push(
+          dryRun
+            ? `Would edit todo [${summary.hash}]: ${summary.text}`
+            : `Edited todo [${summary.hash}]: ${summary.text}`,
+        );
         changesMade = true;
       } else {
         missing.push(hash);
@@ -654,7 +671,7 @@ async function updateTodosOperation(
       }
     }
 
-    if (changesMade) {
+    if (changesMade && !dryRun) {
       await backend.save(todos);
     }
 
@@ -669,6 +686,7 @@ async function updateTodosOperation(
         edited,
         missing,
         ...batchFields(edited, missing),
+        ...(dryRun ? { dryRun: true } : {}),
       },
     };
   });
@@ -762,7 +780,9 @@ async function setTodoStatusesOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hashes, status } = SetTodoStatusesSchema.parse(rawArgs);
+  const { hashes, status, dryRun = false } = SetTodoStatusesSchema.parse(
+    rawArgs,
+  );
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -790,22 +810,28 @@ async function setTodoStatusesOperation(
         continue;
       }
 
-      if (todo.state !== targetState) {
-        const newTodo = todo.toggleState();
-        if (newTodo) {
+      // Preview on a copy: the backend may hand out live references, so
+      // toggling the loaded todo would leak state even without a save.
+      const target = dryRun ? new Todo(todo.toString()) : todo;
+
+      if (target.state !== targetState) {
+        const newTodo = target.toggleState();
+        if (newTodo && !dryRun) {
           todos.push(newTodo);
         }
         changesMade = true;
       }
 
-      const summary = await summarizeTodo(todo);
+      const summary = await summarizeTodo(target);
       updated.push(summary);
       results.push(
-        `Set todo [${summary.hash}] status to ${status}: ${summary.text}`,
+        dryRun
+          ? `Would set todo [${summary.hash}] status to ${status}: ${summary.text}`
+          : `Set todo [${summary.hash}] status to ${status}: ${summary.text}`,
       );
     }
 
-    if (changesMade) {
+    if (changesMade && !dryRun) {
       await backend.save(todos);
     }
 
@@ -822,6 +848,7 @@ async function setTodoStatusesOperation(
         updated,
         missing,
         ...batchFields(updated, missing),
+        ...(dryRun ? { dryRun: true } : {}),
       },
     };
   });
@@ -1467,7 +1494,8 @@ export function createTodoMcpServer(
         description:
           "Edit the body text of one or more existing todos by hash. Pass the " +
           "body only: status markers, priorities, and dates are managed " +
-          "separately.",
+          "separately. Pass dryRun to preview the resulting hashes and text " +
+          "without writing.",
         inputSchema: UpdateTodosSchema.shape,
         ...outputSchema(UpdateTodosOutputShape),
         annotations: {
@@ -1484,7 +1512,8 @@ export function createTodoMcpServer(
       {
         description:
           "Mark todos done or active by hash. Loads and saves the backend once " +
-          "for the whole batch.",
+          "for the whole batch. Pass dryRun to preview the resulting statuses " +
+          "without writing.",
         inputSchema: SetTodoStatusesSchema.shape,
         ...outputSchema(SetTodoStatusesOutputShape),
         annotations: {

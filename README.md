@@ -179,9 +179,11 @@ guidance.
   stored as an `idem:<key>` tag so retries return the previously added todos.
 - `update_todos` — replace the body text of one or more todos by hash. Pass
   the body only: no `x ` done marker, `(A) ` priority, or leading dates; use
-  `set_todo_statuses` to change status.
+  `set_todo_statuses` to change status. Supports `dryRun`, which reports the
+  resulting hashes and text without writing.
 - `set_todo_statuses` — mark a batch of todos done or active with one
-  load/save cycle.
+  load/save cycle. Supports `dryRun`, which previews the resulting statuses
+  without writing.
 - `delete_todos` — delete a batch of todos by hash with one load/save cycle.
   Pass `dryRun: true` to preview the deletion without writing.
 - `delete_completed` — delete completed todos, optionally filtered by
