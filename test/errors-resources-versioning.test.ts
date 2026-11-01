@@ -20,6 +20,8 @@ import {
 import type { TodoBackend } from "../logic/backend.ts";
 import { Todo } from "../logic/todo.ts";
 import { guardTool, mapError, toolError, ToolFailure } from "../logic/tool-errors.ts";
+import { BackendConflictError } from "../logic/backend-errors.ts";
+import { FileLockTimeoutError } from "../logic/file-lock.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
 interface ToolErrorBody {
@@ -106,6 +108,45 @@ describe("structured tool errors", () => {
       Promise.reject(new ToolFailure("UNSUPPORTED", "nope"))
     );
     expect(guarded).toEqual(toolError("UNSUPPORTED", "nope"));
+  });
+
+  it("maps a storage write conflict to CONFLICT", async () => {
+    const conflict = mapError(
+      new BackendConflictError("remote changed", { backend: "webdav" }),
+    );
+    expect(conflict.structuredContent.error).toMatchObject({
+      code: "CONFLICT",
+      message: "remote changed",
+      details: {
+        backend: "webdav",
+        hint: "reload with list_todos and retry",
+      },
+    });
+
+    const failingBackend: TodoBackend = {
+      load: () => Promise.resolve([]),
+      save: () =>
+        Promise.reject(new BackendConflictError("remote changed")),
+    };
+    const result = await addTodosHandler(failingBackend, {
+      todos: ["conflicting write"],
+    });
+    expect(errorOf(result).code).toBe("CONFLICT");
+  });
+
+  it("maps a file-lock timeout to CONFLICT", () => {
+    const result = mapError(
+      new FileLockTimeoutError("/tmp/todo.txt.lock", 250),
+    );
+
+    expect(result.structuredContent.error).toMatchObject({
+      code: "CONFLICT",
+      details: {
+        reason: "lock-timeout",
+        lockPath: "/tmp/todo.txt.lock",
+        timeoutMs: 250,
+      },
+    });
   });
 
   it("returns TODO_NOT_FOUND with hash and hint for a missing todo", async () => {

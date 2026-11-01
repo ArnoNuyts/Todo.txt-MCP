@@ -1,6 +1,7 @@
 import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
 import { Todos } from "../Todos.ts";
+import { BackendConflictError } from "../backend-errors.ts";
 import {
   assertFileSizeWithinLimit,
   resolveMaxFileBytes,
@@ -280,9 +281,10 @@ export class WebDavBackend implements TodoBackend {
     });
 
     if (response.status === 412) {
-      throw new Error(
+      throw new BackendConflictError(
         "WebDAV conflict: the todo file was modified remotely " +
           "(412 Precondition Failed). Reload the todos and try again.",
+        { backend: "webdav", status: 412 },
       );
     }
 

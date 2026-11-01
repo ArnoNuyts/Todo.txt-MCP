@@ -20,7 +20,12 @@ export function withBackendLock<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   const previous = backendQueues.get(backend) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(work);
+  // Compose the in-process queue with the backend's cross-process lock (when
+  // it has one) so every load -> mutate -> save cycle is isolated both inside
+  // this process and against cooperating processes.
+  const run = previous
+    .catch(() => undefined)
+    .then(() => backend.withLock ? backend.withLock(work) : work());
 
   backendQueues.set(backend, run);
   run

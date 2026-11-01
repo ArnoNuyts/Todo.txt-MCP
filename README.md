@@ -209,6 +209,21 @@ Read-only resources are always available, including in read-only mode:
 - `todo://active` — open todos only.
 - `todo://context/{name}` — open todos in one `@context`.
 
+### Concurrency
+
+Every mutating tool performs `load -> mutate -> save` inside an in-process
+queue. The local-file backend additionally takes an advisory `<file>.lock`
+around that cycle, so two processes sharing the same file cannot silently
+overwrite each other. The lock is released in a `finally`; a lock older than
+30 seconds is treated as abandoned.
+
+The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
+Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
+reload with `list_todos` before retrying. Item-scoped tools do **not** require a
+client-supplied `expectedVersion`: they address the exact version through the
+item hash. `import_todos` keeps `expectedVersion` because it replaces or merges
+a full-file snapshot supplied by the client.
+
 ### Exposing the server on demand
 
 The smallest footprint is not connecting the MCP server at all until it is
