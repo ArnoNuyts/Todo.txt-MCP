@@ -495,11 +495,11 @@ describe("dryRun deletions", () => {
       dryRun: true,
     });
     const content = structured<{
-      deleted: Array<{ hash: string }>;
+      succeeded: Array<{ hash: string }>;
       dryRun?: boolean;
     }>(result);
 
-    expect(content.deleted).toEqual([expect.objectContaining({ hash })]);
+    expect(content.succeeded).toEqual([expect.objectContaining({ hash })]);
     expect(content.dryRun).toBe(true);
     expect(textOf(result)).toContain("Would delete");
     expect(backend.getTodos()).toHaveLength(1);

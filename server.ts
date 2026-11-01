@@ -294,7 +294,6 @@ export const DeleteTodoSchema = z.object({
 const TodoSummaryShape = {
   hash: z.string(),
   text: z.string(),
-  state: z.number().int(),
   status: z.enum(["todo", "done"]),
 };
 
@@ -343,23 +342,17 @@ const AddTodosOutputShape = {
 };
 
 const UpdateTodosOutputShape = {
-  edited: z.array(z.object(UpdatedTodoSummaryShape)),
-  missing: z.array(z.string()),
   ...BatchOutputFields,
   succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
   dryRun: z.boolean().optional(),
 };
 
 const DeleteTodosOutputShape = {
-  deleted: z.array(z.object(TodoSummaryShape)),
-  missing: z.array(z.string()),
   ...BatchOutputFields,
   dryRun: z.boolean().optional(),
 };
 
 const SetTodoStatusesOutputShape = {
-  updated: z.array(z.object(UpdatedTodoSummaryShape)),
-  missing: z.array(z.string()),
   ...BatchOutputFields,
   succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
   dryRun: z.boolean().optional(),
@@ -482,7 +475,6 @@ async function summarizeTodo(todo: Todo) {
   return {
     hash: await todo.getHash(),
     text: todo.toDisplayString(),
-    state: todo.state,
     status: statusOf(todo),
   };
 }
@@ -715,8 +707,6 @@ async function updateTodosOperation(
         },
       ],
       structuredContent: {
-        edited,
-        missing,
         ...batchFields(edited, missing),
         ...(dryRun ? { dryRun: true } : {}),
       },
@@ -877,8 +867,6 @@ async function setTodoStatusesOperation(
         },
       ],
       structuredContent: {
-        updated,
-        missing,
         ...batchFields(updated, missing),
         ...(dryRun ? { dryRun: true } : {}),
       },
@@ -909,7 +897,7 @@ export async function setTodoStatusHandler(
       return result;
     }
 
-    const updated = result.structuredContent.updated[0];
+    const updated = result.structuredContent.succeeded[0];
     if (updated === undefined) {
       return notFoundError(hash);
     }
@@ -981,8 +969,6 @@ async function deleteTodosOperation(
           : "No matching todos found. Nothing was deleted.",
       }],
       structuredContent: {
-        deleted,
-        missing,
         ...batchFields(deleted, missing),
         ...(dryRun ? { dryRun: true } : {}),
       },
@@ -1007,7 +993,7 @@ export async function deleteTodoHandler(
       return result;
     }
 
-    if (result.structuredContent.deleted.length === 0) {
+    if (result.structuredContent.succeeded.length === 0) {
       return notFoundError(hash);
     }
 
