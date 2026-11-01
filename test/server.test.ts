@@ -290,7 +290,7 @@ describe("Server tool handlers", () => {
     });
 
     it("should return only active todos by default", async () => {
-      const result = await listTodosHandler(backend, {});
+      const result = await listTodosHandler(backend, { format: "both" });
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(true);
       expect(text.includes("Done Task 1")).toBe(false);
@@ -301,14 +301,14 @@ describe("Server tool handlers", () => {
     });
 
     it("should return only done todos when status is 'done'", async () => {
-      const result = await listTodosHandler(backend, { status: "done" });
+      const result = await listTodosHandler(backend, { status: "done", format: "both" });
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(false);
       expect(text.includes("Done Task 1")).toBe(true);
     });
 
     it("should return all todos when status is 'all'", async () => {
-      const result = await listTodosHandler(backend, { status: "all" });
+      const result = await listTodosHandler(backend, { status: "all", format: "both" });
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(true);
       expect(text.includes("Done Task 1")).toBe(true);
@@ -317,6 +317,7 @@ describe("Server tool handlers", () => {
     it("should filter todos by search term", async () => {
       const result = await listTodosHandler(backend, {
         search: "UniqueSearchTerm",
+        format: "both",
       });
       const text = result.content[0].text as string;
       expect(text.includes("UniqueSearchTerm")).toBe(true);
@@ -324,7 +325,7 @@ describe("Server tool handlers", () => {
     });
 
     it("should apply pagination limit", async () => {
-      const result = await listTodosHandler(backend, { limit: 1 });
+      const result = await listTodosHandler(backend, { limit: 1, format: "both" });
       const text = result.content[0].text as string;
       const lines = text.split("\n").filter((l) => l.trim() !== "");
       expect(lines.length).toBe(1);
@@ -335,7 +336,7 @@ describe("Server tool handlers", () => {
     });
 
     it("should include todo details in structured content", async () => {
-      const result = await listTodosHandler(backend, { status: "all" });
+      const result = await listTodosHandler(backend, { status: "all", format: "both" });
       const structured = result.structuredContent as {
         todos: Array<Record<string, unknown>>;
         total: number;
@@ -882,7 +883,7 @@ describe("Server tool handlers", () => {
       expect(doneTodo.text).toBe("Test Hash Todo Edited");
 
       // Verify using listTodosHandler
-      const listArgs = { status: "done" };
+      const listArgs = { status: "done", format: "both" };
       const listResult = await listTodosHandler(backend, listArgs);
       const text = listResult.content[0].text as string;
 

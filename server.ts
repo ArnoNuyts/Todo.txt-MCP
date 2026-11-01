@@ -162,9 +162,9 @@ export const ListTodosSchema = z.object({
       "'offset' is ignored",
   ),
   format: z.enum(["text", "structured", "both"]).optional().describe(
-    "Output format: 'both' (default) returns the text list and structured " +
-      "content, 'structured' returns a one-line summary plus structured " +
-      "content, and 'text' returns only the text list",
+    "Output format: 'structured' (default) returns structured content with a " +
+      "short summary line; 'text' returns only the text list; 'both' returns " +
+      "both and is the most token-heavy.",
   ),
 });
 
@@ -666,7 +666,7 @@ async function listTodosOperation(
   rawArgs: unknown,
 ) {
   const args = ListTodosSchema.parse(rawArgs);
-  const { limit = 50, offset = 0, cursor, format = "both" } = args;
+  const { limit = 50, offset = 0, cursor, format = "structured" } = args;
   const allTodos = await backend.load();
   const version = computeContentVersion(allTodos);
 
@@ -1223,9 +1223,19 @@ export function importTodosHandler(backend: TodoBackend, rawArgs: unknown) {
   return guardTool(() => importTodosOperation(backend, rawArgs));
 }
 
+export type TodoToolset = "full" | "core" | "readonly" | "off";
+
 export interface CreateTodoMcpServerOptions {
   /** When true only `list_todos` is exposed; mutating tools are absent. */
   readOnly?: boolean;
+  /** Expose coarse tool profiles; `off` exposes resources only. */
+  toolset?: TodoToolset;
+  /**
+   * Include `outputSchema` in `tools/list`. Off by default: output schemas are
+   * roughly half of the tool-definition payload and most clients do not
+   * validate them.
+   */
+  outputSchemas?: boolean;
 }
 
 /**
@@ -1243,13 +1253,51 @@ export function resolveReadOnlyMode(
   return value === "1" || value === "true" || value === "yes";
 }
 
+/**
+ * Resolves the exposed toolset from an explicit option, then `MCP_TOOLSET`.
+ * Unknown values fall back to `full` so a typo cannot silently remove tools.
+ */
+export function resolveToolset(
+  options: { toolset?: TodoToolset } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): TodoToolset {
+  if (options.toolset !== undefined) {
+    return options.toolset;
+  }
+  const value = env.MCP_TOOLSET?.trim().toLowerCase();
+  if (value === "full" || value === "core" || value === "readonly" || value === "off") {
+    return value;
+  }
+  return "full";
+}
+
+/**
+ * Resolves output-schema exposure from an explicit option, then
+ * `MCP_OUTPUT_SCHEMAS`. Off by default; enable with `1`, `true`, or `yes`.
+ */
+export function resolveOutputSchemas(
+  options: { outputSchemas?: boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (options.outputSchemas !== undefined) {
+    return options.outputSchemas;
+  }
+  const value = env.MCP_OUTPUT_SCHEMAS?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 export function createTodoMcpServer(
   backend: TodoBackend,
   options: CreateTodoMcpServerOptions = {},
 ) {
+  const toolset = resolveToolset(options);
+  const exposeOutputSchemas = resolveOutputSchemas(options);
+  const outputSchema = (shape: Record<string, z.ZodTypeAny>) =>
+    exposeOutputSchemas ? { outputSchema: shape } : {};
+
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "1.0.0",
+    version: "2.0.0",
   });
 
   // Register a prompt describing the todo.txt format
@@ -1341,10 +1389,14 @@ export function createTodoMcpServer(
     },
   );
 
+  if (toolset === "off") {
+    return server;
+  }
+
   // Tool: list_todos
   // No `outputSchema` is declared: the `format: "text"` mode returns no
   // structured content, which the MCP SDK rejects when an output schema is
-  // present. Default ("both") and "structured" responses still include
+  // present. Default ("structured") and "both" responses still include
   // structured content matching `ListTodosOutputShape`.
   server.registerTool(
     "list_todos",
@@ -1365,88 +1417,92 @@ export function createTodoMcpServer(
     return server;
   }
 
-  // Tool: add_todos
-  server.registerTool(
-    "add_todos",
-    {
-      description:
-        "Add one or more todos in todo.txt format. Supports duplicate " +
-        "handling and an idempotency key for safe retries.",
-      inputSchema: AddTodosSchema.shape,
-      outputSchema: AddTodosOutputShape,
-      annotations: {
-        destructiveHint: false,
-        idempotentHint: false,
+  if (toolset !== "readonly") {
+    // Tool: add_todos
+    server.registerTool(
+      "add_todos",
+      {
+        description:
+          "Add one or more todos in todo.txt format. Supports duplicate " +
+          "handling and an idempotency key for safe retries.",
+        inputSchema: AddTodosSchema.shape,
+        ...outputSchema(AddTodosOutputShape),
+        annotations: {
+          destructiveHint: false,
+          idempotentHint: false,
+        },
       },
-    },
-    (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
+    );
 
-  // Tool: update_todos
-  server.registerTool(
-    "update_todos",
-    {
-      description: "Edit one or more existing todos by hash.",
-      inputSchema: UpdateTodosSchema.shape,
-      outputSchema: UpdateTodosOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: false,
+    // Tool: update_todos
+    server.registerTool(
+      "update_todos",
+      {
+        description: "Edit one or more existing todos by hash.",
+        inputSchema: UpdateTodosSchema.shape,
+        ...outputSchema(UpdateTodosOutputShape),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: false,
+        },
       },
-    },
-    (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
+    );
 
-  // Tool: set_todo_statuses
-  server.registerTool(
-    "set_todo_statuses",
-    {
-      description:
-        "Mark todos done or active by hash. Loads and saves the backend once " +
-        "for the whole batch.",
-      inputSchema: SetTodoStatusesSchema.shape,
-      outputSchema: SetTodoStatusesOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: true,
+    // Tool: set_todo_statuses
+    server.registerTool(
+      "set_todo_statuses",
+      {
+        description:
+          "Mark todos done or active by hash. Loads and saves the backend once " +
+          "for the whole batch.",
+        inputSchema: SetTodoStatusesSchema.shape,
+        ...outputSchema(SetTodoStatusesOutputShape),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: true,
+        },
       },
-    },
-    (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
+    );
 
-  // Tool: delete_todos
-  server.registerTool(
-    "delete_todos",
-    {
-      description:
-        "Delete todos by hash in one batch. Loads and saves the backend once. " +
-        "Pass dryRun to preview the deletion without writing.",
-      inputSchema: DeleteTodosSchema.shape,
-      outputSchema: DeleteTodosOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: true,
+    // Tool: delete_todos
+    server.registerTool(
+      "delete_todos",
+      {
+        description:
+          "Delete todos by hash in one batch. Loads and saves the backend once. " +
+          "Pass dryRun to preview the deletion without writing.",
+        inputSchema: DeleteTodosSchema.shape,
+        ...outputSchema(DeleteTodosOutputShape),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: true,
+        },
       },
-    },
-    (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
+    );
+  }
 
-  // Tool: delete_completed
-  server.registerTool(
-    "delete_completed",
-    {
-      description:
-        "Delete completed todos, optionally only those completed before a " +
-        "date and/or in a context. Pass dryRun to preview without writing.",
-      inputSchema: DeleteCompletedSchema.shape,
-      outputSchema: DeleteCompletedOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: true,
+  if (toolset === "full") {
+    // Tool: delete_completed
+    server.registerTool(
+      "delete_completed",
+      {
+        description:
+          "Delete completed todos, optionally only those completed before a " +
+          "date and/or in a context. Pass dryRun to preview without writing.",
+        inputSchema: DeleteCompletedSchema.shape,
+        ...outputSchema(DeleteCompletedOutputShape),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: true,
+        },
       },
-    },
-    (rawArgs: unknown) => deleteCompletedHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => deleteCompletedHandler(backend, rawArgs),
+    );
+  }
 
   // Tool: get_todo
   server.registerTool(
@@ -1455,7 +1511,7 @@ export function createTodoMcpServer(
       description:
         "Fetch a single todo by hash, including its content version.",
       inputSchema: GetTodoSchema.shape,
-      outputSchema: GetTodoOutputShape,
+      ...outputSchema(GetTodoOutputShape),
       annotations: { readOnlyHint: true },
     },
     (rawArgs: unknown) => getTodoHandler(backend, rawArgs),
@@ -1469,7 +1525,7 @@ export function createTodoMcpServer(
         "Summarize todo counts by status, context, project and priority, " +
         "plus the number of overdue open todos.",
       inputSchema: SummarySchema.shape,
-      outputSchema: SummaryOutputShape,
+      ...outputSchema(SummaryOutputShape),
       annotations: { readOnlyHint: true },
     },
     (rawArgs: unknown) => summaryHandler(backend, rawArgs),
@@ -1482,7 +1538,7 @@ export function createTodoMcpServer(
       description:
         "Export the whole todo.txt content together with its content version.",
       inputSchema: ExportTodosSchema.shape,
-      outputSchema: ExportTodosOutputShape,
+      ...outputSchema(ExportTodosOutputShape),
       annotations: { readOnlyHint: true },
     },
     (rawArgs: unknown) => exportTodosHandler(backend, rawArgs),
@@ -1496,91 +1552,30 @@ export function createTodoMcpServer(
         "Report whether the todo file changed since a version. When it did, " +
         "the current content is included.",
       inputSchema: ChangesSinceSchema.shape,
-      outputSchema: ChangesSinceOutputShape,
+      ...outputSchema(ChangesSinceOutputShape),
       annotations: { readOnlyHint: true },
     },
     (rawArgs: unknown) => changesSinceHandler(backend, rawArgs),
   );
 
-  // Tool: import_todos
-  server.registerTool(
-    "import_todos",
-    {
-      description:
-        "Import todo.txt content in merge or replace mode, optionally guarded " +
-        "by an expected content version. Supports a dry run diff.",
-      inputSchema: ImportTodosSchema.shape,
-      outputSchema: ImportTodosOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: false,
+  if (toolset === "full") {
+    // Tool: import_todos
+    server.registerTool(
+      "import_todos",
+      {
+        description:
+          "Import todo.txt content in merge or replace mode, optionally guarded " +
+          "by an expected content version. Supports a dry run diff.",
+        inputSchema: ImportTodosSchema.shape,
+        ...outputSchema(ImportTodosOutputShape),
+        annotations: {
+          destructiveHint: true,
+          idempotentHint: false,
+        },
       },
-    },
-    (rawArgs: unknown) => importTodosHandler(backend, rawArgs),
-  );
-
-  // Deprecated aliases: delegate to the canonical handlers so existing
-  // clients keep working while new clients use the plural tool names.
-  server.registerTool(
-    "add_todo",
-    {
-      description:
-        "Deprecated alias for add_todos. Add one or more todos in todo.txt " +
-        "format.",
-      inputSchema: AddTodoSchema.shape,
-      outputSchema: AddTodoOutputShape,
-      annotations: {
-        destructiveHint: false,
-        idempotentHint: false,
-      },
-    },
-    (rawArgs: unknown) => addTodoHandler(backend, rawArgs),
-  );
-
-  server.registerTool(
-    "edit_todo",
-    {
-      description: "Deprecated alias for update_todos. Edit existing todos.",
-      inputSchema: EditTodoSchema.shape,
-      outputSchema: EditTodoOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: false,
-      },
-    },
-    (rawArgs: unknown) => editTodoHandler(backend, rawArgs),
-  );
-
-  server.registerTool(
-    "set_todo_status",
-    {
-      description:
-        "Deprecated alias for set_todo_statuses. Mark one todo done or " +
-        "active by hash.",
-      inputSchema: SetTodoStatusSchema.shape,
-      outputSchema: SetTodoStatusOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: true,
-      },
-    },
-    (rawArgs: unknown) => setTodoStatusHandler(backend, rawArgs),
-  );
-
-  server.registerTool(
-    "delete_todo",
-    {
-      description:
-        "Deprecated alias for delete_todos. Delete a single todo by hash.",
-      inputSchema: DeleteTodoSchema.shape,
-      outputSchema: DeleteTodoOutputShape,
-      annotations: {
-        destructiveHint: true,
-        idempotentHint: true,
-      },
-    },
-    (rawArgs: unknown) => deleteTodoHandler(backend, rawArgs),
-  );
+      (rawArgs: unknown) => importTodosHandler(backend, rawArgs),
+    );
+  }
 
   return server;
 }
@@ -1594,6 +1589,10 @@ export type CreateAppOptions = HttpSecurityOptions & {
   logger?: Logger;
   /** Overrides `MCP_LOG_LEVEL` for the default logger. */
   logLevel?: LogLevel;
+  /** Overrides `MCP_TOOLSET` for the exposed tool profile. */
+  toolset?: TodoToolset;
+  /** Overrides `MCP_OUTPUT_SCHEMAS`; off by default. */
+  outputSchemas?: boolean;
 };
 
 export function createApp(
@@ -1609,6 +1608,8 @@ export function createApp(
     createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
   const metrics = createMetrics();
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const toolset = resolveToolset(options, process.env);
+  const outputSchemas = resolveOutputSchemas(options, process.env);
   const app = express();
 
   // Do not advertise the framework.
@@ -1853,7 +1854,11 @@ export function createApp(
     async (req: Request, res: Response) => {
       // Create a new server and transport for each request to keep the
       // stateless endpoint free of request ID collisions.
-      const server = createTodoMcpServer(backend, { readOnly });
+      const server = createTodoMcpServer(backend, {
+        readOnly,
+        toolset,
+        outputSchemas,
+      });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

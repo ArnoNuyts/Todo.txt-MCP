@@ -229,14 +229,25 @@ describe("list_todos filters, sorting, paging and output format", () => {
     });
   });
 
-  it("returns text and structured content by default", async () => {
-    const result = await listTodosHandler(backend, { status: "all" });
+  it("returns text and structured content in both format", async () => {
+    const result = await listTodosHandler(backend, {
+      status: "all",
+      format: "both",
+    });
     const structured = structuredOf(result);
 
     expect(textsOf(result)).toHaveLength(5);
     expect(structured.total).toBe(5);
     expect(structured.nextCursor).toBeNull();
     expect(z.object(ListTodosOutputShape).parse(structured)).toEqual(structured);
+  });
+
+  it("defaults to structured output with a one-line summary", async () => {
+    const result = await listTodosHandler(backend, { status: "all" });
+    const structured = structuredOf(result);
+
+    expect(result.content[0].text).toBe("5 todos");
+    expect(structured.total).toBe(5);
   });
 
   it("returns only a one-line summary in structured format", async () => {
