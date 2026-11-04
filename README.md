@@ -95,7 +95,64 @@ npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
 npm run bench:actions # token cost of add/edit/mark-done workflows
+npm run bench:agent   # LLM usability of the compact/core/full profiles
 ```
+
+## 🤖 LLM tool-profile evaluation
+
+`bench:actions` measures deterministic protocol cost: the fixed add, edit, and
+mark-done workflow with no model in the loop. `bench:agent` measures
+**usability**: it gives a model a set of natural-language tasks, exposes the
+real MCP tools for one profile at a time, runs an OpenAI-style function-calling
+loop, and grades the resulting `todo.txt` state. This shows whether the token
+savings of `compact` come at the cost of task success.
+
+Run the offline harness with a scripted model (no API key required):
+
+```bash
+npm run bench:agent -- --mock
+```
+
+The mock only proves the harness wiring and graders work; its success rates are
+not a model-quality signal. Use a real model for comparisons.
+
+Run against any OpenAI-compatible `/chat/completions` endpoint:
+
+```bash
+export AGENT_EVAL_API_KEY="sk-..."
+export AGENT_EVAL_MODEL="gpt-4.1-mini"
+# Optional: export AGENT_EVAL_BASE_URL="https://api.openai.com/v1"
+npm run bench:agent -- --profiles compact,core,full --trials 1 --max-turns 12
+```
+
+Useful options:
+
+- `--profiles compact,core,full` — profiles to compare (default: all three).
+- `--trials 1` — trials per task and profile.
+- `--task <id>` — run one task, e.g. `--task stale-hash-recovery`.
+- `--max-turns 12` — model turns before the run stops.
+- `--json <path>` — write full per-run results and traces as JSON.
+- `--mock` — offline scripted model; uses estimated tokens (chars / 4).
+- `--model <name>` / `--base-url <url>` — override the environment.
+
+Configuration:
+
+| Variable | Purpose |
+|---|---|
+| `AGENT_EVAL_API_KEY` | API key; falls back to `OPENAI_API_KEY`. |
+| `AGENT_EVAL_BASE_URL` | OpenAI-compatible base URL (default: `https://api.openai.com/v1`). |
+| `AGENT_EVAL_MODEL` | Model name; required for a real run. |
+| `AGENT_EVAL_TEMPERATURE` | Sampling temperature (default: `0`). |
+
+The table reports success rate (graded from the final todo state, not the
+model's prose), average tool calls, invalid tool calls, average turns, average
+total tokens (from provider usage), and tokens per successful task. Tool results
+include both text content and, when present, `structuredContent` as JSON, so the
+comparison does not depend on a client silently dropping structured data. The
+task suite lives in `bench/agent-tasks.ts`; each task has a seed fixture and a
+deterministic `verify` function. Read-only tasks also inspect the final answer,
+for example to confirm an ambiguous cleanup did not delete data or that a
+summary request did not export the whole file.
 
 ## ⚙️ Configuration
 

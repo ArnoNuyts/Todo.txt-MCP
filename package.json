@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "bench:actions": "node bench/actions.ts"
+    "bench:actions": "node bench/actions.ts",
+    "bench:agent": "node bench/agent-eval.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
