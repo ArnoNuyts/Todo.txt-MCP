@@ -94,6 +94,7 @@ npm test              # run once
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
+npm run bench:actions # token cost of add/edit/mark-done workflows
 ```
 
 ## ⚙️ Configuration
@@ -145,11 +146,19 @@ exhaust the process memory:
 
 - **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
   not registered.
-- **Tool profiles:** `MCP_TOOLSET=full|core|readonly|off` controls the exposed
-  toolset. `off` exposes resources only, `readonly` the five read tools, `core`
-  the read tools plus add/update/status/delete, and `full` (default) every
+- **Tool profiles:** `MCP_TOOLSET=full|core|compact|readonly|off` controls the
+  exposed toolset. `off` exposes resources only, `readonly` the five read tools,
+  `core` the read tools plus add/update/status/delete, `compact` four
+  single-purpose tools for the most common writes, and `full` (default) every
   tool. Combine this with a gateway or per-agent MCP config to expose the server
   only on demand.
+- **Compact profile:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todo`,
+  `edit_todo`, and `mark_done`. `edit_todo` can change text, priority, and
+  contexts in one call. Results are terse text (`hash text`, or just the new
+  hash for `add_todo`) and omit output schemas. In the repository benchmark this
+  cuts the add/edit/mark-done workflow from ~6,149 to ~835 tokens (median of 5
+  runs, chars/4 estimate) while keeping the final todo.txt identical. Run
+  `npm run bench:actions` to reproduce it.
 - **Output schemas:** `MCP_OUTPUT_SCHEMAS=1` adds `outputSchema` to
   `tools/list`. Off by default because it is roughly half of the tool-definition
   payload; structured content is returned either way.
@@ -200,6 +209,22 @@ guidance.
 - `import_todos` — import todo.txt content in `merge` or `replace` mode.
   Supports `expectedVersion` (a mismatch fails with `CONFLICT`) and `dryRun`,
   which returns an add/remove/unchanged diff without writing.
+
+### Compact profile tools
+
+When `MCP_TOOLSET=compact`, only these tools are exposed:
+
+- `list_todos` — search by text, status, or context; returns `hash text` lines
+  (up to `limit`, default 20).
+- `add_todo` — add one todo and return its new hash.
+- `edit_todo` — change `text`, `priority` (or clear it with `null`), and
+  `addContexts`/`removeContexts` in one call; returns `hash text`.
+- `mark_done` — mark one todo done by hash; idempotent.
+
+The compact profile is intentionally text-only: it does not return
+`structuredContent` or output schemas, which keeps both `tools/list` and each
+result small. Use `core` or `full` when you need batch, import/export, or
+machine-readable results.
 
 Batch tools return `succeeded` and `failed` arrays. A missing hash is reported
 in `failed` with the `TODO_NOT_FOUND` code and a hint to refresh hashes with

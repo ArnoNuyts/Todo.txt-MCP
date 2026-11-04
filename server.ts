@@ -277,6 +277,61 @@ export const ImportTodosSchema = z.object({
   ),
 });
 
+// Compact tool schemas. These power the `compact` profile, which trades the
+// batch/import surface for a small tools/list payload and terse text results.
+export const CompactListTodosSchema = z.object({
+  search: z.string().max(200).optional().describe(
+    "Text to search for in the todo",
+  ),
+  status: z.enum(["todo", "done", "all"]).optional().describe(
+    "Status filter; defaults to 'todo'",
+  ),
+  context: z.string().min(1).max(100).optional().describe(
+    "Only todos in this context; the leading '@' is optional",
+  ),
+  limit: z.number().int().min(1).max(100).optional().describe(
+    "Maximum rows to return; defaults to 20",
+  ),
+});
+
+export const CompactAddTodoSchema = z.object({
+  text: z.string().min(1).max(2000).describe(
+    "The todo text in todo.txt format",
+  ),
+});
+
+const ContextNameSchema = z.string().min(1).max(100).regex(
+  /^@?[\w.-]+$/,
+  "Use letters, digits, '.', '_' or '-' (an optional leading '@' is allowed)",
+).describe(
+  "Context name without the leading '@'; matching is case-insensitive",
+);
+
+export const CompactEditTodoSchema = z.object({
+  hash: z.string().min(8).max(64).describe(
+    "Hash from list_todos or a prior mutation result",
+  ),
+  text: TodoBodySchema.optional().describe(
+    "New body text; omit to keep the current text",
+  ),
+  priority: z.string().regex(
+    /^[A-Z]$/,
+    "Expected a single uppercase priority letter (A-Z)",
+  ).nullable().optional().describe(
+    "New priority letter, or null to clear it",
+  ),
+  addContexts: z.array(ContextNameSchema).max(20).optional().describe(
+    "Contexts to add",
+  ),
+  removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
+    "Contexts to remove before adding",
+  ),
+});
+
+export const CompactMarkDoneSchema = z.object({
+  hash: z.string().min(8).max(64).describe("Hash of the todo to mark done"),
+});
+
 /** @deprecated Use {@link SetTodoStatusesSchema} plus the deprecated single-hash shape. */
 export const SetTodoStatusSchema = z.object({
   hash: z.string().describe("Hash of the todo to update"),
@@ -512,6 +567,75 @@ function todoHasContext(todo: Todo, context: string): boolean {
   // the raw text with an explicit start anchor.
   const escaped = context.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?:^|\\s)@${escaped}(?=$|\\s)`, "i").test(todo.text);
+}
+
+function normalizeContextName(name: string): string {
+  return name.replace(/^@+/, "").trim();
+}
+
+function contextTokenPattern(name: string, global: boolean): RegExp {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|\\s)@${escaped}(?=$|\\s)`, global ? "gi" : "i");
+}
+
+function addContextToText(text: string, name: string): string {
+  if (contextTokenPattern(name, false).test(text)) {
+    return text;
+  }
+  const trimmed = text.trim();
+  return trimmed.length === 0 ? `@${name}` : `${trimmed} @${name}`;
+}
+
+function removeContextFromText(text: string, name: string): string {
+  if (!contextTokenPattern(name, false).test(text)) {
+    return text;
+  }
+  return text
+    .replace(contextTokenPattern(name, true), "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+interface TodoPatch {
+  text?: string;
+  priority?: string | null;
+  addContexts?: string[];
+  removeContexts?: string[];
+}
+
+function hasTodoPatch(patch: TodoPatch): boolean {
+  return patch.text !== undefined ||
+    patch.priority !== undefined ||
+    (patch.addContexts?.length ?? 0) > 0 ||
+    (patch.removeContexts?.length ?? 0) > 0;
+}
+
+/**
+ * Applies a compact edit in place. Priority is a field on {@link Todo}, while
+ * contexts live in the body text, so both are updated without asking the
+ * caller to resend the whole todo.
+ */
+function applyTodoPatch(todo: Todo, patch: TodoPatch): void {
+  if (patch.text !== undefined) {
+    todo.setText(patch.text);
+  }
+  if (patch.priority !== undefined) {
+    todo.priority = patch.priority === null
+      ? undefined
+      : patch.priority as Todo["priority"];
+  }
+  for (const raw of patch.removeContexts ?? []) {
+    const name = normalizeContextName(raw);
+    if (name.length > 0) {
+      todo.setText(removeContextFromText(todo.text, name));
+    }
+  }
+  for (const raw of patch.addContexts ?? []) {
+    const name = normalizeContextName(raw);
+    if (name.length > 0) {
+      todo.setText(addContextToText(todo.text, name));
+    }
+  }
 }
 
 // Tool: add_todos handler
@@ -916,6 +1040,149 @@ export async function setTodoStatusHandler(
   });
 }
 
+// Compact profile handlers. Results are a single "hash text" line (or just the
+// hash for add) so the caller can chain the next mutation without a structured
+// payload.
+
+function compactTextResult(hash: string, text: string) {
+  return {
+    content: [{ type: "text" as const, text: `${hash} ${text}` }],
+  };
+}
+
+function compactHashResult(hash: string) {
+  return {
+    content: [{ type: "text" as const, text: hash }],
+  };
+}
+
+async function compactListTodosOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const args = CompactListTodosSchema.parse(rawArgs ?? {});
+  const result = await listTodosOperation(backend, {
+    ...args,
+    format: "text",
+    limit: args.limit ?? 20,
+  });
+  const text = result.content
+    .map((item) => item.text ?? "")
+    .join("\n")
+    .replace(/^\[([0-9a-f]{16})\]/gm, "$1");
+  return { content: [{ type: "text" as const, text }] };
+}
+
+export function compactListTodosHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => compactListTodosOperation(backend, rawArgs));
+}
+
+async function compactAddTodoOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { text } = CompactAddTodoSchema.parse(rawArgs);
+  const result = await addTodosOperation(backend, { todos: [text] });
+  if (isToolError(result)) {
+    return result;
+  }
+  const added = result.structuredContent.added[0];
+  return compactHashResult(added.hash);
+}
+
+export function compactAddTodoHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => compactAddTodoOperation(backend, rawArgs));
+}
+
+async function compactEditTodoOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const patch = CompactEditTodoSchema.parse(rawArgs);
+  if (!hasTodoPatch(patch)) {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      "Provide at least one of text, priority, addContexts, or removeContexts.",
+    );
+  }
+  if (patch.text !== undefined) {
+    assertTodoBody(patch.text, 0);
+  }
+
+  return await withBackendLock(backend, async () => {
+    const todos = await backend.load();
+    const todoHashMap = new Map<string, Todo>();
+    for (const todo of todos) {
+      todoHashMap.set(await todo.getHash(), todo);
+    }
+
+    const target = todoHashMap.get(patch.hash);
+    if (target === undefined) {
+      return notFoundError(patch.hash);
+    }
+
+    const before = target.toString();
+    applyTodoPatch(target, patch);
+    if (target.toString() !== before) {
+      await backend.save(todos);
+    }
+
+    const summary = await summarizeTodo(target);
+    return compactTextResult(summary.hash, summary.text);
+  });
+}
+
+export function compactEditTodoHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => compactEditTodoOperation(backend, rawArgs));
+}
+
+async function compactMarkDoneOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { hash } = CompactMarkDoneSchema.parse(rawArgs);
+
+  return await withBackendLock(backend, async () => {
+    const todos = await backend.load();
+    const todoHashMap = new Map<string, Todo>();
+    for (const todo of todos) {
+      todoHashMap.set(await todo.getHash(), todo);
+    }
+
+    const target = todoHashMap.get(hash);
+    if (target === undefined) {
+      return notFoundError(hash);
+    }
+
+    if (target.state !== TodoStateEnum.done) {
+      const next = target.toggleState();
+      if (next) {
+        todos.push(next);
+      }
+      await backend.save(todos);
+    }
+
+    const summary = await summarizeTodo(target);
+    return compactTextResult(summary.hash, summary.text);
+  });
+}
+
+export function compactMarkDoneHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => compactMarkDoneOperation(backend, rawArgs));
+}
+
 // Tool: delete_todos handler
 async function deleteTodosOperation(
   backend: TodoBackend,
@@ -1293,7 +1560,12 @@ export function importTodosHandler(backend: TodoBackend, rawArgs: unknown) {
   return guardTool(() => importTodosOperation(backend, rawArgs));
 }
 
-export type TodoToolset = "full" | "core" | "readonly" | "off";
+export type TodoToolset =
+  | "full"
+  | "core"
+  | "compact"
+  | "readonly"
+  | "off";
 
 export interface CreateTodoMcpServerOptions {
   /** When true only `list_todos` is exposed; mutating tools are absent. */
@@ -1335,7 +1607,13 @@ export function resolveToolset(
     return options.toolset;
   }
   const value = env.MCP_TOOLSET?.trim().toLowerCase();
-  if (value === "full" || value === "core" || value === "readonly" || value === "off") {
+  if (
+    value === "full" ||
+    value === "core" ||
+    value === "compact" ||
+    value === "readonly" ||
+    value === "off"
+  ) {
     return value;
   }
   return "full";
@@ -1367,7 +1645,7 @@ export function createTodoMcpServer(
 
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "2.1.0",
+    version: "2.2.0",
   });
 
   // Register a prompt describing the todo.txt format
@@ -1460,6 +1738,61 @@ export function createTodoMcpServer(
   );
 
   if (toolset === "off") {
+    return server;
+  }
+
+  // The compact profile is deliberately small: four single-purpose tools with
+  // terse text results. It trades the batch/import surface for a lower
+  // tools/list and response token cost.
+  if (toolset === "compact") {
+    server.registerTool(
+      "list_todos",
+      {
+        description:
+          "Find todos by text, status, or context. Returns 'hash text' lines.",
+        inputSchema: CompactListTodosSchema.shape,
+        annotations: { readOnlyHint: true },
+      },
+      (rawArgs: unknown) => compactListTodosHandler(backend, rawArgs),
+    );
+
+    if (options.readOnly === true) {
+      return server;
+    }
+
+    server.registerTool(
+      "add_todo",
+      {
+        description:
+          "Add one todo in todo.txt format. Returns the new hash.",
+        inputSchema: CompactAddTodoSchema.shape,
+        annotations: { destructiveHint: false },
+      },
+      (rawArgs: unknown) => compactAddTodoHandler(backend, rawArgs),
+    );
+
+    server.registerTool(
+      "edit_todo",
+      {
+        description:
+          "Change a todo's text, priority, or contexts by hash. Returns " +
+          "'hash text'.",
+        inputSchema: CompactEditTodoSchema.shape,
+        annotations: { destructiveHint: true },
+      },
+      (rawArgs: unknown) => compactEditTodoHandler(backend, rawArgs),
+    );
+
+    server.registerTool(
+      "mark_done",
+      {
+        description: "Mark a todo done by hash. Returns 'hash text'.",
+        inputSchema: CompactMarkDoneSchema.shape,
+        annotations: { destructiveHint: true, idempotentHint: true },
+      },
+      (rawArgs: unknown) => compactMarkDoneHandler(backend, rawArgs),
+    );
+
     return server;
   }
 
