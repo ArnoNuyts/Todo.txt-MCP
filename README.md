@@ -199,7 +199,10 @@ exhaust the process memory:
 ## 🔐 Tool surface and token footprint
 
 - **Four tools:** `list_todos`, `add_todos`, `update_todos`, `delete_todos`.
-  There are no tool profiles and no read-only mode.
+  There are no tool profiles.
+- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`) registers only
+  `list_todos`; mutating tools are absent from `tools/list` and cannot be
+  called. Prompts and resources remain available.
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Errors still carry a stable
   `structuredContent.error.code`.
@@ -256,7 +259,7 @@ Failures return `isError: true` with a stable machine-readable code in
 
 ### MCP resources
 
-Read-only resources are always available:
+Read-only resources are always available, including in read-only mode:
 
 - `todo://file` — the complete todo.txt content.
 - `todo://active` — open todos only.

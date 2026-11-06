@@ -76,7 +76,31 @@ export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
   }
 }
 
-export function createTodoMcpServer(backend: TodoBackend) {
+export interface CreateTodoMcpServerOptions {
+  /** When true only `list_todos` is registered; mutating tools are absent. */
+  readOnly?: boolean;
+}
+
+/**
+ * Resolves read-only mode from an explicit option, then `MCP_READ_ONLY`.
+ * Accepts `1`, `true`, or `yes` (case-insensitive).
+ */
+export function resolveReadOnlyMode(
+  options: { readOnly?: boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (options.readOnly !== undefined) {
+    return options.readOnly;
+  }
+  const value = env.MCP_READ_ONLY?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+export function createTodoMcpServer(
+  backend: TodoBackend,
+  options: CreateTodoMcpServerOptions = {},
+) {
+  const readOnly = resolveReadOnlyMode(options, process.env);
   const server = new McpServer({
     name: "todo.txt-mcp",
     version: "3.0.0",
@@ -176,6 +200,12 @@ export function createTodoMcpServer(backend: TodoBackend) {
     (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
   );
 
+  // Read-only mode keeps mutating tools out of tools/list and the callable
+  // surface entirely. Resources and the format prompt remain available.
+  if (readOnly) {
+    return server;
+  }
+
   server.registerTool(
     "add_todos",
     {
@@ -220,6 +250,8 @@ export function createTodoMcpServer(backend: TodoBackend) {
 export type CreateAppOptions = HttpSecurityOptions & {
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
+  /** When true only `list_todos` is registered on the MCP endpoint. */
+  readOnly?: boolean;
   /** Injectable structured logger, primarily for tests. */
   logger?: Logger;
   /** Overrides `MCP_LOG_LEVEL` for the default logger. */
@@ -238,6 +270,7 @@ export function createApp(
   const logger = options.logger ??
     createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
   const metrics = createMetrics();
+  const readOnly = resolveReadOnlyMode(options, process.env);
   const app = express();
 
   // Do not advertise the framework.
@@ -482,7 +515,7 @@ export function createApp(
     async (req: Request, res: Response) => {
       // Create a new server and transport for each request to keep the
       // stateless endpoint free of request ID collisions.
-      const server = createTodoMcpServer(backend);
+      const server = createTodoMcpServer(backend, { readOnly });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

@@ -199,6 +199,19 @@ describe("MCP HTTP endpoint", () => {
       ]);
   });
 
+  it("exposes only list_todos in read-only mode", async () => {
+    await restartApp({ readOnly: true });
+    await rpc("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "http-test", version: "1.0.0" },
+    });
+
+    const listed = await rpc("tools/list");
+    expect(listed.result?.tools?.map((tool) => tool.name))
+      .toEqual(["list_todos"]);
+  });
+
   it("adds and lists a todo over HTTP", async () => {
     const added = await rpc("tools/call", {
       name: "add_todos",
