@@ -276,6 +276,35 @@ describe("Todo", () => {
     }
   });
 
+  it("sets a completion date when completing a todo without a creation date", () => {
+    const todo = new Todo("Task without dates");
+
+    todo.toggleState();
+
+    expect(todo.isDone()).toBe(true);
+    expect(todo.completionDate).toBeDefined();
+    expect(todo.toString()).toBe("x 2024-06-15 Task without dates");
+  });
+
+  it("keeps a completion date when a completed todo is reopened and redone", () => {
+    const todo = new Todo("x 2026-01-01 Task without creation date");
+
+    todo.toggleState();
+    expect(todo.isDone()).toBe(false);
+
+    todo.toggleState();
+    expect(todo.isDone()).toBe(true);
+    expect(todo.completionDate).toBeDefined();
+    expect(todo.toString()).toBe("x 2024-06-15 Task without creation date");
+  });
+
+  it("does not parse URLs as tags", () => {
+    const todo = new Todo("Read https://example.com/docs");
+
+    expect(todo.tags).toEqual({});
+    expect(todo.text).toBe("Read https://example.com/docs");
+  });
+
   it("setDue - sets correctly", () => {
     const testCases = [
       { text: "todo", input: new Date("1999-01-01"), expected: "1999-01-01" },

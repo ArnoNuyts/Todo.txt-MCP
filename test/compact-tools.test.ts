@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
@@ -198,6 +198,40 @@ describe("tool surface", () => {
     expect(backend.getTodos()[1].tags.rec).toBe("+2w");
   });
 
+  it("applies tags before status so the recurrence inherits them", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-06-15T12:00:00.000Z"));
+    try {
+      const todo = new Todo("Water plants due:2024-06-20 rec:1w");
+      await backend.save([todo]);
+      const hash = await todo.getHash();
+
+      await client.callTool({
+        name: "update_todos",
+        arguments: {
+          edits: [{
+            hash,
+            threshold: "2024-06-10",
+            recurrence: "+1w",
+            status: "done",
+          }],
+        },
+      });
+
+      const todos = backend.getTodos();
+      const completed = todos.find((item) => item.isDone());
+      const next = todos.find((item) => !item.isDone());
+
+      expect(completed?.tags.t).toBe("2024-06-10");
+      expect(completed?.tags.rec).toBe("+1w");
+      expect(next?.tags.t).toBe("2024-06-17");
+      expect(next?.tags.rec).toBe("+1w");
+      expect(next?.tags.due).toBe("2024-06-27");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects duplicate hashes and edits with no changes", async () => {
     const todo = new Todo("Keep me @home");
     await backend.save([todo]);
@@ -316,6 +350,21 @@ describe("tool surface", () => {
     expect(backend.getTodos()[0].isDone()).toBe(false);
     expect(backend.getTodos()[1].isDone()).toBe(false);
     expect(backend.getTodos()[2].isDone()).toBe(false);
+  });
+
+  it("rejects duplicate hashes in delete_todos", async () => {
+    const todo = new Todo("Keep me");
+    await backend.save([todo]);
+    const hash = await todo.getHash();
+
+    const result = await client.callTool({
+      name: "delete_todos",
+      arguments: { hashes: [hash, hash] },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(errorCodeOf(result)).toBe("INVALID_ARGUMENT");
+    expect(backend.getTodos()).toHaveLength(1);
   });
 
   it("deletes multiple todos in one batch", async () => {

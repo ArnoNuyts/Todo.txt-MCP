@@ -206,7 +206,7 @@ exhaust the process memory:
 - **Batch-first:** add, priority/context updates, and completion all take
   arrays.
 - **Benchmark:** the multi-item add/edit/status/pagination workflow costs
-  ~1,365 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
+  ~1,367 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
   estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
@@ -239,6 +239,9 @@ guidance.
 - `delete_todos` — delete multiple todos by hash in one batch.
 
 `due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
+Completing a recurring todo follows the usual todo.txt convention:
+`rec:+1w` advances from the due date, `rec:1w` from the completion date, and
+a `t:` threshold keeps its offset from the due date.
 
 All tools are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful

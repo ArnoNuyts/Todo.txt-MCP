@@ -1,11 +1,19 @@
 import { TodoStateEnum } from "../types/enums.ts";
 import type { UpperCaseLetter } from "../types/types.ts";
+import {
+  nextRecurrence,
+  parseDateTag,
+  parseRecurrence,
+  startOfUtcDay,
+} from "./recurrence.ts";
+import {
+  CONTEXT_REGEX,
+  PROJECT_REGEX,
+  TAG_REGEX,
+} from "./tokens.ts";
 
 const TODO_REGEX =
   /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
-const PROJECT_REGEX = /\s+\+(?<name>[\w.\_\-]+)/g;
-const CONTEXT_REGEX = /\s+\@(?<name>[\w.\_\-]+)/g;
-const TAG_REGEX = /\s+(?<key>[A-Za-z]+):(?<value>[^\s]+)/g;
 
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
 
@@ -49,49 +57,43 @@ export class Todo {
     this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
-    if (this.state === TodoStateEnum.done && this.creationDate) {
+    if (this.state === TodoStateEnum.done) {
       this.completionDate = new Date();
     }
     if (this.state === TodoStateEnum.todo && this.completionDate) {
       this.completionDate = undefined;
     }
 
-    if (this.state === TodoStateEnum.done && this.tags.rec) {
-      const recurrence = this.tags.rec as string;
-      const newTodo = new Todo(this.toString());
-      newTodo.state = TodoStateEnum.todo;
-      newTodo.completionDate = undefined;
-
-      const regex = /(\d+)([dwmy])/;
-      const match = recurrence.match(regex);
-      if (match) {
-        const amount = parseInt(match[1], 10);
-        const unit = match[2];
-        const newDueDate = new Date();
-        /*if (this.tags.due) {
-          newDueDate = new Date(this.tags.due as string);
-        }*/
-
-        switch (unit) {
-          case "d":
-            newDueDate.setDate(newDueDate.getDate() + amount);
-            break;
-          case "w":
-            newDueDate.setDate(newDueDate.getDate() + amount * 7);
-            break;
-          case "m":
-            newDueDate.setMonth(newDueDate.getMonth() + amount);
-            break;
-          case "y":
-            newDueDate.setFullYear(newDueDate.getFullYear() + amount);
-            break;
-        }
-        newTodo.setDue(newDueDate);
-      }
-
-      return { recurrence: newTodo };
+    if (this.state !== TodoStateEnum.done) {
+      return {};
     }
-    return {};
+
+    const recValue = Array.isArray(this.tags.rec)
+      ? this.tags.rec[0]
+      : this.tags.rec;
+    const recurrence = recValue === undefined
+      ? undefined
+      : parseRecurrence(recValue);
+    if (recurrence === undefined) {
+      return {};
+    }
+
+    const completedAt = new Date();
+    const next = nextRecurrence(
+      recurrence,
+      parseDateTag(this.tags.due),
+      parseDateTag(this.tags.t),
+      completedAt,
+    );
+    const newTodo = new Todo(this.toString());
+    newTodo.state = TodoStateEnum.todo;
+    newTodo.completionDate = undefined;
+    newTodo.creationDate = startOfUtcDay(completedAt);
+    newTodo.setDue(next.due);
+    if (next.threshold !== undefined) {
+      newTodo.setThreshold(next.threshold);
+    }
+    return { recurrence: newTodo };
   }
   toString() {
     // Completed todos must be serialized as
@@ -171,8 +173,20 @@ export class Todo {
     this.text = text;
   }
 
+  setTag(key: string, value: string): void {
+    this.tags[key] = value;
+  }
+
+  clearTag(key: string): void {
+    delete this.tags[key];
+  }
+
   setDue(date: Date): void {
-    this.tags.due = date.toISOString().substring(0, 10);
+    this.setTag("due", date.toISOString().substring(0, 10));
+  }
+
+  setThreshold(date: Date): void {
+    this.setTag("t", date.toISOString().substring(0, 10));
   }
 
   async getHash(): Promise<string> {

@@ -12,7 +12,7 @@ import {
 } from "../logic/limits.ts";
 import { readTodosFromFile } from "../logic/todo-file-helpers.ts";
 import { Todo } from "../logic/todo.ts";
-import { addTodosHandler } from "../server.ts";
+import { addTodosHandler } from "../logic/tools.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
 describe("resource limit configuration", () => {

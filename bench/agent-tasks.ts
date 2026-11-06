@@ -236,7 +236,7 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         done.tags.t === "2026-01-01" &&
         done.tags.rec === "+1w" &&
         recurring !== undefined &&
-        recurring.tags.t === "2026-01-01" &&
+        typeof recurring.tags.t === "string" &&
         recurring.tags.rec === "+1w" &&
         typeof recurring.tags.due === "string" &&
         todos.length === THRESHOLD_SEED.length + 2 &&
@@ -247,6 +247,7 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         detail: `done=${done !== undefined}, ` +
           `recurring=${recurring !== undefined}, ` +
           `threshold=${done?.tags.t ?? "missing"}, ` +
+          `nextThreshold=${recurring?.tags.t ?? "missing"}, ` +
           `rec=${done?.tags.rec ?? "missing"}, ` +
           `total=${todos.length}`,
       };

@@ -5,7 +5,7 @@ import {
   CompactListTodosSchema,
   CompactDeleteTodosSchema,
   CompactUpdateTodosSchema,
-} from "../server.ts";
+} from "../logic/tools.ts";
 
 function hasDescription(schema: z.ZodType): boolean {
   return schema.description !== undefined && schema.description !== null;

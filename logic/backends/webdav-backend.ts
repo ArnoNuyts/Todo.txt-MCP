@@ -116,7 +116,8 @@ export class WebDavBackend implements TodoBackend {
   private readonly maxDelayMs: number;
   private readonly random: () => number;
   private readonly maxFileBytes: number;
-  private etag: string | undefined;
+  /** Revision from the last load, sent as If-Match on save. */
+  private loadedEtag: string | undefined;
 
   constructor(
     url: string,
@@ -229,7 +230,7 @@ export class WebDavBackend implements TodoBackend {
 
     if (!response.ok) {
       if (response.status === 404) {
-        this.etag = undefined;
+        this.loadedEtag = undefined;
         return [];
       }
       throw new Error(
@@ -237,7 +238,7 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    this.etag = response.headers.get("ETag") ?? undefined;
+    this.loadedEtag = response.headers.get("ETag") ?? undefined;
 
     // Reject an obviously oversized file before reading the body.
     const contentLength = response.headers.get("Content-Length");
@@ -268,8 +269,8 @@ export class WebDavBackend implements TodoBackend {
       ...this.getHeaders(),
       "Content-Type": "text/plain",
     };
-    if (this.etag) {
-      headers["If-Match"] = this.etag;
+    if (this.loadedEtag) {
+      headers["If-Match"] = this.loadedEtag;
     }
 
     const response = await this.fetchWithRetry({
@@ -292,6 +293,6 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    this.etag = response.headers.get("ETag") ?? this.etag;
+    this.loadedEtag = response.headers.get("ETag") ?? this.loadedEtag;
   }
 }

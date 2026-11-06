@@ -198,6 +198,23 @@ describe("WebDavBackend", () => {
     expect(init.headers).not.toHaveProperty("If-Match");
   });
 
+  it("does not send If-Match after loading a missing resource", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url);
+    await backend.load();
+    await backend.save([new Todo("task")]);
+
+    const [, init] = fetchMock.mock.calls[1] as unknown as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(init.headers).not.toHaveProperty("If-Match");
+  });
+
   it("reports a conflict when save fails with 412", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(

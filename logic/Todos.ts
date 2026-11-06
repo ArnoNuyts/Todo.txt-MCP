@@ -1,5 +1,6 @@
 import { Todo } from "./todo.ts";
 import { TodoStateEnum } from "../types/enums.ts";
+import { contextTokenPattern } from "./tokens.ts";
 
 /** Filters accepted by `list_todos`; every provided filter is combined with AND. */
 export interface TodoFilterOptions {
@@ -26,8 +27,7 @@ function matchesContext(todo: Todo, context: string): boolean {
 
   // The parser only recognizes tokens preceded by whitespace, so also check
   // the raw text with an explicit start anchor.
-  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|\\s)@${escaped}(?=$|\\s)`, "i").test(todo.text);
+  return contextTokenPattern(normalized, false).test(todo.text);
 }
 
 /** Filters todos by status, text, and context. */

@@ -68,4 +68,55 @@ describe("Todo recurrence", () => {
 
     expect(newTodo?.tags.due).toBe(isoDate(nextYear));
   });
+
+  it("normal recurrence advances from the completion date", () => {
+    const todo = new Todo("todo due:2024-06-01 rec:1w");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.tags.due).toBe(isoDate(addDays(FIXED_NOW, 7)));
+  });
+
+  it("strict recurrence advances from the original due date", () => {
+    const todo = new Todo("todo due:2024-06-01 rec:+1w");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.tags.due).toBe("2024-06-08");
+  });
+
+  it("strict recurrence without a due date starts from today", () => {
+    const todo = new Todo("todo rec:+1w");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.tags.due).toBe(isoDate(addDays(FIXED_NOW, 7)));
+  });
+
+  it("moves the threshold by the original due-to-threshold offset", () => {
+    const todo = new Todo("todo due:2024-06-20 t:2024-06-10 rec:+1w");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.tags.due).toBe("2024-06-27");
+    expect(newTodo?.tags.t).toBe("2024-06-17");
+  });
+
+  it("updates the recurrence creation date", () => {
+    const todo = new Todo("todo rec:1w");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.creationDate).toBeDefined();
+    expect(isoDate(newTodo!.creationDate!)).toBe(isoDate(FIXED_NOW));
+  });
+
+  it("does not spawn a recurrence for a malformed rec tag", () => {
+    const todo = new Todo("todo rec:fortnightly");
+    const { recurrence } = todo.toggleState();
+
+    expect(recurrence).toBeUndefined();
+  });
+
+  it("accepts uppercase recurrence units", () => {
+    const todo = new Todo("todo due:2024-06-01 rec:+2W");
+    const { recurrence: newTodo } = todo.toggleState();
+
+    expect(newTodo?.tags.due).toBe("2024-06-15");
+  });
 });
