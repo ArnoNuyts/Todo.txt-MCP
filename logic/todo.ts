@@ -93,6 +93,7 @@ export class Todo {
     if (next.threshold !== undefined) {
       newTodo.setThreshold(next.threshold);
     }
+    // An invalid t: tag cannot be shifted; the clone keeps it so no data is lost.
     return { recurrence: newTodo };
   }
   toString() {

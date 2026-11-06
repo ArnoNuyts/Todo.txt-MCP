@@ -84,7 +84,14 @@ export interface NextRecurrence {
 /**
  * Computes the next occurrence's dates using the shared todo.txt convention:
  * `rec:+1w` advances from the original due date, plain `rec:1w` from the
- * completion date. A threshold keeps its offset from the original due date.
+ * completion date. A threshold keeps its calendar-day offset from the
+ * original due date; when there is no due date, the completion day is used as
+ * the reference due date.
+ *
+ * Completed 2024-06-15:
+ * - `due:2024-06-20 t:2024-06-10 rec:+1w` -> due 06-27, t 06-17
+ * - `due:2024-06-01 t:2024-05-25 rec:1w`  -> due 06-22, t 06-15
+ * - `t:2024-06-01 rec:1w`                 -> due 06-22, t 06-08
  */
 export function nextRecurrence(
   recurrence: Recurrence,
