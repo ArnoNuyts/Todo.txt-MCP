@@ -12,7 +12,7 @@ import {
 } from "../logic/limits.ts";
 import { readTodosFromFile } from "../logic/todo-file-helpers.ts";
 import { Todo } from "../logic/todo.ts";
-import { addTodoHandler } from "../server.ts";
+import { addTodosHandler } from "../logic/tools.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
 describe("resource limit configuration", () => {
@@ -135,7 +135,7 @@ describe("max total todos cap", () => {
     await backend.save([new Todo("one"), new Todo("two")]);
     const saveSpy = vi.spyOn(backend, "save");
 
-    const result = await addTodoHandler(backend, { todos: ["three"] });
+    const result = await addTodosHandler(backend, { todos: ["three"] });
 
     expect(result).toMatchObject({ isError: true });
     expect(result.content[0].text).toContain("limit is 2");
@@ -152,7 +152,7 @@ describe("max total todos cap", () => {
     vi.stubEnv("TODOTXT_MCP_MAX_TODOS", "3");
     await backend.save([new Todo("one")]);
 
-    const result = await addTodoHandler(backend, { todos: ["two", "three"] });
+    const result = await addTodosHandler(backend, { todos: ["two", "three"] });
 
     expect(result).not.toMatchObject({ isError: true });
     expect(backend.getTodos()).toHaveLength(3);

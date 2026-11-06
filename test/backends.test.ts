@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
 import { Todo } from "../logic/todo.ts";
-import { deleteTodoHandler } from "../server.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -57,13 +56,9 @@ describe("LocalFileBackend", () => {
     const backend = new LocalFileBackend(filename);
     const before = [...await backend.load()];
     const completedBefore = before.find((todo) => todo.isDone())!;
-    const openBefore = before.find((todo) => !todo.isDone())!;
     const completedHash = await completedBefore.getHash();
 
-    const result = await deleteTodoHandler(backend, {
-      hash: await openBefore.getHash(),
-    });
-    expect(result).not.toMatchObject({ isError: true });
+    await backend.save([completedBefore]);
 
     const reloaded = [...await backend.load()];
     expect(reloaded).toHaveLength(1);
@@ -197,6 +192,23 @@ describe("WebDavBackend", () => {
     await new WebDavBackend(url).save([new Todo("task")]);
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(init.headers).not.toHaveProperty("If-Match");
+  });
+
+  it("does not send If-Match after loading a missing resource", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url);
+    await backend.load();
+    await backend.save([new Todo("task")]);
+
+    const [, init] = fetchMock.mock.calls[1] as unknown as [
       string,
       { headers: Record<string, string> },
     ];

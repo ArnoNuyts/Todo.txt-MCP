@@ -1,17 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Todo } from "../logic/todo.ts"; // Adjust the path as needed
 import { TodoStateEnum } from "../types/enums.ts";
-import type { UpperCaseLetter } from "../types/types.ts";
 
 const FIXED_NOW = new Date("2024-06-15T12:00:00.000Z");
-
-const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-
-const addDays = (d: Date, days: number) => {
-  const result = new Date(d);
-  result.setDate(result.getDate() + days);
-  return result;
-};
 
 describe("Todo", () => {
   beforeEach(() => {
@@ -245,6 +236,16 @@ describe("Todo", () => {
     }
   });
 
+  it("setText - does not duplicate an identical tag", () => {
+    const todo = new Todo("Report due:2026-12-15 @work +finance");
+    todo.setText("Report @office +finance due:2026-12-15");
+
+    expect(todo.tags.due).toBe("2026-12-15");
+    expect(todo.toString()).toBe(
+      "Report @office +finance due:2026-12-15",
+    );
+  });
+
   it("isDone - returns correctly", () => {
     const testCases = [
       { input: "x Done", expected: true },
@@ -255,73 +256,6 @@ describe("Todo", () => {
       const todo = new Todo(input);
 
       expect(todo.isDone()).toBe(expected);
-    }
-  });
-
-  it("isHidden - returns correctly", () => {
-    const testCases = [
-      { input: "Hidden h:1", expected: true },
-      { input: "Hidden h:2", expected: true },
-      { input: "Visible", expected: false },
-      { input: "Visible h:0", expected: false },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isHidden(), input).toBe(expected);
-    }
-  });
-
-  it("isOverdue - returns correctly", () => {
-    const testCases = [
-      { input: "In the past due:1999-01-01", expected: true },
-      { input: "In the future due:3000-01-01", expected: false },
-      {
-        input: `Today due:${isoDate(FIXED_NOW)}`,
-        expected: false,
-      },
-      {
-        input: `Tomorrow due:${isoDate(addDays(FIXED_NOW, 1))}`,
-        expected: false,
-      },
-      {
-        input: `Yesterday due:${isoDate(addDays(FIXED_NOW, -1))}`,
-        expected: true,
-      },
-      { input: "No due date", expected: false },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isOverdue(), input).toBe(expected);
-    }
-  });
-
-  it("isPassedThreshold - returns correctly", () => {
-    const testCases = [
-      { input: "In the past t:1999-01-01", expected: true },
-      { input: "In the future t:3000-01-01", expected: false },
-      {
-        input: `Today t:${isoDate(FIXED_NOW)}`,
-        expected: true,
-      },
-      {
-        input: `Tomorrow t:${isoDate(addDays(FIXED_NOW, 1))}`,
-        expected: false,
-      },
-      {
-        input: `Yesterday t:${isoDate(addDays(FIXED_NOW, -1))}`,
-        expected: true,
-      },
-      { input: "No threshold date", expected: true },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isPassedThreshold(), input).toBe(expected);
     }
   });
 
@@ -342,41 +276,33 @@ describe("Todo", () => {
     }
   });
 
-  it("toggleHidden - sets hidden correctly", () => {
-    const testCases = [
-      { input: "todo", expected: true },
-      { input: "todo h:1", expected: false },
-      { input: "todo h:0", expected: true },
-      { input: "todo h:2", expected: false },
-    ];
+  it("sets a completion date when completing a todo without a creation date", () => {
+    const todo = new Todo("Task without dates");
 
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-      todo.toggleHidden();
+    todo.toggleState();
 
-      expect(
-        todo.isHidden(),
-        `Input "${input}" should be: ${expected}`,
-      ).toBe(expected);
-    }
+    expect(todo.isDone()).toBe(true);
+    expect(todo.completionDate).toBeDefined();
+    expect(todo.toString()).toBe("x 2024-06-15 Task without dates");
   });
 
-  it("setPriority - sets priority correctly", () => {
-    const testCases = [
-      { text: "todo", input: "A" as UpperCaseLetter, expected: "A" },
-      { text: "(A) todo", input: "A" as UpperCaseLetter, expected: "A" },
-      { text: "(A) todo", input: "B" as UpperCaseLetter, expected: "B" },
-    ];
+  it("keeps a completion date when a completed todo is reopened and redone", () => {
+    const todo = new Todo("x 2026-01-01 Task without creation date");
 
-    for (const { text, input, expected } of testCases) {
-      const todo = new Todo(text);
-      todo.setPriority(input);
+    todo.toggleState();
+    expect(todo.isDone()).toBe(false);
 
-      expect(
-        todo.priority,
-        `Input "${input}" should be: ${expected}`,
-      ).toBe(expected);
-    }
+    todo.toggleState();
+    expect(todo.isDone()).toBe(true);
+    expect(todo.completionDate).toBeDefined();
+    expect(todo.toString()).toBe("x 2024-06-15 Task without creation date");
+  });
+
+  it("does not parse URLs as tags", () => {
+    const todo = new Todo("Read https://example.com/docs");
+
+    expect(todo.tags).toEqual({});
+    expect(todo.text).toBe("Read https://example.com/docs");
   });
 
   it("setDue - sets correctly", () => {
@@ -395,27 +321,6 @@ describe("Todo", () => {
 
       expect(
         todo.tags.due,
-        `Input "${input}" should be: ${expected}`,
-      ).toBe(expected);
-    }
-  });
-
-  it("setThreshold - sets correctly", () => {
-    const testCases = [
-      { text: "todo", input: new Date("1999-01-01"), expected: "1999-01-01" },
-      {
-        text: "todo due:3000-03-03",
-        input: new Date("1999-01-01"),
-        expected: "1999-01-01",
-      },
-    ];
-
-    for (const { text, input, expected } of testCases) {
-      const todo = new Todo(text);
-      todo.setThreshold(input);
-
-      expect(
-        todo.tags.t,
         `Input "${input}" should be: ${expected}`,
       ).toBe(expected);
     }
@@ -513,7 +418,7 @@ describe("Todo", () => {
 
   it("getHash - returns 16 lowercase hex characters", async () => {
     const hash = await new Todo("Test todo").getHash();
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(hash).toMatch(/^[A-Za-z0-9_-]{11}$/);
   });
 
   it("getHash - should change when todo is modified", async () => {

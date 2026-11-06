@@ -1,6 +1,6 @@
 import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
-import { Todos } from "../Todos.ts";
+import { serializeTodoContent } from "../content.ts";
 import { BackendConflictError } from "../backend-errors.ts";
 import {
   assertFileSizeWithinLimit,
@@ -16,7 +16,7 @@ const MAX_RETRY_AFTER_MS = 60_000;
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /** Status codes worth retrying. Auth, missing and conflict responses are not. */
-export const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
   408, // Request Timeout
   425, // Too Early
   429, // Too Many Requests
@@ -116,7 +116,8 @@ export class WebDavBackend implements TodoBackend {
   private readonly maxDelayMs: number;
   private readonly random: () => number;
   private readonly maxFileBytes: number;
-  private etag: string | undefined;
+  /** Revision from the last load, sent as If-Match on save. */
+  private loadedEtag: string | undefined;
 
   constructor(
     url: string,
@@ -229,15 +230,15 @@ export class WebDavBackend implements TodoBackend {
 
     if (!response.ok) {
       if (response.status === 404) {
-        this.etag = undefined;
-        return new Todos();
+        this.loadedEtag = undefined;
+        return [];
       }
       throw new Error(
         `Failed to load todos from WebDAV: ${response.status} ${response.statusText}`,
       );
     }
 
-    this.etag = response.headers.get("ETag") ?? undefined;
+    this.loadedEtag = response.headers.get("ETag") ?? undefined;
 
     // Reject an obviously oversized file before reading the body.
     const contentLength = response.headers.get("Content-Length");
@@ -256,22 +257,20 @@ export class WebDavBackend implements TodoBackend {
       this.maxFileBytes,
     );
 
-    return new Todos(
-      ...text
-        .split("\n")
-        .filter((x) => x.trim())
-        .map((x) => new Todo(x)),
-    );
+    return text
+      .split("\n")
+      .filter((x) => x.trim())
+      .map((x) => new Todo(x));
   }
 
   async save(todos: Todo[]): Promise<void> {
-    const content = todos.map((y) => y.toString()).join("\n") + "\n";
+    const content = serializeTodoContent(todos);
     const headers: Record<string, string> = {
       ...this.getHeaders(),
       "Content-Type": "text/plain",
     };
-    if (this.etag) {
-      headers["If-Match"] = this.etag;
+    if (this.loadedEtag) {
+      headers["If-Match"] = this.loadedEtag;
     }
 
     const response = await this.fetchWithRetry({
@@ -294,6 +293,6 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    this.etag = response.headers.get("ETag") ?? this.etag;
+    this.loadedEtag = response.headers.get("ETag") ?? this.loadedEtag;
   }
 }

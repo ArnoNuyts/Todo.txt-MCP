@@ -3,7 +3,7 @@ import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { Stats, WriteFileOptions } from "node:fs";
 import { dirname, join } from "node:path";
 import { Todo } from "./todo.ts";
-import { Todos } from "./Todos.ts";
+import { serializeTodoContent } from "./content.ts";
 import { isNotFoundError } from "./fs-errors.ts";
 import {
   assertFileSizeWithinLimit,
@@ -18,7 +18,7 @@ export interface ReadTodosOptions {
 export async function readTodosFromFile(
   filename: string,
   options: ReadTodosOptions = {},
-): Promise<Todos> {
+): Promise<Todo[]> {
   const maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
   let fileInfo: Stats;
   try {
@@ -26,7 +26,7 @@ export async function readTodosFromFile(
   } catch (error) {
     if (isNotFoundError(error)) {
       await writeFile(filename, ""); // Create the file if it doesn't exist
-      return new Todos(); // Return empty Todos after creating the file
+      return []; // Return an empty list after creating the file
     }
     throw error; // Re-throw other errors from stat()
   }
@@ -55,9 +55,7 @@ export async function readTodosFromFile(
     maxFileBytes,
   );
 
-  return new Todos(
-    ...data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x)),
-  );
+  return data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x));
 }
 
 /**
@@ -70,7 +68,7 @@ export const writeTodosToFile = async (
   filename: string,
   writeOptions: WriteFileOptions | undefined = undefined,
 ) => {
-  const content = todos.map((y) => y.toString()).join("\n") + "\n";
+  const content = serializeTodoContent(todos);
   const tempFilename = join(dirname(filename), `.${randomUUID()}.tmp`);
 
   try {

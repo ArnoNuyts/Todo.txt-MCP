@@ -1,11 +1,19 @@
 import { TodoStateEnum } from "../types/enums.ts";
 import type { UpperCaseLetter } from "../types/types.ts";
+import {
+  nextRecurrence,
+  parseDateTag,
+  parseRecurrence,
+  startOfUtcDay,
+} from "./recurrence.ts";
+import {
+  CONTEXT_REGEX,
+  PROJECT_REGEX,
+  TAG_REGEX,
+} from "./tokens.ts";
 
 const TODO_REGEX =
   /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
-const PROJECT_REGEX = /\s+\+(?<name>[\w.\_\-]+)/g;
-const CONTEXT_REGEX = /\s+\@(?<name>[\w.\_\-]+)/g;
-const TAG_REGEX = /\s+(?<key>[A-Za-z]+):(?<value>[^\s]+)/g;
 
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
 
@@ -44,52 +52,48 @@ export class Todo {
     }
     this.setText(text);
   }
-  toggleState() {
-    this.state = this.state == TodoStateEnum.todo
+  /** Toggles completion and returns a recurrence todo when one is spawned. */
+  toggleState(completedAt: Date = new Date()): { recurrence?: Todo } {
+    this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
-    if (this.state === TodoStateEnum.done && this.creationDate) {
-      this.completionDate = new Date();
+    if (this.state === TodoStateEnum.done) {
+      this.completionDate = completedAt;
     }
     if (this.state === TodoStateEnum.todo && this.completionDate) {
       this.completionDate = undefined;
     }
 
-    if (this.state === TodoStateEnum.done && this.tags.rec) {
-      const recurrence = this.tags.rec as string;
-      const newTodo = new Todo(this.toString());
-      newTodo.state = TodoStateEnum.todo;
-      newTodo.completionDate = undefined;
-
-      const regex = /(\d+)([dwmy])/;
-      const match = recurrence.match(regex);
-      if (match) {
-        const amount = parseInt(match[1]);
-        const unit = match[2];
-        const newDueDate = new Date();
-        /*if (this.tags.due) {
-          newDueDate = new Date(this.tags.due as string);
-        }*/
-
-        switch (unit) {
-          case "d":
-            newDueDate.setDate(newDueDate.getDate() + amount);
-            break;
-          case "w":
-            newDueDate.setDate(newDueDate.getDate() + amount * 7);
-            break;
-          case "m":
-            newDueDate.setMonth(newDueDate.getMonth() + amount);
-            break;
-          case "y":
-            newDueDate.setFullYear(newDueDate.getFullYear() + amount);
-            break;
-        }
-        newTodo.setDue(newDueDate);
-      }
-
-      return newTodo;
+    if (this.state !== TodoStateEnum.done) {
+      return {};
     }
+
+    const recValue = Array.isArray(this.tags.rec)
+      ? this.tags.rec[0]
+      : this.tags.rec;
+    const recurrence = recValue === undefined
+      ? undefined
+      : parseRecurrence(recValue);
+    if (recurrence === undefined) {
+      return {};
+    }
+
+    const next = nextRecurrence(
+      recurrence,
+      parseDateTag(this.tags.due),
+      parseDateTag(this.tags.t),
+      completedAt,
+    );
+    const newTodo = new Todo(this.toString());
+    newTodo.state = TodoStateEnum.todo;
+    newTodo.completionDate = undefined;
+    newTodo.creationDate = startOfUtcDay(completedAt);
+    newTodo.setDue(next.due);
+    if (next.threshold !== undefined) {
+      newTodo.setThreshold(next.threshold);
+    }
+    // An invalid t: tag cannot be shifted; the clone keeps it so no data is lost.
+    return { recurrence: newTodo };
   }
   toString() {
     // Completed todos must be serialized as
@@ -125,42 +129,8 @@ export class Todo {
       (Object.keys(this.tags).map((k) => k + ":" + this.tags[k]).join(" "));
   }
 
-  setPriority(key: UpperCaseLetter) {
-    this.priority = key;
-  }
-
   isDone() {
-    return this.state == TodoStateEnum.done;
-  }
-
-  isHidden() {
-    return !!this.tags["h"] && this.tags["h"] !== "0";
-  }
-
-  isVisibleInOverview() {
-    return !this.isHidden() && this.isPassedThreshold();
-  }
-
-  isOverdue() {
-    if (typeof this.tags.due !== "string") {
-      return false;
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // set to midnight today
-    const dueDate = new Date(this.tags.due);
-    dueDate.setHours(0, 0, 0, 0); // set to midnight of due date
-    return today > dueDate;
-  }
-
-  isPassedThreshold() {
-    if (typeof this.tags.t !== "string") {
-      return true; // No threshold date, always passed
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // set to midnight today
-    const thresholdDate = new Date(this.tags.t);
-    thresholdDate.setHours(0, 0, 0, 0); // set to midnight of threshold date
-    return today >= thresholdDate;
+    return this.state === TodoStateEnum.done;
   }
 
   setText(text: string) {
@@ -179,54 +149,47 @@ export class Todo {
 
     const matchTags = text.matchAll(TAG_REGEX);
     for (const tag of matchTags) {
-      switch (typeof this.tags[tag.groups!.key]) {
-        case "object":
-          this.tags[tag.groups!.key] = [
-            ...this.tags[tag.groups!.key],
-            tag.groups!.value,
-          ];
-          break;
-        case "string":
-          this.tags[tag.groups!.key] = [
-            this.tags[tag.groups!.key] as string,
-            tag.groups!.value,
-          ];
-          break;
-        default:
-          this.tags[tag.groups!.key] = tag.groups!.value;
+      const key = tag.groups!.key;
+      const value = tag.groups!.value;
+      const existing = this.tags[key];
+      const alreadyPresent = existing === value ||
+        (Array.isArray(existing) && existing.includes(value));
+      // Re-applying the same body (a common follow-up edit) must not append an
+      // identical tag, which would render as `due:2026-12-15,2026-12-15`.
+      if (!alreadyPresent) {
+        switch (typeof existing) {
+          case "object":
+            this.tags[key] = [...existing, value];
+            break;
+          case "string":
+            this.tags[key] = [existing, value];
+            break;
+          default:
+            this.tags[key] = value;
+        }
       }
       text = text.replace(tag[0], "");
     }
     this.text = text;
   }
 
-  setRecurrence(recurrence: string): void {
-    this.tags.rec = recurrence;
+  setTag(key: string, value: string): void {
+    this.tags[key] = value;
   }
 
   setDue(date: Date): void {
-    this.tags.due = date.toISOString().substring(0, 10);
+    this.setTag("due", date.toISOString().substring(0, 10));
   }
 
   setThreshold(date: Date): void {
-    this.tags.t = date.toISOString().substring(0, 10);
-  }
-
-  toggleHidden(): void {
-    if (this.tags.h && this.tags.h !== "0") {
-      delete this.tags.h;
-    } else {
-      this.tags.h = "1";
-    }
+    this.setTag("t", date.toISOString().substring(0, 10));
   }
 
   async getHash(): Promise<string> {
     const msgUint8 = new TextEncoder().encode(this.toString());
     const hashBuffer = await crypto.subtle.digest("SHA-256", msgUint8);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return hashHex.substring(0, 16);
+    // 64-bit content hash, base64url (11 chars, no padding). Shorter than the
+    // old 16-hex encoding and safe to use in tool arguments.
+    return Buffer.from(hashBuffer).subarray(0, 8).toString("base64url");
   }
 }

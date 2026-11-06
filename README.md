@@ -94,7 +94,62 @@ npm test              # run once
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
+npm run bench:actions # token cost of add/edit/status/pagination workflows
+npm run bench:agent   # LLM usability of the tool surface
 ```
+
+## 🤖 LLM usability evaluation
+
+`bench:actions` measures deterministic protocol cost: the fixed add, edit,
+status, and pagination workflow with no model in the loop. `bench:agent` measures
+**usability**: it gives a model a set of natural-language multi-item tasks,
+exposes the real MCP tools, runs an OpenAI-style function-calling loop, and
+grades the resulting `todo.txt` state.
+
+Run the offline harness with a scripted model (no API key required):
+
+```bash
+npm run bench:agent -- --mock
+```
+
+The mock only proves the harness wiring and graders work; its success rates are
+not a model-quality signal. Use a real model for comparisons.
+
+Run against any OpenAI-compatible `/chat/completions` endpoint:
+
+```bash
+export AGENT_EVAL_API_KEY="sk-..."
+export AGENT_EVAL_MODEL="gpt-4.1-mini"
+# Optional: export AGENT_EVAL_BASE_URL="https://api.openai.com/v1"
+npm run bench:agent -- --trials 1 --max-turns 12
+```
+
+Useful options:
+
+- `--trials 1` — trials per task.
+- `--task <id>` — run one task, e.g. `--task stale-hash-recovery`.
+- `--max-turns 12` — model turns before the run stops.
+- `--json <path>` — write full per-run results and traces as JSON.
+- `--mock` — offline scripted model; uses estimated tokens (chars / 4).
+- `--model <name>` / `--base-url <url>` — override the environment.
+
+Configuration:
+
+| Variable | Purpose |
+|---|---|
+| `AGENT_EVAL_API_KEY` | API key; falls back to `OPENAI_API_KEY`. |
+| `AGENT_EVAL_BASE_URL` | OpenAI-compatible base URL (default: `https://api.openai.com/v1`). |
+| `AGENT_EVAL_MODEL` | Model name; required for a real run. |
+| `AGENT_EVAL_TEMPERATURE` | Sampling temperature (default: `0`). |
+
+The table reports success rate (graded from the final todo state, not the
+model's prose), average tool calls, invalid tool calls, average turns, average
+total tokens (from provider usage), and tokens per successful task. Successful
+tool results are text-only; errors may carry a `structuredContent.error` code,
+which the harness includes as JSON. The task suite lives in
+`bench/agent-tasks.ts`; each task has a seed fixture and a deterministic
+`verify` function. Read-only tasks also inspect the final answer, for example
+to confirm that a counting request did not modify the file.
 
 ## ⚙️ Configuration
 
@@ -141,18 +196,21 @@ exhaust the process memory:
 }
 ```
 
-## 🔐 Read-only mode, tool profiles, and token footprint
+## 🔐 Tool surface and token footprint
 
-- **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
-  not registered.
-- **Tool profiles:** `MCP_TOOLSET=full|core|readonly|off` controls the exposed
-  toolset. `off` exposes resources only, `readonly` the five read tools, `core`
-  the read tools plus add/update/status/delete, and `full` (default) every
-  tool. Combine this with a gateway or per-agent MCP config to expose the server
-  only on demand.
-- **Output schemas:** `MCP_OUTPUT_SCHEMAS=1` adds `outputSchema` to
-  `tools/list`. Off by default because it is roughly half of the tool-definition
-  payload; structured content is returned either way.
+- **Four tools:** `list_todos`, `add_todos`, `update_todos`, `delete_todos`.
+  There are no tool profiles.
+- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`) registers only
+  `list_todos`; mutating tools are absent from `tools/list` and cannot be
+  called. Prompts and resources remain available.
+- **Text-only:** successful results are `hash text` lines. No
+  `structuredContent` and no output schemas. Errors still carry a stable
+  `structuredContent.error.code`.
+- **Batch-first, text-first:** `add_todos` and `update_todos` both take arrays
+  of todo.txt lines; `delete_todos` takes hashes.
+- **Benchmark:** the multi-item add/edit/status/pagination workflow costs
+  ~1,146 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
+  estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
   `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
@@ -171,43 +229,33 @@ guidance.
 
 ## 🔧 Available Tools
 
-- `list_todos` — list, filter, search, and paginate todos. Responses include
-  the current content `version`. `limit` defaults to `50`; `format` defaults to
-  `"structured"` (use `"text"` or `"both"` when needed). Structured results
-  carry `body` (what `update_todos` accepts) next to the display `text`.
-- `add_todos` — add one or more todos. Accepts `onDuplicate`
-  (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
-  stored as an `idem:<key>` tag so retries return the previously added todos.
-- `update_todos` — replace the body text of one or more todos by hash. Pass
-  the body only: no `x ` done marker, `(A) ` priority, or leading dates; use
-  `set_todo_statuses` to change status. Supports `dryRun`, which reports the
-  resulting hashes and text without writing. Each result includes the input
-  hash as `previousHash` next to the new `hash`.
-- `set_todo_statuses` — mark a batch of todos done or active with one
-  load/save cycle. Supports `dryRun`, which previews the resulting statuses
-  without writing. Each result includes the input hash as `previousHash` next
-  to the new `hash`.
-- `delete_todos` — delete a batch of todos by hash with one load/save cycle.
-  Pass `dryRun: true` to preview the deletion without writing.
-- `delete_completed` — delete completed todos, optionally filtered by
-  `before: "YYYY-MM-DD"` and/or `context`. Supports `dryRun`.
-- `get_todo` — fetch one todo (including `body`) and the current content
-  `version`.
-- `summary` — counts by status, context, project, and priority, plus overdue.
-- `export_todos` — return the whole todo.txt `content` and its `version`.
-- `changes_since` — compare a known `version` with the current one; when it
-  changed, the new content is included.
-- `import_todos` — import todo.txt content in `merge` or `replace` mode.
-  Supports `expectedVersion` (a mismatch fails with `CONFLICT`) and `dryRun`,
-  which returns an add/remove/unchanged diff without writing.
+- `list_todos` — list todos by `search`, `status` (`todo` default, `done`,
+  `all`), `context`, `limit` (default 20, max 100), and `offset`. Returns
+  `hash text` lines and a `MORE <count> (offset=<next>)` line when a page is
+  truncated.
+- `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
+  `rec:` tags. Returns one `hash text` line per item.
+- `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`
+  lines. Copy the listed line, edit it, and include the fields to keep; fields
+  omitted from the new line are removed. The creation date is preserved when
+  omitted. To complete, use `x ` with no date unless the user gave one.
+  Returns `hash text` lines.
+- `delete_todos` — delete multiple todos by hash in one batch.
 
-Batch tools return `succeeded` and `failed` arrays. A missing hash is reported
-in `failed` with the `TODO_NOT_FOUND` code and a hint to refresh hashes with
-`list_todos`.
+`due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
+Completing a recurring todo follows the usual todo.txt convention:
+`rec:+1w` advances from the due date, `rec:1w` from the completion date, and
+a `t:` threshold keeps its offset from the due date.
+
+All tool results are text-only. A batch that finds no matching hash returns
+`Todo with hash <hash> not found.` A partial batch keeps the successful
+changes and starts with `PARTIAL <n> updated, <m> not found`, followed by
+`ERROR <hash> not found` lines. A hash shared by identical todo lines is
+rejected as `CONFLICT` instead of silently updating one of them.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
-`LIMIT_EXCEEDED`, `CONFLICT`, `BACKEND_ERROR`, or `UNSUPPORTED`.
+`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`.
 
 ### MCP resources
 
@@ -227,19 +275,16 @@ overwrite each other. The lock is released in a `finally`; a lock older than
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
-reload with `list_todos` before retrying. Item-scoped tools do **not** require a
-client-supplied `expectedVersion`: they address the item by the hash from a
-recent read and return that input hash as `previousHash` next to the new
-`hash`. `import_todos` keeps `expectedVersion` because it replaces or merges a
-full-file snapshot supplied by the client.
+reload with `list_todos` before retrying. Tools address an item by the hash
+from a recent read and return the new hash in their text result.
 
 ### Hash stability
 
-A todo hash is the first 16 hex characters of the SHA-256 of the serialized
-todo line, so it changes on every mutation. Batch mutations return the input
-hash as `previousHash` alongside the new `hash`, which lets you chain calls
-without a `list_todos` in between. If you cache hashes across calls, refresh
-them with `list_todos`.
+A todo hash is a 64-bit prefix of the SHA-256 of the serialized todo line,
+encoded as 11 base64url characters. It changes on every mutation. Mutations
+return the new hash in their text result, so you can chain calls without a
+`list_todos` in between. If you cache hashes across calls, refresh them with
+`list_todos`.
 
 ### Exposing the server on demand
 
@@ -250,9 +295,12 @@ needed. Two supported patterns:
    configuration (`enabled: false`) and enable it per agent, command, or
    session. This removes all tool definitions from every request where the
    server is not used.
-2. **Gateway or profile:** run behind an MCP gateway that connects servers on
-   demand, or start the container with `MCP_TOOLSET=off` and switch to
-   `core`/`full` only for the sessions that need write access.
+2. **Gateway:** run behind an MCP gateway that connects the server on demand.
+
+Version 3.0 reduces the surface to four batch tools, makes results text-only,
+removes `get_todo`, `delete_completed`, `summary`, `export_todos`,
+`import_todos`, and `changes_since`, and changes todo hashes from 16 hex
+characters to 11 base64url characters.
 
 Version 2.0 removes the deprecated singular aliases (`add_todo`, `edit_todo`,
 `set_todo_status`, `delete_todo`). Use the plural canonical names instead.

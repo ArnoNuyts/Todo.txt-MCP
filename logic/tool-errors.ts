@@ -11,14 +11,13 @@ export type ToolErrorCode =
   | "INVALID_ARGUMENT"
   | "LIMIT_EXCEEDED"
   | "CONFLICT"
-  | "BACKEND_ERROR"
-  | "UNSUPPORTED";
+  | "BACKEND_ERROR";
 
 export interface ToolErrorDetails {
   [key: string]: unknown;
 }
 
-export interface ToolErrorPayload {
+interface ToolErrorPayload {
   code: ToolErrorCode;
   message: string;
   details?: ToolErrorDetails;
@@ -30,19 +29,6 @@ export interface ToolErrorResult {
   isError: true;
   content: Array<{ type: "text"; text: string }>;
   structuredContent: { error: ToolErrorPayload };
-}
-
-/** A failure result for one item of a batch operation. */
-export interface BatchFailure {
-  hash: string;
-  code: ToolErrorCode;
-  message: string;
-}
-
-/** Shared shape for batch tools that can partially succeed. */
-export interface BatchResult<T> {
-  succeeded: T[];
-  failed: BatchFailure[];
 }
 
 /**
@@ -67,7 +53,7 @@ export class ToolFailure extends Error {
 }
 
 /** Builds the canonical structured error result. */
-export function toolError(
+function toolError(
   code: ToolErrorCode,
   message: string,
   details?: ToolErrorDetails,
@@ -94,20 +80,11 @@ export function notFoundError(hash: string): ToolErrorResult {
   );
 }
 
-/** A batch failure entry for a hash that no longer exists. */
-export function missingHashFailure(hash: string): BatchFailure {
-  return {
-    hash,
-    code: "TODO_NOT_FOUND",
-    message: `Todo with hash ${hash} not found.`,
-  };
-}
-
 /**
  * Converts an unexpected exception into a `BACKEND_ERROR` result without
  * exposing a stack trace or a nested error's internals.
  */
-export function mapError(error: unknown): ToolErrorResult {
+function mapError(error: unknown): ToolErrorResult {
   if (error instanceof ToolFailure) {
     return toolError(error.code, error.message, error.details);
   }
@@ -159,13 +136,4 @@ export async function guardTool<T>(
   } catch (error) {
     return mapError(error);
   }
-}
-
-/** Narrows a tool handler result to {@link ToolErrorResult}. */
-export function isToolError(result: unknown): result is ToolErrorResult {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    (result as { isError?: unknown }).isError === true
-  );
 }

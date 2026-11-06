@@ -43,7 +43,7 @@ export interface LoggerOptions {
   now?: () => Date;
 }
 
-export type LogFields = Record<string, unknown>;
+type LogFields = Record<string, unknown>;
 
 export interface Logger {
   readonly level: LogLevel;

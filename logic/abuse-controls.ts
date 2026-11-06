@@ -12,7 +12,7 @@ import { isIP } from "node:net";
  * every Express app gets isolated counters. Tests can inject `now()`.
  */
 
-export const DEFAULT_MAX_TRACKED_KEYS = 10_000;
+const DEFAULT_MAX_TRACKED_KEYS = 10_000;
 export const UNKNOWN_CLIENT_KEY = "unknown";
 
 /** Ban ladder for repeat offenders, in seconds. Capped at one hour. */

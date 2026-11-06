@@ -19,6 +19,7 @@
     "logic/**/*.ts",
     "types/**/*.ts",
     "test/**/*.ts",
+    "bench/**/*.ts",
     "vitest.config.ts"
   ],
   "exclude": ["node_modules"]

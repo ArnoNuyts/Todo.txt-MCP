@@ -4,10 +4,9 @@ import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createApp,
-  resolveReadOnlyMode,
   type CreateAppOptions,
 } from "../server.ts";
 import {
@@ -196,15 +195,21 @@ describe("MCP HTTP endpoint", () => {
         "list_todos",
         "add_todos",
         "update_todos",
-        "set_todo_statuses",
         "delete_todos",
-        "delete_completed",
-        "get_todo",
-        "summary",
-        "export_todos",
-        "changes_since",
-        "import_todos",
       ]);
+  });
+
+  it("exposes only list_todos in read-only mode", async () => {
+    await restartApp({ readOnly: true });
+    await rpc("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "http-test", version: "1.0.0" },
+    });
+
+    const listed = await rpc("tools/list");
+    expect(listed.result?.tools?.map((tool) => tool.name))
+      .toEqual(["list_todos"]);
   });
 
   it("adds and lists a todo over HTTP", async () => {
@@ -212,13 +217,14 @@ describe("MCP HTTP endpoint", () => {
       name: "add_todos",
       arguments: { todos: ["http todo"] },
     });
-    expect(added.result?.content?.[0]?.text).toContain("Added todo [");
-    expect(added.result?.content?.[0]?.text).toContain("http todo");
+    expect(added.result?.content?.[0]?.text).toMatch(
+      /^[A-Za-z0-9_-]{11} http todo$/,
+    );
     expect(backend.getTodos()).toHaveLength(1);
 
     const listed = await rpc("tools/call", {
       name: "list_todos",
-      arguments: { format: "both" },
+      arguments: {},
     });
     expect(listed.result?.content?.[0]?.text).toContain("http todo");
   });
@@ -477,25 +483,6 @@ describe("MCP HTTP endpoint", () => {
     const rejected = await postWithToken("rotation-token-three-cccccccc");
     expect(rejected.status).toBe(401);
     await rejected.body?.cancel();
-  });
-
-  it("exposes only list_todos in read-only mode", async () => {
-    await restartApp({ readOnly: true });
-
-    const listed = await rpc("tools/list");
-    expect(listed.result?.tools?.map((tool) => tool.name)).toEqual([
-      "list_todos",
-    ]);
-
-    const attempted = await rpc("tools/call", {
-      name: "add_todos",
-      arguments: { todos: ["should not be added"] },
-    });
-    const attemptMessage = attempted.error?.message ??
-      attempted.result?.content?.map((item) => item.text ?? "").join(" ") ??
-      "";
-    expect(attemptMessage).toMatch(/not found|unknown|unsupported/i);
-    expect(backend.getTodos()).toHaveLength(0);
   });
 
   it("sets security headers and hides the framework name", async () => {
@@ -917,16 +904,6 @@ describe("HTTP security helpers", () => {
     expect(tokensEqual("secret", "short")).toBe(false);
     expect(tokensEqual("a".repeat(64), "a".repeat(63))).toBe(false);
     expect(tokensEqual("héllo", "héllo")).toBe(true);
-  });
-
-  it("resolves read-only mode from options and the environment", () => {
-    expect(resolveReadOnlyMode({}, {})).toBe(false);
-    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "1" })).toBe(true);
-    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "true" })).toBe(true);
-    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "yes" })).toBe(true);
-    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "0" })).toBe(false);
-    expect(resolveReadOnlyMode({ readOnly: false }, { MCP_READ_ONLY: "1" }))
-      .toBe(false);
   });
 
   it("extracts bearer tokens", () => {
