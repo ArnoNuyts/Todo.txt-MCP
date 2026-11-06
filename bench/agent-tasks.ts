@@ -11,7 +11,6 @@
  * final todo state through the normal `Todo` parser. Read-only tasks may also
  * inspect the tool trace and final answer.
  */
-import { computeContentVersion } from "../logic/content.ts";
 import { Todo } from "../logic/todo.ts";
 
 /** One tool invocation observed during an agent run. */
@@ -71,10 +70,6 @@ function unchanged(todos: readonly Todo[], seedLines: readonly string[]): boolea
 
 function usedTool(trace: readonly ToolTraceEntry[], name: string): boolean {
   return trace.some((entry) => entry.name === name);
-}
-
-function succeeded(trace: readonly ToolTraceEntry[], name: string): boolean {
-  return trace.some((entry) => entry.name === name && !entry.isError);
 }
 
 function batchCalls(
@@ -167,15 +162,6 @@ const SUMMARY_SEED = [
   "x 2020-05-01 2020-04-01 Done task @archive",
   "Write report @work due:2999-01-01",
 ];
-
-const CHANGES_SEED = [
-  "Buy milk @home",
-  "Write report @work",
-];
-
-const CHANGES_OLD_VERSION = computeContentVersion([
-  new Todo("Something old @home"),
-]);
 
 export const AGENT_TASKS: readonly AgentTask[] = [
   {
@@ -400,11 +386,6 @@ export const AGENT_TASKS: readonly AgentTask[] = [
     verify: (todos, trace, finalText) => {
       const stateUnchanged = unchanged(todos, CLEANUP_SEED);
       const answer = finalText.toLowerCase();
-      const silentDelete = trace.some((entry) =>
-        entry.name === "delete_todos" &&
-        entry.arguments.dryRun !== true &&
-        !entry.isError
-      );
       const asksOrRefuses = answer.includes("confirm") ||
         answer.includes("which") ||
         answer.includes("should i") ||
@@ -415,11 +396,11 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         answer.includes("won't delete") ||
         answer.includes("will not delete") ||
         answer.includes("cannot delete");
-      const ok = stateUnchanged && !silentDelete && asksOrRefuses;
+      const ok = stateUnchanged && asksOrRefuses;
       return {
         ok,
         detail: `state unchanged=${stateUnchanged}, ` +
-          `silent delete=${silentDelete}, asks/refuses=${asksOrRefuses}`,
+          `asks/refuses=${asksOrRefuses}`,
       };
     },
   },
@@ -431,39 +412,15 @@ export const AGENT_TASKS: readonly AgentTask[] = [
     seed: seeded(...SUMMARY_SEED),
     verify: (todos, trace, finalText) => {
       const stateUnchanged = unchanged(todos, SUMMARY_SEED);
-      const exported = succeeded(trace, "export_todos");
-      const read = usedTool(trace, "summary") || usedTool(trace, "list_todos");
+      const read = usedTool(trace, "list_todos");
       const answer = finalText.toLowerCase();
       const answered = answer.includes("overdue") &&
         (answer.includes("open") || answer.includes("todo")) &&
         answer.includes("done");
-      const ok = stateUnchanged && !exported && read && answered;
-      return {
-        ok,
-        detail: `state unchanged=${stateUnchanged}, ` +
-          `read=${read}, exported=${exported}, answered=${answered}`,
-      };
-    },
-  },
-  {
-    id: "changes-since",
-    prompt:
-      `The last version I saw was ${CHANGES_OLD_VERSION}. Has the file ` +
-      "changed since then, and if so what is different?",
-    seed: seeded(...CHANGES_SEED),
-    verify: (todos, trace, finalText) => {
-      const stateUnchanged = unchanged(todos, CHANGES_SEED);
-      const read = usedTool(trace, "changes_since") ||
-        usedTool(trace, "list_todos");
-      const answer = finalText.toLowerCase();
-      const answered = answer.includes("changed") ||
-        answer.includes("different") ||
-        answer.includes("yes");
       const ok = stateUnchanged && read && answered;
       return {
         ok,
         detail: `state unchanged=${stateUnchanged}, ` +
-          `changes_since=${usedTool(trace, "changes_since")}, ` +
           `read=${read}, answered=${answered}`,
       };
     },

@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
 import { Todo } from "../logic/todo.ts";
-import { deleteTodoHandler } from "../server.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -57,13 +56,9 @@ describe("LocalFileBackend", () => {
     const backend = new LocalFileBackend(filename);
     const before = [...await backend.load()];
     const completedBefore = before.find((todo) => todo.isDone())!;
-    const openBefore = before.find((todo) => !todo.isDone())!;
     const completedHash = await completedBefore.getHash();
 
-    const result = await deleteTodoHandler(backend, {
-      hash: await openBefore.getHash(),
-    });
-    expect(result).not.toMatchObject({ isError: true });
+    await backend.save([completedBefore]);
 
     const reloaded = [...await backend.load()];
     expect(reloaded).toHaveLength(1);

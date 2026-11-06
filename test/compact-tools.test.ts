@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
-import { computeContentVersion } from "../logic/content.ts";
 
 interface ToolTextResult {
   isError?: boolean;
@@ -13,12 +12,17 @@ interface ToolTextResult {
 }
 
 function textOf(result: unknown): string {
-  const { content } = result as ToolTextResult;
-  return content.map((item) => item.text ?? "").join("\n");
+  return (result as ToolTextResult).content
+    .map((item) => item.text ?? "")
+    .join("\n");
 }
 
 function linesOf(result: unknown): string[] {
   return textOf(result).split("\n");
+}
+
+function hashesOf(result: unknown): string[] {
+  return linesOf(result).map((line) => line.split(" ")[0]);
 }
 
 function errorCodeOf(result: unknown): string | undefined {
@@ -27,18 +31,18 @@ function errorCodeOf(result: unknown): string | undefined {
   }).structuredContent?.error?.code;
 }
 
-describe("compact toolset", () => {
+describe("tool surface", () => {
   let backend: MockBackend;
   let client: Client;
   let server: ReturnType<typeof createTodoMcpServer>;
 
   beforeEach(async () => {
     backend = new MockBackend();
-    server = createTodoMcpServer(backend, { toolset: "compact" });
+    server = createTodoMcpServer(backend);
     const [clientTransport, serverTransport] = InMemoryTransport
       .createLinkedPair();
     client = new Client({
-      name: "todo-txt-mcp-compact-test-client",
+      name: "todo-txt-mcp-test-client",
       version: "1.0.0",
     });
     await Promise.all([
@@ -51,7 +55,7 @@ describe("compact toolset", () => {
     await Promise.allSettled([client.close(), server.close()]);
   });
 
-  it("exposes the four batch tools", async () => {
+  it("exposes only the four tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_todos",
@@ -59,9 +63,12 @@ describe("compact toolset", () => {
       "mark_done",
       "update_todos",
     ]);
+    for (const tool of tools) {
+      expect(tool.outputSchema).toBeUndefined();
+    }
   });
 
-  it("adds multiple todos in one call and returns their hashes", async () => {
+  it("adds a batch and returns text-only hash lines", async () => {
     const result = await client.callTool({
       name: "add_todos",
       arguments: {
@@ -69,12 +76,49 @@ describe("compact toolset", () => {
       },
     });
 
+    expect(result.structuredContent).toBeUndefined();
     const lines = linesOf(result);
     expect(lines).toHaveLength(2);
     expect(lines[0]).toMatch(/^[A-Za-z0-9_-]{11} Buy milk @home$/);
-    expect(lines[1]).toMatch(/^[A-Za-z0-9_-]{11} \(A\) Renew passport @errands$/);
-    expect(result.structuredContent).toBeUndefined();
+    expect(lines[1]).toMatch(
+      /^[A-Za-z0-9_-]{11} \(A\) Renew passport @errands$/,
+    );
     expect(backend.getTodos()).toHaveLength(2);
+  });
+
+  it("lists with search, status, context and limit", async () => {
+    await backend.save([
+      new Todo("Buy milk @home"),
+      new Todo("Write report @work"),
+      new Todo("x Done task @home"),
+    ]);
+
+    const active = await client.callTool({
+      name: "list_todos",
+      arguments: {},
+    });
+    expect(textOf(active)).toContain("Buy milk");
+    expect(textOf(active)).toContain("Write report");
+    expect(textOf(active)).not.toContain("Done task");
+
+    const done = await client.callTool({
+      name: "list_todos",
+      arguments: { status: "done" },
+    });
+    expect(textOf(done)).toContain("Done task");
+
+    const home = await client.callTool({
+      name: "list_todos",
+      arguments: { context: "home" },
+    });
+    expect(textOf(home)).toContain("Buy milk");
+    expect(textOf(home)).not.toContain("Write report");
+
+    const limited = await client.callTool({
+      name: "list_todos",
+      arguments: { limit: 1 },
+    });
+    expect(linesOf(limited)).toHaveLength(1);
   });
 
   it("updates priority and contexts for multiple todos in one save", async () => {
@@ -83,28 +127,19 @@ describe("compact toolset", () => {
       new Todo("(D) 2025-01-02 Budget @work +finance"),
     ];
     await backend.save(todos);
-    const reportHash = await todos[0].getHash();
-    const budgetHash = await todos[1].getHash();
+    const hashes = await Promise.all(todos.map((todo) => todo.getHash()));
     backend.loadCalls = 0;
     backend.saveCalls = 0;
 
     const result = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: [
-          {
-            hash: reportHash,
-            priority: "A",
-            removeContexts: ["work"],
-            addContexts: ["office"],
-          },
-          {
-            hash: budgetHash,
-            priority: "A",
-            removeContexts: ["work"],
-            addContexts: ["office"],
-          },
-        ],
+        edits: hashes.map((hash) => ({
+          hash,
+          priority: "A",
+          removeContexts: ["work"],
+          addContexts: ["office"],
+        })),
       },
     });
 
@@ -119,9 +154,9 @@ describe("compact toolset", () => {
   });
 
   it("rejects duplicate hashes and edits with no changes", async () => {
-    const todos = [new Todo("Keep me @home")];
-    await backend.save(todos);
-    const hash = await todos[0].getHash();
+    const todo = new Todo("Keep me @home");
+    await backend.save([todo]);
+    const hash = await todo.getHash();
 
     const duplicate = await client.callTool({
       name: "update_todos",
@@ -140,11 +175,8 @@ describe("compact toolset", () => {
     expect(errorCodeOf(empty)).toBe("INVALID_ARGUMENT");
   });
 
-  it("marks multiple todos done in one save and is idempotent", async () => {
-    const todos = [
-      new Todo("Ship it @work"),
-      new Todo("Buy milk @home"),
-    ];
+  it("marks multiple todos done and is idempotent", async () => {
+    const todos = [new Todo("Ship it @work"), new Todo("Buy milk @home")];
     await backend.save(todos);
     const hashes = await Promise.all(todos.map((todo) => todo.getHash()));
     backend.loadCalls = 0;
@@ -159,7 +191,7 @@ describe("compact toolset", () => {
     expect(backend.saveCalls).toBe(1);
     expect(backend.getTodos().every((todo) => todo.isDone())).toBe(true);
 
-    const doneHashes = linesOf(first).map((line) => line.split(" ")[0]);
+    const doneHashes = hashesOf(first);
     const second = await client.callTool({
       name: "mark_done",
       arguments: { hashes: doneHashes },
@@ -168,10 +200,10 @@ describe("compact toolset", () => {
     expect(backend.saveCalls).toBe(1);
   });
 
-  it("returns a partial batch result for a missing hash", async () => {
-    const todos = [new Todo("Keep me")];
-    await backend.save(todos);
-    const hash = await todos[0].getHash();
+  it("returns a partial result for a missing hash", async () => {
+    const todo = new Todo("Keep me");
+    await backend.save([todo]);
+    const hash = await todo.getHash();
 
     const result = await client.callTool({
       name: "mark_done",
@@ -180,104 +212,5 @@ describe("compact toolset", () => {
 
     expect(textOf(result)).toContain("ERROR 0123456789abcdef not found");
     expect(backend.getTodos()[0].isDone()).toBe(true);
-  });
-
-  it("returns a compact list without structured content", async () => {
-    await backend.save([
-      new Todo("First @home"),
-      new Todo("Second @work"),
-    ]);
-
-    const result = await client.callTool({
-      name: "list_todos",
-      arguments: { context: "home" },
-    });
-
-    expect(textOf(result)).toMatch(/^[A-Za-z0-9_-]{11} First @home$/);
-    expect(result.structuredContent).toBeUndefined();
-  });
-
-  it("exposes only list_todos in compact read-only mode", async () => {
-    const readOnlyServer = createTodoMcpServer(backend, {
-      toolset: "compact",
-      readOnly: true,
-    });
-    const [clientTransport, serverTransport] = InMemoryTransport
-      .createLinkedPair();
-    const readOnlyClient = new Client({
-      name: "todo-txt-mcp-compact-readonly-test-client",
-      version: "1.0.0",
-    });
-    await Promise.all([
-      readOnlyClient.connect(clientTransport),
-      readOnlyServer.connect(serverTransport),
-    ]);
-
-    try {
-      const { tools } = await readOnlyClient.listTools();
-      expect(tools.map((tool) => tool.name)).toEqual(["list_todos"]);
-    } finally {
-      await Promise.allSettled([
-        readOnlyClient.close(),
-        readOnlyServer.close(),
-      ]);
-    }
-  });
-});
-
-describe("compact-plus toolset", () => {
-  let backend: MockBackend;
-  let client: Client;
-  let server: ReturnType<typeof createTodoMcpServer>;
-
-  beforeEach(async () => {
-    backend = new MockBackend();
-    server = createTodoMcpServer(backend, { toolset: "compact-plus" });
-    const [clientTransport, serverTransport] = InMemoryTransport
-      .createLinkedPair();
-    client = new Client({
-      name: "todo-txt-mcp-compact-plus-test-client",
-      version: "1.0.0",
-    });
-    await Promise.all([
-      client.connect(clientTransport),
-      server.connect(serverTransport),
-    ]);
-  });
-
-  afterEach(async () => {
-    await Promise.allSettled([client.close(), server.close()]);
-  });
-
-  it("adds only changes_since to the compact surface", async () => {
-    const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual([
-      "add_todos",
-      "changes_since",
-      "list_todos",
-      "mark_done",
-      "update_todos",
-    ]);
-  });
-
-  it("reports changes and unchanged versions as terse text", async () => {
-    const todos = [new Todo("Buy milk @home")];
-    await backend.save(todos);
-    const current = computeContentVersion(todos);
-
-    const changed = await client.callTool({
-      name: "changes_since",
-      arguments: { version: "stale-version" },
-    });
-    expect(textOf(changed)).toContain("changed");
-    expect(textOf(changed)).toContain("Buy milk @home");
-    expect(changed.structuredContent).toBeUndefined();
-
-    const same = await client.callTool({
-      name: "changes_since",
-      arguments: { version: current },
-    });
-    expect(textOf(same)).toContain("No changes since version");
-    expect(same.structuredContent).toBeUndefined();
   });
 });

@@ -99,7 +99,6 @@ operational layer, not a broken design.
       - Support multiple active tokens (`MCP_AUTH_TOKENS`) for zero-downtime
         rotation; optionally `SIGHUP` reload from `MCP_AUTH_TOKEN_FILE`.
       - Reject tokens shorter than 32 random bytes at startup (fail fast).
-      - Optional `MCP_READ_ONLY=1` to deny mutating tools without redeploying.
 - [ ] **Abuse-resistant logging.**
       - JSON access log: timestamp, request ID, method, status, duration, client
         IP, auth result, tool name. Never log the token or todo contents.
@@ -159,7 +158,6 @@ operational layer, not a broken design.
 | `MCP_AUTH_BAN_SEC` | `900` | Initial lockout duration (exponential after) |
 | `MCP_MAX_CONCURRENCY` | `20` | In-flight `/mcp` requests before 503 |
 | `MCP_AUTH_TOKENS` | unset | Comma-separated tokens for rotation |
-| `MCP_READ_ONLY` | `false` | Disable mutating tools |
 
 ## Definition of done
 

@@ -117,7 +117,6 @@ describe("agent eval harness", () => {
     });
 
     const record = await runTask(task, 1, {
-      profile: "compact",
       maxTurns: 6,
       modelFactory: () => model,
       modelName: "test-model",
@@ -161,7 +160,6 @@ describe("agent eval harness", () => {
     });
 
     const record = await runTask(task, 1, {
-      profile: "compact",
       maxTurns: 4,
       modelFactory: () => model,
       modelName: "test-model",
@@ -199,7 +197,6 @@ describe("agent eval harness", () => {
     });
 
     const record = await runTask(task, 1, {
-      profile: "full",
       maxTurns: 4,
       modelFactory: () => model,
       modelName: "test-model",
@@ -216,7 +213,7 @@ describe("agent eval harness", () => {
       if (index === 0) {
         return toolCallResponse(
           "list_todos",
-          { status: "todo", format: "text" },
+          { status: "todo" },
           "call-list",
         );
       }
@@ -224,7 +221,6 @@ describe("agent eval harness", () => {
     });
 
     const record = await runTask(task, 1, {
-      profile: "core",
       maxTurns: 4,
       modelFactory: () => model,
       modelName: "test-model",
@@ -250,7 +246,6 @@ describe("agent eval harness", () => {
     });
 
     const record = await runTask(task, 1, {
-      profile: "compact",
       maxTurns: 3,
       modelFactory: () => model,
       modelName: "test-model",
@@ -304,7 +299,6 @@ describe("agent eval harness", () => {
     expect(task.verify(task.seed(), [], "").ok).toBe(false);
 
     const record = await runTask(task, 1, {
-      profile: "compact",
       maxTurns: 4,
       modelFactory: createMockModel,
       modelName: "mock-model",
@@ -315,12 +309,11 @@ describe("agent eval harness", () => {
     expect(record.toolCalls).toBe(1);
   });
 
-  it("aggregates profile metrics without dividing by zero", () => {
+  it("aggregates metrics without dividing by zero", () => {
     const records = [
       {
         taskId: "a",
         taskPrompt: "a",
-        profile: "compact" as const,
         trial: 1,
         success: true,
         detail: "ok",
@@ -337,7 +330,6 @@ describe("agent eval harness", () => {
       {
         taskId: "b",
         taskPrompt: "b",
-        profile: "compact" as const,
         trial: 1,
         success: false,
         detail: "bad",

@@ -1,15 +1,15 @@
 /**
- * LLM-in-the-loop usability benchmark for the server's tool profiles.
+ * LLM-in-the-loop usability benchmark for the tool surface.
  *
  * Unlike `bench/actions.ts`, which measures the deterministic protocol cost of
  * a fixed workflow, this harness gives a model a natural-language task and the
- * actual MCP tools for a profile, then grades the final todo.txt state. It
+ * actual MCP tools, then grades the final todo.txt state. It
  * works with any OpenAI-compatible `/chat/completions` endpoint and has an
  * offline `--mock` mode.
  *
  * Run a real evaluation:
  *   AGENT_EVAL_API_KEY=... AGENT_EVAL_MODEL=gpt-4.1-mini \
- *     npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1
+ *     npm run bench:agent -- --trials 1
  *
  * Run offline:
  *   npm run bench:agent -- --mock
@@ -19,25 +19,13 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createTodoMcpServer, type TodoToolset } from "../server.ts";
+import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "../test/helpers/mock-backend.ts";
 import {
   AGENT_TASKS,
   type AgentTask,
   type ToolTraceEntry,
 } from "./agent-tasks.ts";
-
-export type AgentProfile = Extract<
-  TodoToolset,
-  "compact" | "compact-plus" | "core" | "full"
->;
-
-export const AGENT_PROFILES: readonly AgentProfile[] = [
-  "compact",
-  "compact-plus",
-  "core",
-  "full",
-];
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TRIALS = 1;
@@ -262,7 +250,7 @@ function latestHash(
 
 /**
  * A scripted offline model that follows a task-aware plan using whichever
- * tools the active profile exposes. It is intentionally simple: its purpose is
+ * tools the server exposes. It is intentionally simple: its purpose is
  * to exercise the harness end to end without a network call, not to estimate
  * real model quality.
  */
@@ -595,7 +583,6 @@ export class OpenAICompatibleModel implements AgentModel {
 }
 
 export interface RunOptions {
-  profile: AgentProfile;
   maxTurns: number;
   modelFactory: ModelFactory;
   modelName: string;
@@ -606,7 +593,6 @@ export interface RunOptions {
 export interface RunRecord {
   taskId: string;
   taskPrompt: string;
-  profile: AgentProfile;
   trial: number;
   success: boolean;
   detail: string;
@@ -622,7 +608,6 @@ export interface RunRecord {
 }
 
 export interface ProfileSummary {
-  profile: AgentProfile;
   runs: number;
   successes: number;
   successRate: number;
@@ -669,7 +654,7 @@ function toolResultText(result: unknown): string {
     parts.push(text);
   }
   // MCP clients decide whether the model sees structuredContent. This harness
-  // includes it (as JSON) so profile comparisons are not skewed by a client
+  // includes it (as JSON) so the harness is not skewed by a client
   // that silently drops the machine-readable half of a tool result.
   if (payload.structuredContent !== undefined) {
     parts.push(JSON.stringify(payload.structuredContent));
@@ -716,9 +701,7 @@ export async function runTask(
   const backend = new MockBackend();
   await backend.save(task.seed());
 
-  const server = createTodoMcpServer(backend, {
-    toolset: options.profile,
-  });
+  const server = createTodoMcpServer(backend);
   const [clientTransport, serverTransport] = InMemoryTransport
     .createLinkedPair();
   const client = new Client({
@@ -848,7 +831,6 @@ export async function runTask(
   return {
     taskId: task.id,
     taskPrompt: task.prompt,
-    profile: options.profile,
     trial,
     success,
     detail,
@@ -865,7 +847,6 @@ export async function runTask(
 }
 
 export function aggregateRuns(runs: readonly RunRecord[]): ProfileSummary {
-  const profile = runs[0]?.profile ?? "compact";
   const count = runs.length;
   const successes = runs.filter((run) => run.success).length;
   const toolCalls = runs.reduce((sum, run) => sum + run.toolCalls, 0);
@@ -883,7 +864,6 @@ export function aggregateRuns(runs: readonly RunRecord[]): ProfileSummary {
   const wallTimeMs = runs.reduce((sum, run) => sum + run.wallTimeMs, 0);
 
   return {
-    profile,
     runs: count,
     successes,
     successRate: count === 0 ? 0 : successes / count,
@@ -902,7 +882,6 @@ export function aggregateRuns(runs: readonly RunRecord[]): ProfileSummary {
 }
 
 interface CliOptions {
-  profiles: AgentProfile[];
   trials: number;
   maxTurns: number;
   taskId?: string;
@@ -918,8 +897,7 @@ class CliUsageError extends Error {}
 const USAGE = `Usage: npm run bench:agent -- [options]
 
 Options:
-  --profiles <list>   Comma-separated profiles (default: compact,compact-plus,core,full)
-  --trials <n>        Trials per task/profile (default: ${DEFAULT_TRIALS})
+  --trials <n>        Trials per task (default: ${DEFAULT_TRIALS})
   --max-turns <n>     Maximum model turns per run (default: ${DEFAULT_MAX_TURNS})
   --task <id>         Run only one task id
   --json <path>       Write full JSON results to this path
@@ -939,7 +917,7 @@ const SETUP_INSTRUCTIONS = `No model credentials configured.
 Set an API key and a model, then rerun:
   export AGENT_EVAL_API_KEY="sk-..."
   export AGENT_EVAL_MODEL="gpt-4.1-mini"
-  npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1
+  npm run bench:agent -- --trials 1
 
 Or run the offline harness with a scripted mock model:
   npm run bench:agent -- --mock
@@ -957,13 +935,8 @@ function parsePositiveInt(value: string, label: string): number {
   return parsed;
 }
 
-function isAgentProfile(value: string): value is AgentProfile {
-  return (AGENT_PROFILES as readonly string[]).includes(value);
-}
-
 function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = {
-    profiles: [...AGENT_PROFILES],
     trials: DEFAULT_TRIALS,
     maxTurns: DEFAULT_MAX_TURNS,
     mock: false,
@@ -982,23 +955,6 @@ function parseArgs(argv: readonly string[]): CliOptions {
     };
 
     switch (arg) {
-      case "--profiles": {
-        const values = nextValue().split(",").map((value) => value.trim())
-          .filter((value) => value.length > 0);
-        if (values.length === 0) {
-          throw new CliUsageError("--profiles must not be empty");
-        }
-        for (const value of values) {
-          if (!isAgentProfile(value)) {
-            throw new CliUsageError(
-              `Unknown profile "${value}". Expected compact, compact-plus, ` +
-                "core, or full.",
-            );
-          }
-        }
-        options.profiles = [...new Set(values as AgentProfile[])];
-        break;
-      }
       case "--trials":
         options.trials = parsePositiveInt(nextValue(), "--trials");
         break;
@@ -1043,36 +999,29 @@ function formatNumber(value: number, digits: number): string {
   return Number.isFinite(value) ? value.toFixed(digits) : (0).toFixed(digits);
 }
 
-function printTable(
-  summaries: readonly ProfileSummary[],
+function printSummary(
+  summary: ProfileSummary,
   trials: number,
   tasks: number,
 ): void {
-  console.log(`\n## Agent usability by tool profile\n`);
+  const success = `${summary.successes}/${summary.runs} ` +
+    `(${formatNumber(summary.successRate * 100, 0)}%)`;
+  const tokensPerSuccess = summary.tokensPerSuccess === null
+    ? "n/a"
+    : formatNumber(summary.tokensPerSuccess, 0);
+
+  console.log(`\n## Agent usability\n`);
+  console.log(`Tasks: ${tasks}, trials per task: ${trials}\n`);
+  console.log("| Measure | Value |");
+  console.log("|---|---:|");
+  console.log(`| Success | ${success} |`);
+  console.log(`| Avg tool calls | ${formatNumber(summary.avgToolCalls, 1)} |`);
+  console.log(`| Invalid calls | ${summary.invalidToolCalls} |`);
+  console.log(`| Avg turns | ${formatNumber(summary.avgTurns, 1)} |`);
   console.log(
-    `Tasks: ${tasks}, trials per task: ${trials}, runs per profile: ` +
-      `${tasks * trials}\n`,
+    `| Avg total tokens | ${formatNumber(summary.avgTotalTokens, 0)} |`,
   );
-  console.log(
-    "| Profile | Success rate | Avg tool calls | Invalid calls | " +
-      "Avg turns | Avg total tokens | Tokens / success |",
-  );
-  console.log("|---|---:|---:|---:|---:|---:|---:|");
-  for (const summary of summaries) {
-    const success = `${summary.successes}/${summary.runs} ` +
-      `(${formatNumber(summary.successRate * 100, 0)}%)`;
-    const tokensPerSuccess = summary.tokensPerSuccess === null
-      ? "n/a"
-      : formatNumber(summary.tokensPerSuccess, 0);
-    console.log(
-      `| ${summary.profile} | ${success} | ` +
-        `${formatNumber(summary.avgToolCalls, 1)} | ` +
-        `${summary.invalidToolCalls} | ` +
-        `${formatNumber(summary.avgTurns, 1)} | ` +
-        `${formatNumber(summary.avgTotalTokens, 0)} | ` +
-        `${tokensPerSuccess} |`,
-    );
-  }
+  console.log(`| Tokens / success | ${tokensPerSuccess} |`);
 }
 
 function printFailures(runs: readonly RunRecord[]): void {
@@ -1083,7 +1032,7 @@ function printFailures(runs: readonly RunRecord[]): void {
   console.log(`\n### Failed runs\n`);
   for (const run of failures) {
     console.log(
-      `- ${run.profile} / ${run.taskId} (trial ${run.trial}): ${run.detail}`,
+      `- ${run.taskId} (trial ${run.trial}): ${run.detail}`,
     );
   }
 }
@@ -1132,35 +1081,29 @@ async function main(): Promise<void> {
     });
 
   const runs: RunRecord[] = [];
-  for (const profile of options.profiles) {
-    for (const task of tasks) {
-      for (let trial = 1; trial <= options.trials; trial++) {
-        const run = await runTask(task, trial, {
-          profile,
-          maxTurns: options.maxTurns,
-          modelFactory,
-          modelName: modelName as string,
-          temperature,
-        });
-        runs.push(run);
-        console.error(
-          `[${profile}] ${task.id} trial ${trial}: ` +
-            `${run.success ? "ok" : "FAIL"}`,
-        );
-      }
+  for (const task of tasks) {
+    for (let trial = 1; trial <= options.trials; trial++) {
+      const run = await runTask(task, trial, {
+        maxTurns: options.maxTurns,
+        modelFactory,
+        modelName: modelName as string,
+        temperature,
+      });
+      runs.push(run);
+      console.error(
+        `${task.id} trial ${trial}: ${run.success ? "ok" : "FAIL"}`,
+      );
     }
   }
 
-  const summaries = options.profiles.map((profile) =>
-    aggregateRuns(runs.filter((run) => run.profile === profile))
-  );
+  const summary = aggregateRuns(runs);
   if (options.mock) {
     console.log(
       "\n> Mock mode: scripted planner. This verifies harness wiring and " +
         "graders, not model quality.\n",
     );
   }
-  printTable(summaries, options.trials, tasks.length);
+  printSummary(summary, options.trials, tasks.length);
   printFailures(runs);
 
   if (options.jsonPath !== undefined) {
@@ -1174,7 +1117,7 @@ async function main(): Promise<void> {
       trials: options.trials,
       tasks: tasks.map((task) => task.id),
       results: runs,
-      summary: summaries,
+      summary,
     });
     console.error(`Wrote JSON results to ${options.jsonPath}`);
   }

@@ -63,7 +63,6 @@ authorization (there is a single shared todo file).
 | `MCP_AUTH_TOKENS` | unset | Comma/whitespace separated list of active tokens for rotation. Takes precedence over `MCP_AUTH_TOKEN`. |
 | `MCP_AUTH_TOKEN_FILE` | unset | File containing one or more tokens. Takes precedence over both environment variables. Keep it mode `0600`. |
 | `MCP_ALLOW_WEAK_TOKEN` | unset | Set to `1` to allow environment/file tokens shorter than 32 characters. |
-| `MCP_READ_ONLY` | unset | Set to `1` to expose only `list_todos`; mutating tools are not registered. |
 | `MCP_LOG_LEVEL` | `info` | Structured JSON log level: `debug`, `info`, `warn`, or `error`. |
 | `TRUST_PROXY` | `false` | Express `trust proxy` setting. Accepts `false`, `true`, a hop count, `loopback`, or an IP/CIDR list. Leave unset/false unless a trusted proxy is in front. |
 | `MCP_RATE_LIMIT_PER_MIN` | `60` | Requests per client key per minute. `0` disables the rate limiter. |
@@ -152,16 +151,6 @@ POSIX, and refuses to start if the file is missing, empty, or unreadable.
 Environment/file tokens shorter than 32 characters are rejected unless
 `MCP_ALLOW_WEAK_TOKEN=1` is set explicitly. Explicit programmatic options (used
 by the test suite) are exempt from the length check.
-
-## Read-only mode
-
-Set `MCP_READ_ONLY=1` to publish only `list_todos`. The mutating tools
-(`add_todos`, `update_todos`, `set_todo_statuses`, `delete_todos`) are
-registered, so they do not appear in `tools/list` and cannot be called. This is
-useful for dashboards, read-only agents, and exposing the todo file to a model
-that should only be able to inspect it. Read-only mode does not replace
-authentication; the
-endpoint still requires a bearer token when one is configured.
 
 ## Structured logging and metrics
 
@@ -339,7 +328,6 @@ Never enable it on a host that clients can reach directly: spoofed
 - [ ] Scrape `/metrics` from loopback or protect it with the bearer token.
 - [ ] Monitor the `auth_failure_circuit_breaker` log line and the process's
       memory under sustained load.
-- [ ] Use `MCP_READ_ONLY=1` when a client only needs to list todos.
 
 ## Reporting a vulnerability
 

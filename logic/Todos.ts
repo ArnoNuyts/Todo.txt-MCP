@@ -1,8 +1,5 @@
 import { Todo } from "./todo.ts";
 import { TodoStateEnum } from "../types/enums.ts";
-import { ToolFailure } from "./tool-errors.ts";
-
-export type TodoSortOrder = "creation" | "completion" | "priority" | "text";
 
 /** Filters accepted by `list_todos`; every provided filter is combined with AND. */
 export interface TodoFilterOptions {
@@ -14,7 +11,6 @@ export interface TodoFilterOptions {
   tag?: Record<string, string>;
   dueBefore?: string;
   createdAfter?: string;
-  sort?: TodoSortOrder;
 }
 
 const dateOnly = (date: Date) => date.toISOString().substring(0, 10);
@@ -132,83 +128,7 @@ export function filterTodos(
   return new Todos(...filtered);
 }
 
-function compareDates(a: Date | undefined, b: Date | undefined): number {
-  if (a === undefined && b === undefined) {
-    return 0;
-  }
-  if (a === undefined) {
-    return 1;
-  }
-  if (b === undefined) {
-    return -1;
-  }
-  return a.getTime() - b.getTime();
-}
-
-/** Returns a copy of `todos` in the requested order (file order by default). */
-export function sortTodos(
-  todos: readonly Todo[],
-  sort?: TodoSortOrder,
-): Todos {
-  const sorted = new Todos(...todos);
-  switch (sort) {
-    case undefined:
-      return sorted;
-    case "creation":
-      return sorted.sort((a, b) =>
-        compareDates(a.creationDate, b.creationDate)
-      );
-    case "completion":
-      return sorted.sort((a, b) =>
-        compareDates(a.completionDate, b.completionDate)
-      );
-    case "priority":
-      return sorted.sort((a, b) => {
-        if (a.priority === undefined && b.priority === undefined) {
-          return 0;
-        }
-        if (a.priority === undefined) {
-          return 1;
-        }
-        if (b.priority === undefined) {
-          return -1;
-        }
-        return a.priority.localeCompare(b.priority);
-      });
-    case "text":
-      return sorted.sort((a, b) =>
-        a.toDisplayString().localeCompare(b.toDisplayString())
-      );
-  }
-}
-
-/** Applies every filter and then the requested sort order. */
-export function selectTodos(
-  todos: readonly Todo[],
-  filters: TodoFilterOptions = {},
-): Todos {
-  return sortTodos(filterTodos(todos, filters), filters.sort);
-}
-
-/** Encodes an offset as an opaque, URL-safe pagination cursor. */
-export function encodeListCursor(offset: number): string {
-  return Buffer.from(`offset:${offset}`, "utf8").toString("base64url");
-}
-
-/** Decodes a cursor produced by {@link encodeListCursor}. */
-export function decodeListCursor(cursor: string): number {
-  const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-  const match = /^offset:(\d+)$/.exec(decoded);
-  if (match === null) {
-    throw new ToolFailure("INVALID_ARGUMENT", "Invalid cursor");
-  }
-  const offset = Number(match[1]);
-  if (!Number.isSafeInteger(offset)) {
-    throw new ToolFailure("INVALID_ARGUMENT", "Invalid cursor");
-  }
-  return offset;
-}
-
+/** Array subclass with the sorting helpers used by the tests. */
 export class Todos extends Array<Todo> {
   sortByImportance = (): Todos =>
     new Todos(...this)

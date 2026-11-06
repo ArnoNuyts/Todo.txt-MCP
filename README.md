@@ -95,17 +95,16 @@ npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
 npm run bench:actions # token cost of add/edit/mark-done workflows
-npm run bench:agent   # LLM usability of the compact/core/full profiles
+npm run bench:agent   # LLM usability of the tool surface
 ```
 
 ## 🤖 LLM tool-profile evaluation
 
 `bench:actions` measures deterministic protocol cost: the fixed add, edit, and
 mark-done workflow with no model in the loop. `bench:agent` measures
-**usability**: it gives a model a set of natural-language tasks, exposes the
-real MCP tools for one profile at a time, runs an OpenAI-style function-calling
-loop, and grades the resulting `todo.txt` state. This shows whether the token
-savings of `compact` come at the cost of task success.
+**usability**: it gives a model a set of natural-language multi-item tasks,
+exposes the real MCP tools, runs an OpenAI-style function-calling loop, and
+grades the resulting `todo.txt` state.
 
 Run the offline harness with a scripted model (no API key required):
 
@@ -122,13 +121,12 @@ Run against any OpenAI-compatible `/chat/completions` endpoint:
 export AGENT_EVAL_API_KEY="sk-..."
 export AGENT_EVAL_MODEL="gpt-4.1-mini"
 # Optional: export AGENT_EVAL_BASE_URL="https://api.openai.com/v1"
-npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1 --max-turns 12
+npm run bench:agent -- --trials 1 --max-turns 12
 ```
 
 Useful options:
 
-- `--profiles compact,compact-plus,core,full` — profiles to compare (default: all four).
-- `--trials 1` — trials per task and profile.
+- `--trials 1` — trials per task.
 - `--task <id>` — run one task, e.g. `--task stale-hash-recovery`.
 - `--max-turns 12` — model turns before the run stops.
 - `--json <path>` — write full per-run results and traces as JSON.
@@ -150,9 +148,8 @@ total tokens (from provider usage), and tokens per successful task. Successful
 tool results are text-only; errors may carry a `structuredContent.error` code,
 which the harness includes as JSON. The task suite lives in
 `bench/agent-tasks.ts`; each task has a seed fixture and a deterministic
-`verify` function. Read-only tasks also inspect the final answer,
-for example to confirm an ambiguous cleanup did not delete data or that a
-summary request did not export the whole file.
+`verify` function. Read-only tasks also inspect the final answer, for example
+to confirm that a counting request did not modify the file.
 
 ## ⚙️ Configuration
 
@@ -199,26 +196,18 @@ exhaust the process memory:
 }
 ```
 
-## 🔐 Read-only mode, tool profiles, and token footprint
+## 🔐 Tool surface and token footprint
 
-- **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
-  not registered.
-- **Tool profiles:** `MCP_TOOLSET=full|core|compact|compact-plus|readonly|off`
-  controls the exposed toolset. `off` exposes resources only, `readonly` the
-  five read tools, `core` the read tools plus add/update/status/delete,
-  `compact` four batch tools, `compact-plus` those four plus
-  `changes_since`, and `full` (default) every tool. Combine this with a gateway
-  or per-agent MCP config to expose the server only on demand.
-- **Compact profiles:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todos`,
-  `update_todos`, and `mark_done`. `update_todos` changes priority and contexts
-  for multiple todos in one call. `compact-plus` adds `changes_since` for
-  version checks. All profiles return terse text (`hash text` lines) and no
-  `structuredContent`. In the repository multi-item benchmark the four-tool
-  profile cuts the add/edit/mark-done workflow from ~4,655 to ~936 tokens
-  (median of 5 runs, chars/4 estimate) while keeping the final todo.txt
-  identical. Run `npm run bench:actions` to reproduce it. `summary` was
-  evaluated as an optional sixth tool, but its schema cost outweighed the saved
-  call, so `compact-plus` adds only `changes_since`.
+- **Four tools:** `list_todos`, `add_todos`, `update_todos`, `mark_done`. There
+  are no tool profiles and no read-only mode.
+- **Text-only:** successful results are `hash text` lines. No
+  `structuredContent` and no output schemas. Errors still carry a stable
+  `structuredContent.error.code`.
+- **Batch-first:** add, priority/context updates, and completion all take
+  arrays.
+- **Benchmark:** the multi-item add/edit/mark-done workflow costs ~936 tokens
+  (median of 5 runs, chars/4 estimate). Run `npm run bench:actions` to
+  reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
   `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
@@ -237,50 +226,18 @@ guidance.
 
 ## 🔧 Available Tools
 
-- `list_todos` — list, filter, search, and paginate todos. Returns `hash text`
-  lines; when more results exist, the last line is `NEXT <cursor>`. `limit`
-  defaults to `50`.
-- `add_todos` — add one or more todos. Accepts `onDuplicate`
-  (`"allow"` default, `"skip"`, or `"error"`) and an optional `idempotencyKey`
-  stored as an `idem:<key>` tag so retries return the previously added todos.
-- `update_todos` — replace the body text of one or more todos by hash. Pass
-  the body only: no `x ` done marker, `(A) ` priority, or leading dates; use
-  `set_todo_statuses` to change status. Supports `dryRun`, which reports the
-  resulting hashes and text without writing.
-- `set_todo_statuses` — mark a batch of todos done or active with one
-  load/save cycle. Supports `dryRun`, which previews the resulting statuses
-  without writing.
-- `delete_todos` — delete a batch of todos by hash with one load/save cycle.
-  Pass `dryRun: true` to preview the deletion without writing.
-- `summary` — counts by status, context, project, and priority, plus overdue.
-  The last line is `VERSION <content-version>`.
-- `export_todos` — return the whole todo.txt content.
-- `changes_since` — compare a known `version` with the current one; when it
-  changed, the current content is appended.
-- `import_todos` — import todo.txt content in `merge` or `replace` mode.
-  Supports `expectedVersion` (a mismatch fails with `CONFLICT`) and `dryRun`,
-  which returns an add/remove/unchanged diff without writing.
+- `list_todos` — list todos by `search`, `status` (`todo` default, `done`,
+  `all`), `context`, and `limit` (default 20, max 100). Returns `hash text`
+  lines.
+- `add_todos` — add a batch of todo.txt lines. Returns one `hash text` line per
+  item.
+- `update_todos` — set `priority` (or clear it with `null`) and add/remove
+  `contexts` for multiple todos in one call. Returns `hash text` lines.
+- `mark_done` — mark multiple todos done by hash. Idempotent.
 
-### Compact profile tools
-
-When `MCP_TOOLSET=compact`, only these tools are exposed:
-
-- `list_todos` — search by text, status, or context; returns `hash text` lines
-  (up to `limit`, default 20).
-- `add_todos` — add multiple todos; returns one `hash text` line per item.
-- `update_todos` — set priority (or clear it with `null`) and add/remove
-  contexts for multiple todos in one call; returns `hash text` lines.
-- `mark_done` — mark multiple todos done by hash; idempotent.
-
-All profiles are text-only: tool results do not include `structuredContent` or
-output schemas, which keeps both `tools/list` and each result small. Errors
-still include a stable `structuredContent.error.code`. Use `core` or `full`
-when you need delete, import/export, body-text edits, or summaries.
-`MCP_TOOLSET=compact-plus` adds `changes_since` so version checks do not need a
-full export.
-
-Batch results are one `hash text` line per item. A missing hash is reported as
-`Todo with hash <hash> not found.` in the same text result.
+All tools are text-only. A missing hash is reported in the same text result as
+`Todo with hash <hash> not found.`; `update_todos` returns `ERROR <hash> not
+found` for a partial batch.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
@@ -304,11 +261,8 @@ overwrite each other. The lock is released in a `finally`; a lock older than
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
-reload with `list_todos` before retrying. Item-scoped tools do **not** require a
-client-supplied `expectedVersion`: they address the item by the hash from a
-recent read and return the new hash in their text result. `import_todos` keeps
-`expectedVersion` because it replaces or merges a full-file snapshot supplied
-by the client.
+reload with `list_todos` before retrying. Tools address an item by the hash
+from a recent read and return the new hash in their text result.
 
 ### Hash stability
 
@@ -327,13 +281,12 @@ needed. Two supported patterns:
    configuration (`enabled: false`) and enable it per agent, command, or
    session. This removes all tool definitions from every request where the
    server is not used.
-2. **Gateway or profile:** run behind an MCP gateway that connects servers on
-   demand, or start the container with `MCP_TOOLSET=off` and switch to
-   `core`/`full` only for the sessions that need write access.
+2. **Gateway:** run behind an MCP gateway that connects the server on demand.
 
-Version 3.0 makes every profile text-only, removes `get_todo` and
-`delete_completed`, and changes todo hashes from 16 hex characters to 11
-base64url characters.
+Version 3.0 reduces the surface to four batch tools, makes results text-only,
+removes `get_todo`, `delete_completed`, `summary`, `export_todos`,
+`import_todos`, `changes_since`, `set_todo_statuses`, `delete_todos`, and
+changes todo hashes from 16 hex characters to 11 base64url characters.
 
 Version 2.0 removes the deprecated singular aliases (`add_todo`, `edit_todo`,
 `set_todo_status`, `delete_todo`). Use the plural canonical names instead.
