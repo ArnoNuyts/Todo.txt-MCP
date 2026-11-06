@@ -232,7 +232,8 @@ guidance.
 - `list_todos` — list todos by `search`, `status` (`todo` default, `done`,
   `all`), `context`, `limit` (default 20, max 100), and `offset`. Returns
   `hash text` lines and a `MORE <count> (offset=<next>)` line when a page is
-  truncated.
+  truncated. Todos marked `h:` and todos whose `t:` threshold has not passed
+  yet are omitted unless `status` is `all`.
 - `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
   `rec:` tags. Returns one `hash text` line per item.
 - `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`

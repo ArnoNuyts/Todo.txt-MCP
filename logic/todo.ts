@@ -133,6 +133,22 @@ export class Todo {
     return this.state === TodoStateEnum.done;
   }
 
+  /** True when the todo carries an `h:` tag other than `h:0`. */
+  isHidden(): boolean {
+    const value = Array.isArray(this.tags.h) ? this.tags.h[0] : this.tags.h;
+    return value !== undefined && value !== "0";
+  }
+
+  /**
+   * True when the todo has no `t:` threshold, the threshold is invalid, or its
+   * calendar day has been reached. Invalid dates are kept visible rather than
+   * silently hiding data.
+   */
+  isPassedThreshold(now: Date = new Date()): boolean {
+    const threshold = parseDateTag(this.tags.t);
+    return threshold === undefined || startOfUtcDay(now) >= threshold;
+  }
+
   setText(text: string) {
     this.projects.clear();
 

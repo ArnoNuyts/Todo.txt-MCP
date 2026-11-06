@@ -11,7 +11,7 @@ import { guardTool, notFoundError, ToolFailure } from "./tool-errors.ts";
 export const CompactListTodosSchema = z.object({
   search: z.string().max(200).optional().describe("Search text"),
   status: z.enum(["todo", "done", "all"]).optional().describe(
-    "todo (default), done, or all",
+    "todo (default), done, or all (includes hidden and future-threshold)",
   ),
   context: z.string().min(1).max(100).optional().describe("Context filter"),
   limit: z.number().int().min(1).max(100).optional().describe(
