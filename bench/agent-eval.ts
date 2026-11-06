@@ -284,22 +284,14 @@ class MockAgentModel implements AgentModel {
   }
 
   private plan(request: ChatCompletionRequest): ChatCompletionResponse {
-    const has = (name: string) =>
-      request.tools.some((tool) => tool.function.name === name);
-    // `mark_done` is the compact/compact-plus batch status tool; core and full
-    // use `set_todo_statuses` instead.
-    const compact = has("mark_done");
     const hashOf = (fragment: string) =>
       latestHash(request.messages, fragment) ?? "0000000000000000";
     const listAll = (status: "todo" | "all" = "all") => ({
       status,
       limit: 100,
-      ...(compact ? {} : { format: "text" as const }),
     });
     const markDone = (hashes: string[]) =>
-      compact
-        ? this.tool("mark_done", { hashes })
-        : this.tool("set_todo_statuses", { hashes, status: "done" });
+      this.tool("mark_done", { hashes });
 
     switch (this.task.id) {
       case "add-priority-context-due": {
@@ -319,7 +311,7 @@ class MockAgentModel implements AgentModel {
         if (this.step === 0) {
           return this.tool("list_todos", listAll());
         }
-        if (compact && this.step === 1) {
+        if (this.step === 1) {
           return this.tool("update_todos", {
             edits: [
               {
@@ -334,25 +326,6 @@ class MockAgentModel implements AgentModel {
                 removeContexts: ["work"],
                 addContexts: ["office"],
               },
-            ],
-          });
-        }
-        if (!compact && this.step === 1) {
-          // The core/full update_todos tool cannot change a priority, so this
-          // scripted baseline replaces the two items in one batch.
-          return this.tool("delete_todos", {
-            hashes: [
-              hashOf("Prepare quarterly report"),
-              hashOf("Draft budget"),
-            ],
-          });
-        }
-        if (!compact && this.step === 2) {
-          return this.tool("add_todos", {
-            todos: [
-              "(A) 2025-01-02 Prepare quarterly report @office +finance " +
-              "due:2026-12-15",
-              "(A) 2025-01-02 Draft budget @office +finance",
             ],
           });
         }
@@ -400,31 +373,17 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          if (compact) {
-            return this.tool("update_todos", {
-              edits: [
-                {
-                  hash: hashOf("Draft budget"),
-                  removeContexts: ["work"],
-                  addContexts: ["office"],
-                },
-                {
-                  hash: hashOf("Review contracts"),
-                  removeContexts: ["work"],
-                  addContexts: ["office"],
-                },
-              ],
-            });
-          }
           return this.tool("update_todos", {
             edits: [
               {
                 hash: hashOf("Draft budget"),
-                text: "Draft budget @office +finance",
+                removeContexts: ["work"],
+                addContexts: ["office"],
               },
               {
                 hash: hashOf("Review contracts"),
-                text: "Review contracts @office +legal",
+                removeContexts: ["work"],
+                addContexts: ["office"],
               },
             ],
           });
@@ -459,35 +418,12 @@ class MockAgentModel implements AgentModel {
       }
 
       case "summary-counts": {
-        if (has("summary")) {
-          if (this.step === 0) {
-            return this.tool("summary", {});
-          }
-          return this.text(
-            "There are three open tasks, one done, and one overdue.",
-          );
-        }
         if (this.step === 0) {
           return this.tool("list_todos", listAll());
         }
         return this.text(
           "There are three open tasks, one done, and one overdue.",
         );
-      }
-
-      case "changes-since": {
-        if (has("changes_since")) {
-          if (this.step === 0) {
-            const version =
-              this.task.prompt.match(/\b[0-9a-f]{64}\b/)?.[0] ?? "unknown";
-            return this.tool("changes_since", { version });
-          }
-          return this.text("The file has changed since that version.");
-        }
-        if (this.step === 0) {
-          return this.tool("list_todos", listAll());
-        }
-        return this.text("The file has changed since that version.");
       }
 
       case "complete-overdue": {

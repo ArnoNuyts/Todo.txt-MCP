@@ -249,14 +249,14 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         passport?.isDone() === true &&
         unrelated?.isDone() === false &&
         todos.length === MARK_DONE_SEED.length &&
-        batchCalls(trace, ["mark_done", "set_todo_statuses"]) === 1;
+        batchCalls(trace, ["mark_done"]) === 1;
       return {
         ok,
         detail: `dentist=${dentist?.isDone() ?? "missing"}, ` +
           `milk=${milk?.isDone() ?? "missing"}, ` +
           `passport=${passport?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["mark_done", "set_todo_statuses"])
+            batchCalls(trace, ["mark_done"])
           }`,
       };
     },
@@ -443,14 +443,14 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         old?.isDone() === true &&
         milk?.isDone() === false &&
         todos.length === OVERDUE_SEED.length &&
-        batchCalls(trace, ["mark_done", "set_todo_statuses"]) === 1;
+        batchCalls(trace, ["mark_done"]) === 1;
       return {
         ok,
         detail: `taxes=${taxes?.isDone() ?? "missing"}, ` +
           `report=${report?.isDone() ?? "missing"}, ` +
           `flights=${flights?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["mark_done", "set_todo_statuses"])
+            batchCalls(trace, ["mark_done"])
           }`,
       };
     },
