@@ -5,14 +5,6 @@ import type { UpperCaseLetter } from "../types/types.ts";
 
 const FIXED_NOW = new Date("2024-06-15T12:00:00.000Z");
 
-const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-
-const addDays = (d: Date, days: number) => {
-  const result = new Date(d);
-  result.setDate(result.getDate() + days);
-  return result;
-};
-
 describe("Todo", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -268,73 +260,6 @@ describe("Todo", () => {
     }
   });
 
-  it("isHidden - returns correctly", () => {
-    const testCases = [
-      { input: "Hidden h:1", expected: true },
-      { input: "Hidden h:2", expected: true },
-      { input: "Visible", expected: false },
-      { input: "Visible h:0", expected: false },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isHidden(), input).toBe(expected);
-    }
-  });
-
-  it("isOverdue - returns correctly", () => {
-    const testCases = [
-      { input: "In the past due:1999-01-01", expected: true },
-      { input: "In the future due:3000-01-01", expected: false },
-      {
-        input: `Today due:${isoDate(FIXED_NOW)}`,
-        expected: false,
-      },
-      {
-        input: `Tomorrow due:${isoDate(addDays(FIXED_NOW, 1))}`,
-        expected: false,
-      },
-      {
-        input: `Yesterday due:${isoDate(addDays(FIXED_NOW, -1))}`,
-        expected: true,
-      },
-      { input: "No due date", expected: false },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isOverdue(), input).toBe(expected);
-    }
-  });
-
-  it("isPassedThreshold - returns correctly", () => {
-    const testCases = [
-      { input: "In the past t:1999-01-01", expected: true },
-      { input: "In the future t:3000-01-01", expected: false },
-      {
-        input: `Today t:${isoDate(FIXED_NOW)}`,
-        expected: true,
-      },
-      {
-        input: `Tomorrow t:${isoDate(addDays(FIXED_NOW, 1))}`,
-        expected: false,
-      },
-      {
-        input: `Yesterday t:${isoDate(addDays(FIXED_NOW, -1))}`,
-        expected: true,
-      },
-      { input: "No threshold date", expected: true },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-
-      expect(todo.isPassedThreshold(), input).toBe(expected);
-    }
-  });
-
   it("toggleState - sets state correctly", () => {
     const testCases = [
       { input: "todo", expected: TodoStateEnum.done },
@@ -348,25 +273,6 @@ describe("Todo", () => {
       expect(
         todo.state,
         `Input "${input}" should have exactly the state: ${expected}`,
-      ).toBe(expected);
-    }
-  });
-
-  it("toggleHidden - sets hidden correctly", () => {
-    const testCases = [
-      { input: "todo", expected: true },
-      { input: "todo h:1", expected: false },
-      { input: "todo h:0", expected: true },
-      { input: "todo h:2", expected: false },
-    ];
-
-    for (const { input, expected } of testCases) {
-      const todo = new Todo(input);
-      todo.toggleHidden();
-
-      expect(
-        todo.isHidden(),
-        `Input "${input}" should be: ${expected}`,
       ).toBe(expected);
     }
   });

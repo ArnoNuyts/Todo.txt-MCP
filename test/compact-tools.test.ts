@@ -118,7 +118,15 @@ describe("tool surface", () => {
       name: "list_todos",
       arguments: { limit: 1 },
     });
-    expect(linesOf(limited)).toHaveLength(1);
+    expect(linesOf(limited)).toHaveLength(2);
+    expect(textOf(limited)).toContain("MORE 1 (offset=1)");
+
+    const offset = await client.callTool({
+      name: "list_todos",
+      arguments: { limit: 1, offset: 1 },
+    });
+    expect(linesOf(offset)).toHaveLength(1);
+    expect(textOf(offset)).toContain("Write report");
   });
 
   it("updates priority and contexts for multiple todos in one save", async () => {
@@ -219,8 +227,34 @@ describe("tool surface", () => {
       },
     });
 
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("PARTIAL 1 updated, 1 not found");
     expect(textOf(result)).toContain("ERROR 0123456789abcdef not found");
     expect(backend.getTodos()[0].isDone()).toBe(true);
+  });
+
+  it("rejects ambiguous hashes shared by identical todo lines", async () => {
+    const todos = [new Todo("Dup"), new Todo("Dup"), new Todo("Other")];
+    await backend.save(todos);
+    const hash = await todos[0].getHash();
+    backend.saveCalls = 0;
+
+    const update = await client.callTool({
+      name: "update_todos",
+      arguments: { edits: [{ hash, priority: "A" }] },
+    });
+    expect(update.isError).toBe(true);
+    expect(errorCodeOf(update)).toBe("CONFLICT");
+    expect(textOf(update)).toContain("identical todos");
+
+    const deletion = await client.callTool({
+      name: "delete_todos",
+      arguments: { hashes: [hash] },
+    });
+    expect(deletion.isError).toBe(true);
+    expect(errorCodeOf(deletion)).toBe("CONFLICT");
+    expect(backend.getTodos()).toHaveLength(3);
+    expect(backend.saveCalls).toBe(0);
   });
 
   it("reopens completed todos in one batch", async () => {

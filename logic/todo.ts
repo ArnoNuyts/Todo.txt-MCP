@@ -133,36 +133,6 @@ export class Todo {
     return this.state == TodoStateEnum.done;
   }
 
-  isHidden() {
-    return !!this.tags["h"] && this.tags["h"] !== "0";
-  }
-
-  isVisibleInOverview() {
-    return !this.isHidden() && this.isPassedThreshold();
-  }
-
-  isOverdue() {
-    if (typeof this.tags.due !== "string") {
-      return false;
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // set to midnight today
-    const dueDate = new Date(this.tags.due);
-    dueDate.setHours(0, 0, 0, 0); // set to midnight of due date
-    return today > dueDate;
-  }
-
-  isPassedThreshold() {
-    if (typeof this.tags.t !== "string") {
-      return true; // No threshold date, always passed
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // set to midnight today
-    const thresholdDate = new Date(this.tags.t);
-    thresholdDate.setHours(0, 0, 0, 0); // set to midnight of threshold date
-    return today >= thresholdDate;
-  }
-
   setText(text: string) {
     this.projects.clear();
 
@@ -213,14 +183,6 @@ export class Todo {
 
   setThreshold(date: Date): void {
     this.tags.t = date.toISOString().substring(0, 10);
-  }
-
-  toggleHidden(): void {
-    if (this.tags.h && this.tags.h !== "0") {
-      delete this.tags.h;
-    } else {
-      this.tags.h = "1";
-    }
   }
 
   async getHash(): Promise<string> {

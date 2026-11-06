@@ -21,7 +21,7 @@ const NEW_TODOS = [
   "(C) Renew passport @errands +travel due:2027-01-15",
 ];
 const TRIALS = 5;
-const FILLERS = 98;
+const FILLERS = 118;
 
 const approxTokens = (value: unknown) =>
   Math.ceil(JSON.stringify(value).length / 4);
@@ -38,12 +38,15 @@ function seedTodos(): Todo[] {
   return todos;
 }
 
-function hashesOf(result: unknown): string[] {
+function textOf(result: unknown): string {
   const payload = result as {
     content?: Array<{ text?: string }>;
   };
-  const text = payload.content?.map((item) => item.text ?? "").join("\n") ?? "";
-  return [...text.matchAll(/^\[?([A-Za-z0-9_-]{11})\]?/gm)]
+  return payload.content?.map((item) => item.text ?? "").join("\n") ?? "";
+}
+
+function hashesOf(result: unknown): string[] {
+  return [...textOf(result).matchAll(/^\[?([A-Za-z0-9_-]{11})\]?/gm)]
     .map((match) => match[1]);
 }
 
@@ -98,6 +101,16 @@ async function runOnce() {
       return result;
     };
 
+    // Regression guard: a file larger than one page must still be reachable.
+    const page = await call("list_todos", {
+      status: "todo",
+      limit: 100,
+      offset: 100,
+    });
+    const pageText = textOf(page);
+    const pagination = pageText.split("\n").length === 20 &&
+      pageText.includes("Filler task 117");
+
     const hashes: string[] = [];
     for (const search of TARGET_SEARCHES) {
       const listed = await call("list_todos", { search });
@@ -125,7 +138,8 @@ async function runOnce() {
       variable: requests + responses,
       total: schema + requests + responses,
       calls,
-      success: verify(backend),
+      success: verify(backend) && pagination,
+      pagination,
     };
   } finally {
     await Promise.allSettled([client.close(), server.close()]);

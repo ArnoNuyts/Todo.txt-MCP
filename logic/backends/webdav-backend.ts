@@ -1,6 +1,6 @@
 import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
-import { Todos } from "../Todos.ts";
+import { serializeTodoContent } from "../content.ts";
 import { BackendConflictError } from "../backend-errors.ts";
 import {
   assertFileSizeWithinLimit,
@@ -230,7 +230,7 @@ export class WebDavBackend implements TodoBackend {
     if (!response.ok) {
       if (response.status === 404) {
         this.etag = undefined;
-        return new Todos();
+        return [];
       }
       throw new Error(
         `Failed to load todos from WebDAV: ${response.status} ${response.statusText}`,
@@ -256,16 +256,14 @@ export class WebDavBackend implements TodoBackend {
       this.maxFileBytes,
     );
 
-    return new Todos(
-      ...text
-        .split("\n")
-        .filter((x) => x.trim())
-        .map((x) => new Todo(x)),
-    );
+    return text
+      .split("\n")
+      .filter((x) => x.trim())
+      .map((x) => new Todo(x));
   }
 
   async save(todos: Todo[]): Promise<void> {
-    const content = todos.map((y) => y.toString()).join("\n") + "\n";
+    const content = serializeTodoContent(todos);
     const headers: Record<string, string> = {
       ...this.getHeaders(),
       "Content-Type": "text/plain",

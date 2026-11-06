@@ -32,19 +32,6 @@ export interface ToolErrorResult {
   structuredContent: { error: ToolErrorPayload };
 }
 
-/** A failure result for one item of a batch operation. */
-export interface BatchFailure {
-  hash: string;
-  code: ToolErrorCode;
-  message: string;
-}
-
-/** Shared shape for batch tools that can partially succeed. */
-export interface BatchResult<T> {
-  succeeded: T[];
-  failed: BatchFailure[];
-}
-
 /**
  * An error carrying an explicit tool error code. Use it when a failure is
  * expected (a bad cursor, an exceeded limit) so {@link mapError} can preserve
@@ -92,15 +79,6 @@ export function notFoundError(hash: string): ToolErrorResult {
       "Call list_todos to refresh hashes.",
     { hash, hint: "call list_todos to refresh hashes" },
   );
-}
-
-/** A batch failure entry for a hash that no longer exists. */
-export function missingHashFailure(hash: string): BatchFailure {
-  return {
-    hash,
-    code: "TODO_NOT_FOUND",
-    message: `Todo with hash ${hash} not found.`,
-  };
 }
 
 /**

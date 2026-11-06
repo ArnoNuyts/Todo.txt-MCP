@@ -94,14 +94,14 @@ npm test              # run once
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
-npm run bench:actions # token cost of add/edit/status workflows
+npm run bench:actions # token cost of add/edit/status/pagination workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```
 
 ## 🤖 LLM tool-profile evaluation
 
-`bench:actions` measures deterministic protocol cost: the fixed add, edit, and
-status workflow with no model in the loop. `bench:agent` measures
+`bench:actions` measures deterministic protocol cost: the fixed add, edit,
+status, and pagination workflow with no model in the loop. `bench:agent` measures
 **usability**: it gives a model a set of natural-language multi-item tasks,
 exposes the real MCP tools, runs an OpenAI-style function-calling loop, and
 grades the resulting `todo.txt` state.
@@ -205,9 +205,9 @@ exhaust the process memory:
   `structuredContent.error.code`.
 - **Batch-first:** add, priority/context updates, and completion all take
   arrays.
-- **Benchmark:** the multi-item add/edit/status workflow costs ~977 tokens
-  (median of 5 runs, chars/4 estimate). Run `npm run bench:actions` to
-  reproduce it.
+- **Benchmark:** the multi-item add/edit/status/pagination workflow costs
+  ~1,293 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
+  estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
   `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
@@ -227,8 +227,9 @@ guidance.
 ## 🔧 Available Tools
 
 - `list_todos` — list todos by `search`, `status` (`todo` default, `done`,
-  `all`), `context`, and `limit` (default 20, max 100). Returns `hash text`
-  lines.
+  `all`), `context`, `limit` (default 20, max 100), and `offset`. Returns
+  `hash text` lines and a `MORE <count> (offset=<next>)` line when a page is
+  truncated.
 - `add_todos` — add a batch of todo.txt lines. Returns one `hash text` line per
   item.
 - `update_todos` — set `priority` (or clear it with `null`), add/remove
@@ -236,9 +237,11 @@ guidance.
   one call. Returns `hash text` lines.
 - `delete_todos` — delete multiple todos by hash in one batch.
 
-All tools are text-only. A missing hash is reported in the same text result as
-`Todo with hash <hash> not found.`; `update_todos` returns `ERROR <hash> not
-found` for a partial batch.
+All tools are text-only. A batch that finds no matching hash returns
+`Todo with hash <hash> not found.` A partial batch keeps the successful
+changes and starts with `PARTIAL <n> updated, <m> not found`, followed by
+`ERROR <hash> not found` lines. A hash shared by identical todo lines is
+rejected as `CONFLICT` instead of silently updating one of them.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,

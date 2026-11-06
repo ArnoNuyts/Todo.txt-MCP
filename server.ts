@@ -4,7 +4,6 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
 import type { Request, Response } from "express";
@@ -69,6 +68,9 @@ export const CompactListTodosSchema = z.object({
   limit: z.number().int().min(1).max(100).optional().describe(
     "Max rows (default 20)",
   ),
+  offset: z.number().int().min(0).optional().describe(
+    "Rows to skip (default 0)",
+  ),
 });
 
 export const CompactAddTodosSchema = z.object({
@@ -122,16 +124,6 @@ export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
       return exhaustiveCheck;
     }
   }
-}
-
-function todoHasContext(todo: Todo, context: string): boolean {
-  for (const todoContext of todo.contexts) {
-    if (todoContext.toLowerCase() === context) {
-      return true;
-    }
-  }
-  const escaped = context.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|\\s)@${escaped}(?=$|\\s)`, "i").test(todo.text);
 }
 
 function normalizeContextName(name: string): string {
@@ -209,10 +201,62 @@ async function todoLine(todo: Todo): Promise<string> {
   return `${await todo.getHash()} ${todo.toDisplayString()}`;
 }
 
+async function todoIndex(
+  todos: readonly Todo[],
+): Promise<Map<string, Todo[]>> {
+  const index = new Map<string, Todo[]>();
+  for (const todo of todos) {
+    const hash = await todo.getHash();
+    const matches = index.get(hash);
+    if (matches === undefined) {
+      index.set(hash, [todo]);
+    } else {
+      matches.push(todo);
+    }
+  }
+  return index;
+}
+
+/** Resolves a hash to exactly one todo, rejecting ambiguous duplicates. */
+function uniqueTodo(
+  index: Map<string, Todo[]>,
+  hash: string,
+): Todo | undefined {
+  const matches = index.get(hash);
+  if (matches === undefined) {
+    return undefined;
+  }
+  if (matches.length > 1) {
+    throw new ToolFailure(
+      "CONFLICT",
+      `Hash ${hash} matches ${matches.length} identical todos. ` +
+        "Remove or differentiate the duplicate lines, then retry.",
+      { hash, count: matches.length },
+    );
+  }
+  return matches[0];
+}
+
 function compactLines(lines: readonly string[]) {
   return {
     content: [{ type: "text" as const, text: lines.join("\n") }],
   };
+}
+
+function batchLines(
+  applied: readonly string[],
+  missing: readonly string[],
+  verb: "updated" | "deleted",
+) {
+  if (missing.length === 0) {
+    return compactLines(applied);
+  }
+  return compactLines([
+    `PARTIAL ${applied.length} ${verb}, ${missing.length} not found; ` +
+    "call list_todos to refresh hashes.",
+    ...applied,
+    ...missing.map((hash) => `ERROR ${hash} not found`),
+  ]);
 }
 
 // Tool: list_todos
@@ -227,11 +271,22 @@ async function compactListTodosOperation(
     status: args.status ?? "todo",
     context: args.context,
   });
-  const page = filtered.slice(0, args.limit ?? 20);
+  const offset = args.offset ?? 0;
+  const page = filtered.slice(offset, offset + (args.limit ?? 20));
   if (page.length === 0) {
-    return compactLines(["No todos found matching criteria."]);
+    return compactLines([
+      filtered.length === 0
+        ? "No todos found matching criteria."
+        : `No todos at offset ${offset}; ${filtered.length} match.`,
+    ]);
   }
-  return compactLines(await Promise.all(page.map(todoLine)));
+
+  const lines = await Promise.all(page.map(todoLine));
+  const next = offset + page.length;
+  if (next < filtered.length) {
+    lines.push(`MORE ${filtered.length - next} (offset=${next})`);
+  }
+  return compactLines(lines);
 }
 
 export function listTodosHandler(backend: TodoBackend, rawArgs: unknown) {
@@ -289,7 +344,7 @@ async function updateTodosOperation(
     if (!hasTodoPatch(edit)) {
       throw new ToolFailure(
         "INVALID_ARGUMENT",
-        `edits.${index}: provide priority, addContexts, or removeContexts.`,
+        `edits.${index}: provide priority, addContexts, removeContexts, or status.`,
       );
     }
   });
@@ -303,19 +358,25 @@ async function updateTodosOperation(
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
-    const todoHashMap = new Map<string, Todo>();
-    for (const todo of todos) {
-      todoHashMap.set(await todo.getHash(), todo);
+    const index = await todoIndex(todos);
+
+    const resolved = new Map<string, Todo>();
+    const missing: string[] = [];
+    for (const edit of edits) {
+      const target = uniqueTodo(index, edit.hash);
+      if (target === undefined) {
+        missing.push(edit.hash);
+      } else {
+        resolved.set(edit.hash, target);
+      }
     }
 
     const updated: Todo[] = [];
-    const missing: string[] = [];
     let changed = false;
 
     for (const edit of edits) {
-      const target = todoHashMap.get(edit.hash);
+      const target = resolved.get(edit.hash);
       if (target === undefined) {
-        missing.push(edit.hash);
         continue;
       }
       const before = target.toString();
@@ -336,10 +397,11 @@ async function updateTodosOperation(
       return notFoundError(missing[0]);
     }
 
-    return compactLines([
-      ...await Promise.all(updated.map(todoLine)),
-      ...missing.map((hash) => `ERROR ${hash} not found`),
-    ]);
+    return batchLines(
+      await Promise.all(updated.map(todoLine)),
+      missing,
+      "updated",
+    );
   });
 }
 
@@ -356,36 +418,32 @@ async function deleteTodosOperation(
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
-    const todoHashMap = new Map<string, Todo>();
-    for (const todo of todos) {
-      todoHashMap.set(await todo.getHash(), todo);
-    }
+    const index = await todoIndex(todos);
 
     const deleted: Todo[] = [];
     const missing: string[] = [];
-    const toDelete = new Set<Todo>();
-
     for (const hash of new Set(hashes)) {
-      const target = todoHashMap.get(hash);
+      const target = uniqueTodo(index, hash);
       if (target === undefined) {
         missing.push(hash);
-        continue;
+      } else {
+        deleted.push(target);
       }
-      deleted.push(target);
-      toDelete.add(target);
     }
 
-    if (toDelete.size > 0) {
+    if (deleted.length > 0) {
+      const toDelete = new Set(deleted);
       await backend.save(todos.filter((todo) => !toDelete.has(todo)));
     }
     if (deleted.length === 0) {
       return notFoundError(missing[0]);
     }
 
-    return compactLines([
-      ...await Promise.all(deleted.map(todoLine)),
-      ...missing.map((hash) => `ERROR ${hash} not found`),
-    ]);
+    return batchLines(
+      await Promise.all(deleted.map(todoLine)),
+      missing,
+      "deleted",
+    );
   });
 }
 
@@ -477,10 +535,10 @@ export function createTodoMcpServer(backend: TodoBackend) {
         // Keep the raw value when it is not valid percent-encoding.
       }
       const todos = await backend.load();
-      const normalized = context.replace(/^@/, "").toLowerCase();
-      const matching = todos.filter((todo) =>
-        !todo.isDone() && todoHasContext(todo, normalized)
-      );
+      const matching = filterTodos(todos, {
+        status: "todo",
+        context,
+      });
       return textResource(uri, serializeTodoContent(matching));
     },
   );
@@ -488,7 +546,8 @@ export function createTodoMcpServer(backend: TodoBackend) {
   server.registerTool(
     "list_todos",
     {
-      description: "List todos as 'hash text' lines.",
+      description:
+        "List todos as 'hash text' lines. Use offset to page through results.",
       inputSchema: CompactListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
@@ -510,7 +569,8 @@ export function createTodoMcpServer(backend: TodoBackend) {
     {
       description:
         "Set priority, move contexts, or change status for multiple todos " +
-        "by hash; returns 'hash text' lines.",
+        "by hash; returns 'hash text' lines. Missing hashes return ERROR " +
+        "lines; refresh with list_todos.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
@@ -520,7 +580,9 @@ export function createTodoMcpServer(backend: TodoBackend) {
   server.registerTool(
     "delete_todos",
     {
-      description: "Delete todos by hash; returns 'hash text' lines.",
+      description:
+        "Delete todos by hash; returns 'hash text' lines. Missing hashes " +
+        "return ERROR lines; refresh with list_todos.",
       inputSchema: CompactDeleteTodosSchema.shape,
       annotations: { destructiveHint: true, idempotentHint: true },
     },

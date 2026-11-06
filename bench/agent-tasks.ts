@@ -11,6 +11,7 @@
  * final todo state through the normal `Todo` parser. Read-only tasks may also
  * inspect the tool trace and final answer.
  */
+import { createHash } from "node:crypto";
 import { Todo } from "../logic/todo.ts";
 
 /** One tool invocation observed during an agent run. */
@@ -161,6 +162,17 @@ const STALE_SEED = [
   "Buy milk @home",
   "Write report @work",
 ];
+
+/** Hash of a seed line that has no creation date, matching `Todo.getHash()`. */
+export function seedHash(line: string): string {
+  return createHash("sha256")
+    .update(line)
+    .digest()
+    .subarray(0, 8)
+    .toString("base64url");
+}
+
+export const PARTIAL_BATCH_VALID_HASH = seedHash("(A) Plan launch @work");
 
 const CLEANUP_SEED = [
   "Buy milk @home",
@@ -431,6 +443,42 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         detail: `plan=${plan?.isDone() ?? "missing"}, ` +
           `milk=${milk?.isDone() ?? "missing"}, ` +
           `refreshed=${refreshed}, stale attempted=${staleAttempt}`,
+      };
+    },
+  },
+  {
+    id: "partial-batch-recovery",
+    prompt:
+      "Mark 'Plan launch' and 'Buy milk' done in one update using these " +
+      `saved hashes: ${PARTIAL_BATCH_VALID_HASH} for 'Plan launch' and ` +
+      `${STALE_HASHES[0]} for 'Buy milk'. The second hash may be stale. ` +
+      "If the update reports a missing hash, refresh the list and retry " +
+      "only the missing task. Leave 'Write report' alone.",
+    seed: seeded(...STALE_SEED),
+    verify: (todos, trace) => {
+      const plan = findTodo(todos, "Plan launch");
+      const milk = findTodo(todos, "Buy milk");
+      const report = findTodo(todos, "Write report");
+      const partialAttempt = trace.some((entry) =>
+        entry.name === "update_todos" &&
+        STALE_HASHES.some((hash) =>
+          JSON.stringify(entry.arguments).includes(hash)
+        )
+      );
+      const refreshed = usedTool(trace, "list_todos");
+      const retried = batchCalls(trace, ["update_todos"]) >= 2;
+      const recovered = !partialAttempt || (refreshed && retried);
+      const ok = plan?.isDone() === true &&
+        milk?.isDone() === true &&
+        report?.isDone() === false &&
+        todos.length === STALE_SEED.length &&
+        recovered;
+      return {
+        ok,
+        detail: `plan=${plan?.isDone() ?? "missing"}, ` +
+          `milk=${milk?.isDone() ?? "missing"}, ` +
+          `partial=${partialAttempt}, refreshed=${refreshed}, ` +
+          `retried=${retried}`,
       };
     },
   },

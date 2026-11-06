@@ -36,6 +36,8 @@ describe("tool schemas", () => {
   it("rejects inputs outside the allowed bounds", () => {
     expect(() => CompactListTodosSchema.parse({ limit: 0 })).toThrow();
     expect(() => CompactListTodosSchema.parse({ limit: 101 })).toThrow();
+    expect(() => CompactListTodosSchema.parse({ offset: -1 })).toThrow();
+    expect(() => CompactListTodosSchema.parse({ offset: 0 })).not.toThrow();
     expect(() => CompactAddTodosSchema.parse({ todos: [] })).toThrow();
     expect(() =>
       CompactAddTodosSchema.parse({

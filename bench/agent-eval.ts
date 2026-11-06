@@ -23,6 +23,7 @@ import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "../test/helpers/mock-backend.ts";
 import {
   AGENT_TASKS,
+  PARTIAL_BATCH_VALID_HASH,
   type AgentTask,
   type ToolTraceEntry,
 } from "./agent-tasks.ts";
@@ -34,7 +35,9 @@ const DEFAULT_MAX_TURNS = 12;
 const SYSTEM_PROMPT =
   "You are an assistant operating a todo.txt MCP server. Use the provided " +
   "tools to complete the user's request. Tool results are the source of " +
-  "truth: never invent hashes, read them from a list result. Do not make " +
+  "truth: never invent hashes, read them from a list result. If a batch " +
+  "result is partial or contains an ERROR line, refresh with list_todos and " +
+  "retry only the missing items before reporting success. Do not make " +
   "destructive changes the user did not ask for. When the task is complete, " +
   "reply briefly.";
 
@@ -441,6 +444,27 @@ class MockAgentModel implements AgentModel {
           ], "done");
         }
         return this.text("Refreshed the hashes and marked both done.");
+      }
+
+      case "partial-batch-recovery": {
+        if (this.step === 0) {
+          return this.tool("update_todos", {
+            edits: [
+              { hash: PARTIAL_BATCH_VALID_HASH, status: "done" },
+              { hash: "deadbeefdeadbeef", status: "done" },
+            ],
+          });
+        }
+        if (this.step === 1) {
+          return this.tool("list_todos", listAll());
+        }
+        if (this.step === 2) {
+          return setStatuses([hashOf("Buy milk")], "done");
+        }
+        return this.text(
+          "Plan launch was already done; I refreshed the hash and marked " +
+            "Buy milk done.",
+        );
       }
 
       case "ambiguous-cleanup": {
