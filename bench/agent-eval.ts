@@ -315,6 +315,21 @@ class MockAgentModel implements AgentModel {
         });
       }
 
+      case "add-threshold-recurrence": {
+        if (this.step === 0) {
+          return this.tool("add_todos", {
+            todos: ["Water plants @home t:2026-01-01 rec:+1w"],
+          });
+        }
+        if (this.step === 1) {
+          return this.tool("list_todos", listAll());
+        }
+        if (this.step === 2) {
+          return setStatuses([hashOf("Water plants")], "done");
+        }
+        return this.text("Added the task and completed it.");
+      }
+
       case "edit-priority-context": {
         if (this.step === 0) {
           return this.tool("list_todos", listAll());

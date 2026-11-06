@@ -121,6 +121,10 @@ const BATCH_ADD_SEED = [
   "Existing task @home",
 ];
 
+const THRESHOLD_SEED = [
+  "Existing task @home",
+];
+
 const UNDO_SEED = [
   "x 2026-01-01 2025-01-01 First done",
   "x 2026-01-01 2025-01-01 Second done",
@@ -213,6 +217,38 @@ export const AGENT_TASKS: readonly AgentTask[] = [
           `dentist=${dentist?.priority ?? "missing"}, ` +
           `passport=${passport !== undefined}, ` +
           `total=${todos.length}, add_batches=${batchCalls(trace, ["add_todos"])}`,
+      };
+    },
+  },
+  {
+    id: "add-threshold-recurrence",
+    prompt:
+      "Add 'Water plants' with @home, threshold t:2026-01-01, and " +
+      "recurrence rec:+1w in one request. Then mark 'Water plants' done.",
+    seed: seeded(...THRESHOLD_SEED),
+    verify: (todos, trace) => {
+      const plants = todos.filter((todo) =>
+        todo.text.toLowerCase().includes("water plants")
+      );
+      const done = plants.find((todo) => todo.isDone());
+      const recurring = plants.find((todo) => !todo.isDone());
+      const ok = done !== undefined &&
+        done.tags.t === "2026-01-01" &&
+        done.tags.rec === "+1w" &&
+        recurring !== undefined &&
+        recurring.tags.t === "2026-01-01" &&
+        recurring.tags.rec === "+1w" &&
+        typeof recurring.tags.due === "string" &&
+        todos.length === THRESHOLD_SEED.length + 2 &&
+        batchCalls(trace, ["add_todos"]) === 1 &&
+        batchCalls(trace, ["update_todos"]) === 1;
+      return {
+        ok,
+        detail: `done=${done !== undefined}, ` +
+          `recurring=${recurring !== undefined}, ` +
+          `threshold=${done?.tags.t ?? "missing"}, ` +
+          `rec=${done?.tags.rec ?? "missing"}, ` +
+          `total=${todos.length}`,
       };
     },
   },
