@@ -9,7 +9,7 @@
  *
  * Run a real evaluation:
  *   AGENT_EVAL_API_KEY=... AGENT_EVAL_MODEL=gpt-4.1-mini \
- *     npm run bench:agent -- --profiles compact,core,full --trials 1
+ *     npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1
  *
  * Run offline:
  *   npm run bench:agent -- --mock
@@ -27,10 +27,14 @@ import {
   type ToolTraceEntry,
 } from "./agent-tasks.ts";
 
-export type AgentProfile = Extract<TodoToolset, "compact" | "core" | "full">;
+export type AgentProfile = Extract<
+  TodoToolset,
+  "compact" | "compact-plus" | "core" | "full"
+>;
 
 export const AGENT_PROFILES: readonly AgentProfile[] = [
   "compact",
+  "compact-plus",
   "core",
   "full",
 ];
@@ -459,6 +463,12 @@ class MockAgentModel implements AgentModel {
       }
 
       case "summary-counts": {
+        if (has("summary")) {
+          if (this.step === 0) {
+            return this.tool("summary", {});
+          }
+          return this.text("There are three open tasks, one done, one overdue.");
+        }
         if (compact) {
           if (this.step === 0) {
             return this.tool("list_todos", listArgs("all"));
@@ -472,6 +482,14 @@ class MockAgentModel implements AgentModel {
       }
 
       case "changes-since": {
+        if (has("changes_since")) {
+          if (this.step === 0) {
+            const version =
+              this.task.prompt.match(/\b[0-9a-f]{64}\b/)?.[0] ?? "unknown";
+            return this.tool("changes_since", { version });
+          }
+          return this.text("The file has changed since that version.");
+        }
         if (compact) {
           if (this.step === 0) {
             return this.tool("list_todos", listArgs("all"));
@@ -906,7 +924,7 @@ class CliUsageError extends Error {}
 const USAGE = `Usage: npm run bench:agent -- [options]
 
 Options:
-  --profiles <list>   Comma-separated profiles (default: compact,core,full)
+  --profiles <list>   Comma-separated profiles (default: compact,compact-plus,core,full)
   --trials <n>        Trials per task/profile (default: ${DEFAULT_TRIALS})
   --max-turns <n>     Maximum model turns per run (default: ${DEFAULT_MAX_TURNS})
   --task <id>         Run only one task id
@@ -927,7 +945,7 @@ const SETUP_INSTRUCTIONS = `No model credentials configured.
 Set an API key and a model, then rerun:
   export AGENT_EVAL_API_KEY="sk-..."
   export AGENT_EVAL_MODEL="gpt-4.1-mini"
-  npm run bench:agent -- --profiles compact,core,full --trials 1
+  npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1
 
 Or run the offline harness with a scripted mock model:
   npm run bench:agent -- --mock
@@ -979,7 +997,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
         for (const value of values) {
           if (!isAgentProfile(value)) {
             throw new CliUsageError(
-              `Unknown profile "${value}". Expected compact, core, or full.`,
+              `Unknown profile "${value}". Expected compact, compact-plus, ` +
+                "core, or full.",
             );
           }
         }

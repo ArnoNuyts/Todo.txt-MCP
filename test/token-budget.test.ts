@@ -32,9 +32,11 @@ describe("token budget", () => {
   it("keeps the compact tools/list at least 50% below the full profile", async () => {
     const full = await toolListTokens("full");
     const compact = await toolListTokens("compact");
+    const compactPlus = await toolListTokens("compact-plus");
 
     // The end-to-end action benchmark lives in bench/actions.ts. This guards
     // the fixed per-session context cost in CI.
     expect(compact).toBeLessThanOrEqual(full / 2);
+    expect(compactPlus).toBeLessThanOrEqual(full / 2);
   });
 });

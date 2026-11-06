@@ -122,12 +122,12 @@ Run against any OpenAI-compatible `/chat/completions` endpoint:
 export AGENT_EVAL_API_KEY="sk-..."
 export AGENT_EVAL_MODEL="gpt-4.1-mini"
 # Optional: export AGENT_EVAL_BASE_URL="https://api.openai.com/v1"
-npm run bench:agent -- --profiles compact,core,full --trials 1 --max-turns 12
+npm run bench:agent -- --profiles compact,compact-plus,core,full --trials 1 --max-turns 12
 ```
 
 Useful options:
 
-- `--profiles compact,core,full` — profiles to compare (default: all three).
+- `--profiles compact,compact-plus,core,full` — profiles to compare (default: all four).
 - `--trials 1` — trials per task and profile.
 - `--task <id>` — run one task, e.g. `--task stale-hash-recovery`.
 - `--max-turns 12` — model turns before the run stops.
@@ -203,19 +203,22 @@ exhaust the process memory:
 
 - **Read-only:** `MCP_READ_ONLY=1` exposes only `list_todos`; mutating tools are
   not registered.
-- **Tool profiles:** `MCP_TOOLSET=full|core|compact|readonly|off` controls the
-  exposed toolset. `off` exposes resources only, `readonly` the five read tools,
-  `core` the read tools plus add/update/status/delete, `compact` four
-  single-purpose tools for the most common writes, and `full` (default) every
-  tool. Combine this with a gateway or per-agent MCP config to expose the server
-  only on demand.
-- **Compact profile:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todo`,
+- **Tool profiles:** `MCP_TOOLSET=full|core|compact|compact-plus|readonly|off`
+  controls the exposed toolset. `off` exposes resources only, `readonly` the
+  five read tools, `core` the read tools plus add/update/status/delete,
+  `compact` four single-purpose tools, `compact-plus` those four plus
+  `changes_since`, and `full` (default) every tool. Combine this with a gateway
+  or per-agent MCP config to expose the server only on demand.
+- **Compact profiles:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todo`,
   `edit_todo`, and `mark_done`. `edit_todo` can change text, priority, and
-  contexts in one call. Results are terse text (`hash text`, or just the new
-  hash for `add_todo`) and omit output schemas. In the repository benchmark this
-  cuts the add/edit/mark-done workflow from ~6,149 to ~835 tokens (median of 5
-  runs, chars/4 estimate) while keeping the final todo.txt identical. Run
-  `npm run bench:actions` to reproduce it.
+  contexts in one call. `compact-plus` adds `changes_since` for version checks.
+  Results are terse text (`hash text`, or just the new hash for `add_todo`) and
+  omit output schemas. In the repository benchmark the four-tool profile cuts
+  the add/edit/mark-done workflow from ~6,149 to ~736 tokens (median of 5 runs,
+  chars/4 estimate) while keeping the final todo.txt identical. Run
+  `npm run bench:actions` to reproduce it. `summary` was evaluated as an
+  optional sixth tool, but its schema cost outweighed the saved call, so
+  `compact-plus` adds only `changes_since`.
 - **Output schemas:** `MCP_OUTPUT_SCHEMAS=1` adds `outputSchema` to
   `tools/list`. Off by default because it is roughly half of the tool-definition
   payload; structured content is returned either way.
@@ -281,7 +284,8 @@ When `MCP_TOOLSET=compact`, only these tools are exposed:
 The compact profile is intentionally text-only: it does not return
 `structuredContent` or output schemas, which keeps both `tools/list` and each
 result small. Use `core` or `full` when you need batch, import/export, or
-machine-readable results.
+machine-readable results. `MCP_TOOLSET=compact-plus` adds `changes_since` so
+version checks do not need a full export.
 
 Batch tools return `succeeded` and `failed` arrays. A missing hash is reported
 in `failed` with the `TODO_NOT_FOUND` code and a hint to refresh hashes with

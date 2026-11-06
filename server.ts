@@ -280,56 +280,50 @@ export const ImportTodosSchema = z.object({
 // Compact tool schemas. These power the `compact` profile, which trades the
 // batch/import surface for a small tools/list payload and terse text results.
 export const CompactListTodosSchema = z.object({
-  search: z.string().max(200).optional().describe(
-    "Text to search for in the todo",
-  ),
+  search: z.string().max(200).optional().describe("Search text"),
   status: z.enum(["todo", "done", "all"]).optional().describe(
-    "Status filter; defaults to 'todo'",
+    "todo (default), done, or all",
   ),
-  context: z.string().min(1).max(100).optional().describe(
-    "Only todos in this context; the leading '@' is optional",
-  ),
+  context: z.string().min(1).max(100).optional().describe("Context filter"),
   limit: z.number().int().min(1).max(100).optional().describe(
-    "Maximum rows to return; defaults to 20",
+    "Max rows (default 20)",
   ),
 });
 
 export const CompactAddTodoSchema = z.object({
-  text: z.string().min(1).max(2000).describe(
-    "The todo text in todo.txt format",
-  ),
+  text: z.string().min(1).max(2000).describe("Todo text"),
 });
 
 const ContextNameSchema = z.string().min(1).max(100).regex(
   /^@?[\w.-]+$/,
-  "Use letters, digits, '.', '_' or '-' (an optional leading '@' is allowed)",
-).describe(
-  "Context name without the leading '@'; matching is case-insensitive",
-);
+  "Use letters, digits, '.', '_' or '-'",
+).describe("Context name");
 
 export const CompactEditTodoSchema = z.object({
-  hash: z.string().min(8).max(64).describe(
-    "Hash from list_todos or a prior mutation result",
-  ),
+  hash: z.string().min(8).max(64).describe("Todo hash"),
   text: TodoBodySchema.optional().describe(
-    "New body text; omit to keep the current text",
+    "New body text; omit to keep it",
   ),
   priority: z.string().regex(
     /^[A-Z]$/,
     "Expected a single uppercase priority letter (A-Z)",
-  ).nullable().optional().describe(
-    "New priority letter, or null to clear it",
-  ),
+  ).nullable().optional().describe("A-Z, or null to clear"),
   addContexts: z.array(ContextNameSchema).max(20).optional().describe(
     "Contexts to add",
   ),
   removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
-    "Contexts to remove before adding",
+    "Contexts to remove",
   ),
 });
 
 export const CompactMarkDoneSchema = z.object({
-  hash: z.string().min(8).max(64).describe("Hash of the todo to mark done"),
+  hash: z.string().min(8).max(64).describe("Todo hash"),
+});
+
+export const CompactChangesSinceSchema = z.object({
+  version: z.string().min(1).max(128).describe(
+    "Version from an earlier response",
+  ),
 });
 
 /** @deprecated Use {@link SetTodoStatusesSchema} plus the deprecated single-hash shape. */
@@ -1183,6 +1177,32 @@ export function compactMarkDoneHandler(
   return guardTool(() => compactMarkDoneOperation(backend, rawArgs));
 }
 
+async function compactChangesSinceOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { version } = CompactChangesSinceSchema.parse(rawArgs);
+  const result = await changesSinceOperation(backend, { version });
+  const text = result.content.map((item) => item.text ?? "").join("\n");
+  const structured = result.structuredContent as {
+    changed: boolean;
+    content?: string;
+  };
+  // Include the current content only when the version really changed; this is
+  // still smaller than the default tool, which carries it in both fields.
+  const body = structured.changed && typeof structured.content === "string"
+    ? `${text}\n${structured.content}`
+    : text;
+  return { content: [{ type: "text" as const, text: body }] };
+}
+
+export function compactChangesSinceHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => compactChangesSinceOperation(backend, rawArgs));
+}
+
 // Tool: delete_todos handler
 async function deleteTodosOperation(
   backend: TodoBackend,
@@ -1564,6 +1584,7 @@ export type TodoToolset =
   | "full"
   | "core"
   | "compact"
+  | "compact-plus"
   | "readonly"
   | "off";
 
@@ -1611,6 +1632,7 @@ export function resolveToolset(
     value === "full" ||
     value === "core" ||
     value === "compact" ||
+    value === "compact-plus" ||
     value === "readonly" ||
     value === "off"
   ) {
@@ -1741,15 +1763,14 @@ export function createTodoMcpServer(
     return server;
   }
 
-  // The compact profile is deliberately small: four single-purpose tools with
-  // terse text results. It trades the batch/import surface for a lower
-  // tools/list and response token cost.
-  if (toolset === "compact") {
+  // The compact profiles are deliberately small: four single-purpose tools
+  // with terse text results. `compact-plus` adds `changes_since`, the only
+  // read tool the eval showed was worth its fixed schema cost.
+  if (toolset === "compact" || toolset === "compact-plus") {
     server.registerTool(
       "list_todos",
       {
-        description:
-          "Find todos by text, status, or context. Returns 'hash text' lines.",
+        description: "List todos as 'hash text' lines.",
         inputSchema: CompactListTodosSchema.shape,
         annotations: { readOnlyHint: true },
       },
@@ -1763,8 +1784,7 @@ export function createTodoMcpServer(
     server.registerTool(
       "add_todo",
       {
-        description:
-          "Add one todo in todo.txt format. Returns the new hash.",
+        description: "Add a todo; returns its hash.",
         inputSchema: CompactAddTodoSchema.shape,
         annotations: { destructiveHint: false },
       },
@@ -1775,8 +1795,7 @@ export function createTodoMcpServer(
       "edit_todo",
       {
         description:
-          "Change a todo's text, priority, or contexts by hash. Returns " +
-          "'hash text'.",
+          "Edit text, priority, or contexts by hash; returns 'hash text'.",
         inputSchema: CompactEditTodoSchema.shape,
         annotations: { destructiveHint: true },
       },
@@ -1786,12 +1805,24 @@ export function createTodoMcpServer(
     server.registerTool(
       "mark_done",
       {
-        description: "Mark a todo done by hash. Returns 'hash text'.",
+        description: "Mark a todo done; returns 'hash text'.",
         inputSchema: CompactMarkDoneSchema.shape,
         annotations: { destructiveHint: true, idempotentHint: true },
       },
       (rawArgs: unknown) => compactMarkDoneHandler(backend, rawArgs),
     );
+
+    if (toolset === "compact-plus") {
+      server.registerTool(
+        "changes_since",
+        {
+          description: "Check whether the file changed since a version.",
+          inputSchema: CompactChangesSinceSchema.shape,
+          annotations: { readOnlyHint: true },
+        },
+        (rawArgs: unknown) => compactChangesSinceHandler(backend, rawArgs),
+      );
+    }
 
     return server;
   }

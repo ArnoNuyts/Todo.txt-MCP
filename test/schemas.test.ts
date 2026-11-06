@@ -13,6 +13,7 @@ import {
   ImportTodosSchema,
   ListTodosSchema,
   CompactAddTodoSchema,
+  CompactChangesSinceSchema,
   CompactEditTodoSchema,
   CompactListTodosSchema,
   CompactMarkDoneSchema,
@@ -48,6 +49,7 @@ describe("Tool schemas", () => {
       compact_add_todo: CompactAddTodoSchema,
       compact_edit_todo: CompactEditTodoSchema,
       compact_mark_done: CompactMarkDoneSchema,
+      compact_changes_since: CompactChangesSinceSchema,
     };
 
     for (const [name, schema] of Object.entries(schemas)) {

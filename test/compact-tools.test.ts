@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
+import { computeContentVersion } from "../logic/content.ts";
 
 interface ToolTextResult {
   isError?: boolean;
@@ -29,6 +30,63 @@ function errorCodeOf(result: unknown): string | undefined {
     structuredContent?: { error?: { code?: string } };
   }).structuredContent?.error?.code;
 }
+
+describe("compact-plus toolset", () => {
+  let backend: MockBackend;
+  let client: Client;
+  let server: ReturnType<typeof createTodoMcpServer>;
+
+  beforeEach(async () => {
+    backend = new MockBackend();
+    server = createTodoMcpServer(backend, { toolset: "compact-plus" });
+    const [clientTransport, serverTransport] = InMemoryTransport
+      .createLinkedPair();
+    client = new Client({
+      name: "todo-txt-mcp-compact-plus-test-client",
+      version: "1.0.0",
+    });
+    await Promise.all([
+      client.connect(clientTransport),
+      server.connect(serverTransport),
+    ]);
+  });
+
+  afterEach(async () => {
+    await Promise.allSettled([client.close(), server.close()]);
+  });
+
+  it("adds only changes_since to the compact surface", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "add_todo",
+      "changes_since",
+      "edit_todo",
+      "list_todos",
+      "mark_done",
+    ]);
+  });
+
+  it("reports changes and unchanged versions as terse text", async () => {
+    const todos = [new Todo("Buy milk @home")];
+    await backend.save(todos);
+    const current = computeContentVersion(todos);
+
+    const changed = await client.callTool({
+      name: "changes_since",
+      arguments: { version: "stale-version" },
+    });
+    expect(textOf(changed)).toContain("changed");
+    expect(textOf(changed)).toContain("Buy milk @home");
+    expect(changed.structuredContent).toBeUndefined();
+
+    const same = await client.callTool({
+      name: "changes_since",
+      arguments: { version: current },
+    });
+    expect(textOf(same)).toContain("No changes since version");
+    expect(same.structuredContent).toBeUndefined();
+  });
+});
 
 describe("compact toolset", () => {
   let backend: MockBackend;
