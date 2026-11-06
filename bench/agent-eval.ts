@@ -251,6 +251,58 @@ function latestHash(
   return undefined;
 }
 
+interface TodoLine {
+  hash: string;
+  text: string;
+}
+
+function latestLine(
+  messages: readonly ChatMessage[],
+  fragment: string,
+): TodoLine | undefined {
+  const needle = fragment.toLowerCase();
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "tool" || message.content === null) {
+      continue;
+    }
+    for (const line of message.content.split("\n")) {
+      if (!line.toLowerCase().includes(needle)) {
+        continue;
+      }
+      const match = line.match(/^\[?([A-Za-z0-9_-]{11})\]?\s+(.+)$/);
+      if (match) {
+        return { hash: match[1], text: match[2] };
+      }
+    }
+  }
+  return undefined;
+}
+
+function withStatus(text: string, status: "done" | "todo"): string {
+  return status === "done"
+    ? (text.startsWith("x ") ? text : `x ${text}`)
+    : text.replace(/^x\s+/, "");
+}
+
+function withPriority(text: string, priority: string): string {
+  return `(${priority}) ${text.replace(/^\([A-Z]\)\s*/, "")}`;
+}
+
+function withContext(text: string, from: string, to: string): string {
+  return text.replace(
+    new RegExp(`(^|\\s)@${from}(?=$|\\s)`),
+    `$1@${to}`,
+  );
+}
+
+function withTag(text: string, key: string, value: string): string {
+  const pattern = new RegExp(`(^|\\s)${key}:[^\\s]+`);
+  return pattern.test(text)
+    ? text.replace(pattern, `$1${key}:${value}`)
+    : `${text} ${key}:${value}`;
+}
+
 /**
  * A scripted offline model that follows a task-aware plan using whichever
  * tools the server exposes. It is intentionally simple: its purpose is
@@ -289,17 +341,26 @@ class MockAgentModel implements AgentModel {
   private plan(request: ChatCompletionRequest): ChatCompletionResponse {
     const hashOf = (fragment: string) =>
       latestHash(request.messages, fragment) ?? "0000000000000000";
+    const lineOf = (fragment: string): TodoLine => {
+      const line = latestLine(request.messages, fragment);
+      if (line === undefined) {
+        throw new Error(`Mock could not find a todo line for: ${fragment}`);
+      }
+      return line;
+    };
     const listAll = (status: "todo" | "all" = "all") => ({
       status,
       limit: 100,
     });
+    const update = (lines: string[]) =>
+      this.tool("update_todos", { updates: lines });
     const setStatuses = (
-      hashes: string[],
+      fragments: string[],
       status: "done" | "todo",
-    ) =>
-      this.tool("update_todos", {
-        edits: hashes.map((hash) => ({ hash, status })),
-      });
+    ) => update(fragments.map((fragment) => {
+      const line = lineOf(fragment);
+      return `${line.hash} ${withStatus(line.text, status)}`;
+    }));
 
     switch (this.task.id) {
       case "add-priority-context-due": {
@@ -325,7 +386,7 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 2) {
-          return setStatuses([hashOf("Water plants")], "done");
+          return setStatuses(["Water plants"], "done");
         }
         return this.text("Added the task and completed it.");
       }
@@ -335,13 +396,14 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          return this.tool("update_todos", {
-            edits: [{
-              hash: hashOf("Water plants"),
-              threshold: "2026-12-01",
-              recurrence: "+2w",
-            }],
-          });
+          const line = lineOf("Water plants");
+          return update([`${line.hash} ${
+            withTag(
+              withTag(line.text, "t", "2026-12-01"),
+              "rec",
+              "+2w",
+            )
+          }`]);
         }
         return this.text("Updated the threshold and recurrence.");
       }
@@ -351,22 +413,16 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          return this.tool("update_todos", {
-            edits: [
-              {
-                hash: hashOf("Prepare quarterly report"),
-                priority: "A",
-                removeContexts: ["work"],
-                addContexts: ["office"],
-              },
-              {
-                hash: hashOf("Draft budget"),
-                priority: "A",
-                removeContexts: ["work"],
-                addContexts: ["office"],
-              },
-            ],
-          });
+          const report = lineOf("Prepare quarterly report");
+          const budget = lineOf("Draft budget");
+          return update([
+            `${report.hash} ${
+              withPriority(withContext(report.text, "work", "office"), "A")
+            }`,
+            `${budget.hash} ${
+              withPriority(withContext(budget.text, "work", "office"), "A")
+            }`,
+          ]);
         }
         return this.text("Updated both tasks.");
       }
@@ -377,9 +433,9 @@ class MockAgentModel implements AgentModel {
         }
         if (this.step === 1) {
           return setStatuses([
-            hashOf("Call the dentist"),
-            hashOf("Buy milk"),
-            hashOf("Renew passport"),
+            "Call the dentist",
+            "Buy milk",
+            "Renew passport",
           ], "done");
         }
         return this.text("Marked all three tasks done.");
@@ -390,10 +446,7 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          return setStatuses([
-            hashOf("First done"),
-            hashOf("Second done"),
-          ], "todo");
+          return setStatuses(["First done", "Second done"], "todo");
         }
         return this.text("Reopened both tasks.");
       }
@@ -440,57 +493,46 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          return this.tool("update_todos", {
-            edits: [
-              {
-                hash: hashOf("Draft budget"),
-                removeContexts: ["work"],
-                addContexts: ["office"],
-              },
-              {
-                hash: hashOf("Review contracts"),
-                removeContexts: ["work"],
-                addContexts: ["office"],
-              },
-            ],
-          });
+          const budget = lineOf("Draft budget");
+          const contracts = lineOf("Review contracts");
+          return update([
+            `${budget.hash} ${withContext(budget.text, "work", "office")}`,
+            `${contracts.hash} ${
+              withContext(contracts.text, "work", "office")
+            }`,
+          ]);
         }
         return this.text("Moved both tasks to @office.");
       }
 
       case "stale-hash-recovery": {
         if (this.step === 0) {
-          return setStatuses(
-            ["deadbeefdeadbeef", "cafebabecafebabe"],
-            "done",
-          );
+          return update([
+            "deadbeefdeadbeef x (A) Plan launch @work",
+            "cafebabecafebabe x Buy milk @home",
+          ]);
         }
         if (this.step === 1) {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 2) {
-          return setStatuses([
-            hashOf("Plan launch"),
-            hashOf("Buy milk"),
-          ], "done");
+          return setStatuses(["Plan launch", "Buy milk"], "done");
         }
         return this.text("Refreshed the hashes and marked both done.");
       }
 
       case "partial-batch-recovery": {
         if (this.step === 0) {
-          return this.tool("update_todos", {
-            edits: [
-              { hash: PARTIAL_BATCH_VALID_HASH, status: "done" },
-              { hash: "deadbeefdeadbeef", status: "done" },
-            ],
-          });
+          return update([
+            `${PARTIAL_BATCH_VALID_HASH} x (A) Plan launch @work`,
+            "deadbeefdeadbeef x Buy milk @home",
+          ]);
         }
         if (this.step === 1) {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 2) {
-          return setStatuses([hashOf("Buy milk")], "done");
+          return setStatuses(["Buy milk"], "done");
         }
         return this.text(
           "Plan launch was already done; I refreshed the hash and marked " +
@@ -522,10 +564,10 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll("todo"));
         }
         if (this.step === 1) {
-          return setStatuses([
-            hashOf("File taxes"),
-            hashOf("Submit report"),
-          ], "done");
+          return setStatuses(
+            ["File taxes", "Submit report"],
+            "done",
+          );
         }
         return this.text("Marked both overdue tasks done.");
       }

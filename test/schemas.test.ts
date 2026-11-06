@@ -45,38 +45,18 @@ describe("tool schemas", () => {
       })
     ).toThrow();
     expect(() => CompactDeleteTodosSchema.parse({ hashes: [] })).toThrow();
+    expect(() => CompactUpdateTodosSchema.parse({ updates: [] })).toThrow();
+    expect(() =>
+      CompactUpdateTodosSchema.parse({ updates: ["x"] })
+    ).toThrow();
     expect(() =>
       CompactUpdateTodosSchema.parse({
-        edits: [{ hash: "01234567" }],
+        updates: ["01234567 (A) Task @home"],
       })
     ).not.toThrow();
     expect(() =>
       CompactUpdateTodosSchema.parse({
-        edits: [{ hash: "01234567", priority: "a" }],
-      })
-    ).toThrow();
-    expect(() =>
-      CompactUpdateTodosSchema.parse({
-        edits: [{ hash: "01234567", status: "other" }],
-      })
-    ).toThrow();
-    expect(() =>
-      CompactUpdateTodosSchema.parse({
-        edits: [{
-          hash: "01234567",
-          threshold: "2026-12-01",
-          recurrence: "+2w",
-        }],
-      })
-    ).not.toThrow();
-    expect(() =>
-      CompactUpdateTodosSchema.parse({
-        edits: [{ hash: "01234567", threshold: "12/01/2026" }],
-      })
-    ).toThrow();
-    expect(() =>
-      CompactUpdateTodosSchema.parse({
-        edits: [{ hash: "01234567", recurrence: "weekly" }],
+        updates: Array.from({ length: 101 }, (_, i) => `01234567 todo ${i}`),
       })
     ).toThrow();
   });

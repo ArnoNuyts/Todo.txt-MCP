@@ -203,10 +203,10 @@ exhaust the process memory:
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Errors still carry a stable
   `structuredContent.error.code`.
-- **Batch-first:** add, priority/context updates, and completion all take
-  arrays.
+- **Batch-first, text-first:** `add_todos` and `update_todos` both take arrays
+  of todo.txt lines; `delete_todos` takes hashes.
 - **Benchmark:** the multi-item add/edit/status/pagination workflow costs
-  ~1,367 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
+  ~1,146 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
   estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
@@ -232,9 +232,10 @@ guidance.
   truncated.
 - `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
   `rec:` tags. Returns one `hash text` line per item.
-- `update_todos` — set `priority`, add/remove contexts, set `threshold` (`t:`)
-  or `recurrence` (`rec:`), and set `status` (`done` or `todo` to undo) for
-  multiple todos in one call. `null` clears priority, threshold, or recurrence.
+- `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`
+  lines. Copy the listed line, edit it, and include the fields to keep; fields
+  omitted from the new line are removed. The creation date is preserved when
+  omitted. To complete, use `x ` with no date unless the user gave one.
   Returns `hash text` lines.
 - `delete_todos` — delete multiple todos by hash in one batch.
 
@@ -243,7 +244,7 @@ Completing a recurring todo follows the usual todo.txt convention:
 `rec:+1w` advances from the due date, `rec:1w` from the completion date, and
 a `t:` threshold keeps its offset from the due date.
 
-All tools are text-only. A batch that finds no matching hash returns
+All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
 changes and starts with `PARTIAL <n> updated, <m> not found`, followed by
 `ERROR <hash> not found` lines. A hash shared by identical todo lines is

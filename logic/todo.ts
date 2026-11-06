@@ -53,12 +53,12 @@ export class Todo {
     this.setText(text);
   }
   /** Toggles completion and returns a recurrence todo when one is spawned. */
-  toggleState(): { recurrence?: Todo } {
+  toggleState(completedAt: Date = new Date()): { recurrence?: Todo } {
     this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
     if (this.state === TodoStateEnum.done) {
-      this.completionDate = new Date();
+      this.completionDate = completedAt;
     }
     if (this.state === TodoStateEnum.todo && this.completionDate) {
       this.completionDate = undefined;
@@ -78,7 +78,6 @@ export class Todo {
       return {};
     }
 
-    const completedAt = new Date();
     const next = nextRecurrence(
       recurrence,
       parseDateTag(this.tags.due),
@@ -176,10 +175,6 @@ export class Todo {
 
   setTag(key: string, value: string): void {
     this.tags[key] = value;
-  }
-
-  clearTag(key: string): void {
-    delete this.tags[key];
   }
 
   setDue(date: Date): void {

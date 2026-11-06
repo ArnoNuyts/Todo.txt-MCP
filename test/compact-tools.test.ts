@@ -21,10 +21,6 @@ function linesOf(result: unknown): string[] {
   return textOf(result).split("\n");
 }
 
-function hashesOf(result: unknown): string[] {
-  return linesOf(result).map((line) => line.split(" ")[0]);
-}
-
 function errorCodeOf(result: unknown): string | undefined {
   return (result as ToolTextResult & {
     structuredContent?: { error?: { code?: string } };
@@ -142,12 +138,10 @@ describe("tool surface", () => {
     const result = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: hashes.map((hash) => ({
-          hash,
-          priority: "A",
-          removeContexts: ["work"],
-          addContexts: ["office"],
-        })),
+        updates: [
+          `${hashes[0]} (A) Report @office +finance due:2026-12-15`,
+          `${hashes[1]} (A) Budget @office +finance`,
+        ],
       },
     });
 
@@ -155,8 +149,11 @@ describe("tool surface", () => {
     expect(backend.loadCalls).toBe(1);
     expect(backend.saveCalls).toBe(1);
     expect(backend.getTodos()[0].priority).toBe("A");
-    expect(backend.getTodos()[0].toString()).toContain("+finance @office");
+    expect(backend.getTodos()[0].contexts.has("office")).toBe(true);
+    expect(backend.getTodos()[0].projects.has("finance")).toBe(true);
     expect(backend.getTodos()[0].tags.due).toBe("2026-12-15");
+    expect(backend.getTodos()[0].creationDate?.toISOString().slice(0, 10))
+      .toBe("2025-01-02");
     expect(backend.getTodos()[1].priority).toBe("A");
     expect(backend.getTodos()[1].contexts.has("work")).toBe(false);
   });
@@ -170,11 +167,10 @@ describe("tool surface", () => {
     const updated = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: hashes.map((hash) => ({
-          hash,
-          threshold: "2026-12-01",
-          recurrence: "+2W",
-        })),
+        updates: [
+          `${hashes[0]} Water plants @home t:2026-12-01 rec:+2w`,
+          `${hashes[1]} Feed cat @home t:2026-12-01 rec:+2w`,
+        ],
       },
     });
 
@@ -187,9 +183,7 @@ describe("tool surface", () => {
     const newHash = await backend.getTodos()[0].getHash();
     await client.callTool({
       name: "update_todos",
-      arguments: {
-        edits: [{ hash: newHash, threshold: null, recurrence: null }],
-      },
+      arguments: { updates: [`${newHash} Water plants @home`] },
     });
 
     expect(backend.saveCalls).toBe(2);
@@ -209,12 +203,9 @@ describe("tool surface", () => {
       await client.callTool({
         name: "update_todos",
         arguments: {
-          edits: [{
-            hash,
-            threshold: "2024-06-10",
-            recurrence: "+1w",
-            status: "done",
-          }],
+          updates: [
+            `${hash} x Water plants due:2024-06-20 t:2024-06-10 rec:+1w`,
+          ],
         },
       });
 
@@ -232,7 +223,7 @@ describe("tool surface", () => {
     }
   });
 
-  it("rejects duplicate hashes and edits with no changes", async () => {
+  it("rejects duplicate hashes in one update batch", async () => {
     const todo = new Todo("Keep me @home");
     await backend.save([todo]);
     const hash = await todo.getHash();
@@ -240,18 +231,11 @@ describe("tool surface", () => {
     const duplicate = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: [{ hash, priority: "A" }, { hash, priority: "B" }],
+        updates: [`${hash} (A) Keep me @home`, `${hash} (B) Keep me @home`],
       },
     });
     expect(duplicate.isError).toBe(true);
     expect(errorCodeOf(duplicate)).toBe("INVALID_ARGUMENT");
-
-    const empty = await client.callTool({
-      name: "update_todos",
-      arguments: { edits: [{ hash }] },
-    });
-    expect(empty.isError).toBe(true);
-    expect(errorCodeOf(empty)).toBe("INVALID_ARGUMENT");
   });
 
   it("marks multiple todos done and is idempotent", async () => {
@@ -264,7 +248,7 @@ describe("tool surface", () => {
     const first = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: hashes.map((hash) => ({ hash, status: "done" })),
+        updates: hashes.map((hash, index) => `${hash} x ${todos[index].text}`),
       },
     });
     expect(linesOf(first)).toHaveLength(2);
@@ -272,12 +256,9 @@ describe("tool surface", () => {
     expect(backend.saveCalls).toBe(1);
     expect(backend.getTodos().every((todo) => todo.isDone())).toBe(true);
 
-    const doneHashes = hashesOf(first);
     const second = await client.callTool({
       name: "update_todos",
-      arguments: {
-        edits: doneHashes.map((hash) => ({ hash, status: "done" })),
-      },
+      arguments: { updates: linesOf(first) },
     });
     expect(linesOf(second)).toHaveLength(2);
     expect(backend.saveCalls).toBe(1);
@@ -291,9 +272,9 @@ describe("tool surface", () => {
     const result = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: [
-          { hash, status: "done" },
-          { hash: "0123456789abcdef", status: "done" },
+        updates: [
+          `${hash} x Keep me`,
+          "0123456789abcdef x Missing",
         ],
       },
     });
@@ -312,7 +293,7 @@ describe("tool surface", () => {
 
     const update = await client.callTool({
       name: "update_todos",
-      arguments: { edits: [{ hash, priority: "A" }] },
+      arguments: { updates: [`${hash} (A) Dup`] },
     });
     expect(update.isError).toBe(true);
     expect(errorCodeOf(update)).toBe("CONFLICT");
@@ -341,7 +322,10 @@ describe("tool surface", () => {
     const result = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: hashes.map((hash) => ({ hash, status: "todo" })),
+        updates: [
+          `${hashes[0]} First done`,
+          `${hashes[1]} Second done`,
+        ],
       },
     });
 

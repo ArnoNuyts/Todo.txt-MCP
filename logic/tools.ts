@@ -6,8 +6,6 @@ import type { TodoBackend } from "./backend.ts";
 import { withBackendLock } from "./backend-lock.ts";
 import { resolveMaxTodos } from "./limits.ts";
 import { guardTool, notFoundError, ToolFailure } from "./tool-errors.ts";
-import { contextTokenPattern } from "./tokens.ts";
-import { RECURRENCE_PATTERN } from "./recurrence.ts";
 
 // Schemas
 export const CompactListTodosSchema = z.object({
@@ -30,45 +28,10 @@ export const CompactAddTodosSchema = z.object({
   ),
 });
 
-const ContextNameSchema = z.string().min(1).max(100).regex(
-  /^@?[\w.-]+$/,
-  "Use letters, digits, '.', '_' or '-'",
-).describe("Context name");
-
-const ThresholdSchema = z.string().regex(
-  /^\d{4}-\d{2}-\d{2}$/,
-  "Expected YYYY-MM-DD",
-).nullable().optional().describe("t: YYYY-MM-DD (defer until); null clears");
-
-const RecurrenceSchema = z.string().regex(
-  RECURRENCE_PATTERN,
-  "Expected +N[dwmy], e.g. +2w",
-).nullable().optional().describe("rec: +2w; null clears");
-
-const TodoEditSchema = z.object({
-  hash: z.string().min(8).max(64).describe("Todo hash"),
-  priority: z.string().regex(
-    /^[A-Z]$/,
-    "Expected a single uppercase priority letter (A-Z)",
-  ).nullable().optional().describe("A-Z, or null to clear"),
-  addContexts: z.array(ContextNameSchema).max(20).optional().describe(
-    "Contexts to add",
-  ),
-  removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
-    "Contexts to remove",
-  ),
-  threshold: ThresholdSchema,
-  recurrence: RecurrenceSchema,
-  status: z.enum(["done", "todo"]).optional().describe(
-    "done to complete, todo to undo",
-  ),
-});
-
-export type TodoEdit = z.infer<typeof TodoEditSchema>;
-type TodoPatch = Omit<TodoEdit, "hash">;
-
 export const CompactUpdateTodosSchema = z.object({
-  edits: z.array(TodoEditSchema).min(1).max(100).describe("Edits to apply"),
+  updates: z.array(z.string().min(3).max(2100)).min(1).max(100).describe(
+    "'<hash> <new todo.txt line>' lines",
+  ),
 });
 
 export const CompactDeleteTodosSchema = z.object({
@@ -76,89 +39,6 @@ export const CompactDeleteTodosSchema = z.object({
     "Todo hashes",
   ),
 });
-
-function normalizeContextName(name: string): string {
-  return name.replace(/^@+/, "").trim();
-}
-
-function addContextToText(text: string, name: string): string {
-  if (contextTokenPattern(name, false).test(text)) {
-    return text;
-  }
-  const trimmed = text.trim();
-  return trimmed.length === 0 ? `@${name}` : `${trimmed} @${name}`;
-}
-
-function removeContextFromText(text: string, name: string): string {
-  if (!contextTokenPattern(name, false).test(text)) {
-    return text;
-  }
-  return text
-    .replace(contextTokenPattern(name, true), "$1")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function hasTodoPatch(patch: TodoPatch): boolean {
-  return patch.priority !== undefined ||
-    patch.threshold !== undefined ||
-    patch.recurrence !== undefined ||
-    patch.status !== undefined ||
-    (patch.addContexts?.length ?? 0) > 0 ||
-    (patch.removeContexts?.length ?? 0) > 0;
-}
-
-interface TodoPatchResult {
-  recurrence?: Todo;
-  changed: boolean;
-}
-
-function applyTodoPatch(todo: Todo, patch: TodoPatch): TodoPatchResult {
-  const before = todo.toString();
-  let recurrence: Todo | undefined;
-  if (patch.priority !== undefined) {
-    todo.priority = patch.priority === null
-      ? undefined
-      // The schema only accepts A-Z.
-      : patch.priority as Todo["priority"];
-  }
-  for (const raw of patch.removeContexts ?? []) {
-    const name = normalizeContextName(raw);
-    if (name.length > 0) {
-      todo.setText(removeContextFromText(todo.text, name));
-    }
-  }
-  for (const raw of patch.addContexts ?? []) {
-    const name = normalizeContextName(raw);
-    if (name.length > 0) {
-      todo.setText(addContextToText(todo.text, name));
-    }
-  }
-  if (patch.threshold !== undefined) {
-    if (patch.threshold === null) {
-      todo.clearTag("t");
-    } else {
-      todo.setTag("t", patch.threshold);
-    }
-  }
-  if (patch.recurrence !== undefined) {
-    if (patch.recurrence === null) {
-      todo.clearTag("rec");
-    } else {
-      todo.setTag("rec", patch.recurrence.toLowerCase());
-    }
-  }
-  // Tags must be applied before status: a completed recurring todo clones them.
-  if (patch.status !== undefined) {
-    const targetState = patch.status === "done"
-      ? TodoStateEnum.done
-      : TodoStateEnum.todo;
-    if (todo.state !== targetState) {
-      recurrence = todo.toggleState().recurrence;
-    }
-  }
-  return { recurrence, changed: todo.toString() !== before };
-}
 
 async function todoLine(todo: Todo): Promise<string> {
   return `${await todo.getHash()} ${todo.toDisplayString()}`;
@@ -298,25 +178,65 @@ export function addTodosHandler(backend: TodoBackend, rawArgs: unknown) {
 }
 
 // Tool: update_todos
+interface TextUpdate {
+  hash: string;
+  text: string;
+}
+
+function parseTextUpdate(line: string): TextUpdate {
+  const match = /^([A-Za-z0-9_-]{8,64})\s+(.+)$/.exec(line.trim());
+  if (match === null) {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `Each update must be '<hash> <text>': ${line}`,
+    );
+  }
+  return { hash: match[1], text: match[2] };
+}
+
+function replaceTodo(todos: Todo[], target: Todo, text: string): {
+  next: Todo;
+  recurrence?: Todo;
+} {
+  const next = new Todo(text);
+  if (!next.creationDate) {
+    next.creationDate = target.creationDate;
+  }
+
+  let recurrence: Todo | undefined;
+  if (next.isDone()) {
+    if (target.isDone()) {
+      if (!next.completionDate) {
+        next.completionDate = target.completionDate;
+      }
+    } else {
+      const requestedCompletion = next.completionDate;
+      next.state = TodoStateEnum.todo;
+      next.completionDate = undefined;
+      recurrence = next.toggleState(requestedCompletion).recurrence;
+    }
+  } else {
+    next.completionDate = undefined;
+  }
+
+  const index = todos.indexOf(target);
+  if (index >= 0) {
+    todos[index] = next;
+  }
+  return { next, recurrence };
+}
+
 async function updateTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { edits } = CompactUpdateTodosSchema.parse(rawArgs);
-  edits.forEach((edit, index) => {
-    if (!hasTodoPatch(edit)) {
-      throw new ToolFailure(
-        "INVALID_ARGUMENT",
-        `edits.${index}: provide priority, addContexts, removeContexts, ` +
-          "threshold, recurrence, or status.",
-      );
-    }
-  });
-  const hashes = edits.map((edit) => edit.hash);
+  const { updates } = CompactUpdateTodosSchema.parse(rawArgs);
+  const parsed = updates.map(parseTextUpdate);
+  const hashes = parsed.map((update) => update.hash);
   if (new Set(hashes).size !== hashes.length) {
     throw new ToolFailure(
       "INVALID_ARGUMENT",
-      "Each edit must target a different hash.",
+      "Each update must target a different hash.",
     );
   }
 
@@ -324,33 +244,29 @@ async function updateTodosOperation(
     const todos = await backend.load();
     const index = await todoIndex(todos);
 
-    const resolved = new Map<string, Todo>();
+    const resolved: Array<{ update: TextUpdate; target: Todo }> = [];
     const missing: string[] = [];
-    for (const edit of edits) {
-      const target = uniqueTodo(index, edit.hash);
+    for (const update of parsed) {
+      const target = uniqueTodo(index, update.hash);
       if (target === undefined) {
-        missing.push(edit.hash);
+        missing.push(update.hash);
       } else {
-        resolved.set(edit.hash, target);
+        resolved.push({ update, target });
       }
     }
 
     const updated: Todo[] = [];
     let changed = false;
-
-    for (const edit of edits) {
-      const target = resolved.get(edit.hash);
-      if (target === undefined) {
-        continue;
-      }
-      const result = applyTodoPatch(target, edit);
-      if (result.recurrence) {
-        todos.push(result.recurrence);
-      }
-      if (result.changed) {
+    for (const { update, target } of resolved) {
+      const before = target.toString();
+      const { next, recurrence } = replaceTodo(todos, target, update.text);
+      if (recurrence || next.toString() !== before) {
         changed = true;
       }
-      updated.push(target);
+      if (recurrence) {
+        todos.push(recurrence);
+      }
+      updated.push(next);
     }
 
     if (changed) {

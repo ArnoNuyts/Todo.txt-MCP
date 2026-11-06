@@ -1,6 +1,6 @@
 /**
- * Protocol-cost benchmark for the only tool surface: page a large file, add a
- * batch, update priorities/contexts for a batch, and mark a batch done.
+ * Protocol-cost benchmark for the text-only update_todos: page a large file,
+ * add a batch, replace two full todo lines, and mark the same batch done.
  *
  * Run with `npm run bench:actions`.
  */
@@ -9,6 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "../test/helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
+
 
 const TARGETS = [
   "(C) 2025-01-02 Prepare quarterly report @work +finance due:2026-12-15",
@@ -45,9 +46,20 @@ function textOf(result: unknown): string {
   return payload.content?.map((item) => item.text ?? "").join("\n") ?? "";
 }
 
-function hashesOf(result: unknown): string[] {
-  return [...textOf(result).matchAll(/^\[?([A-Za-z0-9_-]{11})\]?/gm)]
-    .map((match) => match[1]);
+interface TodoLine {
+  hash: string;
+  text: string;
+}
+
+function linesOf(result: unknown): TodoLine[] {
+  const lines: TodoLine[] = [];
+  for (const line of textOf(result).split("\n")) {
+    const match = /^([A-Za-z0-9_-]{11})\s+(.+)$/.exec(line);
+    if (match) {
+      lines.push({ hash: match[1], text: match[2] });
+    }
+  }
+  return lines;
 }
 
 function verify(backend: MockBackend): boolean {
@@ -77,7 +89,7 @@ async function runOnce() {
   const server = createTodoMcpServer(backend);
   const [clientTransport, serverTransport] = InMemoryTransport
     .createLinkedPair();
-  const client = new Client({ name: "actions-bench", version: "1.0.0" });
+  const client = new Client({ name: "actions-text-bench", version: "1.0.0" });
   await Promise.all([
     client.connect(clientTransport),
     server.connect(serverTransport),
@@ -101,7 +113,6 @@ async function runOnce() {
       return result;
     };
 
-    // Regression guard: a file larger than one page must still be reachable.
     const page = await call("list_todos", {
       status: "todo",
       limit: 100,
@@ -111,26 +122,28 @@ async function runOnce() {
     const pagination = pageText.split("\n").length === 20 &&
       pageText.includes("Filler task 117");
 
-    const hashes: string[] = [];
+    const targets: TodoLine[] = [];
     for (const search of TARGET_SEARCHES) {
-      const listed = await call("list_todos", { search });
-      hashes.push(hashesOf(listed)[0]);
+      targets.push(linesOf(await call("list_todos", { search }))[0]);
     }
 
     await call("add_todos", { todos: NEW_TODOS });
 
-    const updated = await call("update_todos", {
-      edits: hashes.map((hash) => ({
-        hash,
-        priority: "A",
-        removeContexts: ["work"],
-        addContexts: ["office"],
-      })),
+    const rewritten = targets.map((target) => {
+      const withoutPriority = target.text.replace(/^\([A-Z]\)\s*/, "");
+      const moved = withoutPriority.replace(
+        /(^|\s)@work(?=$|\s)/,
+        "$1@office",
+      );
+      return { hash: target.hash, text: `(A) ${moved}` };
     });
-    const newHashes = hashesOf(updated);
+
+    const updated = await call("update_todos", {
+      updates: rewritten.map(({ hash, text }) => `${hash} ${text}`),
+    });
 
     await call("update_todos", {
-      edits: newHashes.map((hash) => ({ hash, status: "done" })),
+      updates: linesOf(updated).map(({ hash, text }) => `${hash} x ${text}`),
     });
 
     return {

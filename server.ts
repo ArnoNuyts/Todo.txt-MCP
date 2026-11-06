@@ -192,9 +192,10 @@ export function createTodoMcpServer(backend: TodoBackend) {
     "update_todos",
     {
       description:
-        "Set priority, contexts, threshold, recurrence, or status by hash; " +
-        "returns 'hash text' lines. Missing hashes return ERROR lines; " +
-        "refresh with list_todos.",
+        "Update by hash with '<hash> <new todo.txt line>' lines. Copy the " +
+        "listed line and edit it; include fields to keep. To complete, start " +
+        "with 'x ' and no date unless the user gave one. Missing hashes " +
+        "return ERROR lines.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },

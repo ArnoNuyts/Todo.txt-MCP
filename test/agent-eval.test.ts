@@ -16,18 +16,23 @@ import {
 } from "../bench/agent-tasks.ts";
 import { Todo } from "../logic/todo.ts";
 
-function lastHash(messages: readonly ChatMessage[]): string {
+function lastLine(messages: readonly ChatMessage[]): {
+  hash: string;
+  text: string;
+} {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message.role !== "tool" || message.content === null) {
       continue;
     }
-    const match = message.content.match(/^\[?([A-Za-z0-9_-]{11})\]?(?=\s|$)/);
-    if (match) {
-      return match[1];
+    for (const line of message.content.split("\n")) {
+      const match = /^\[?([A-Za-z0-9_-]{11})\]?\s+(.+)$/.exec(line);
+      if (match) {
+        return { hash: match[1], text: match[2] };
+      }
     }
   }
-  throw new Error("No hash found in tool results");
+  throw new Error("No todo line found in tool results");
 }
 
 function findTask(id: string): AgentTask {
@@ -93,25 +98,22 @@ describe("agent eval harness", () => {
         );
       }
       if (index === 1) {
+        const line = lastLine(request.messages);
         return toolCallResponse(
           "update_todos",
           {
-            edits: [{
-              hash: lastHash(request.messages),
-              priority: "A",
-              removeContexts: ["work"],
-              addContexts: ["office"],
-            }],
+            updates: [
+              `${line.hash} (A) ${line.text.replace("@work", "@office")}`,
+            ],
           },
           "call-edit",
         );
       }
       if (index === 2) {
+        const line = lastLine(request.messages);
         return toolCallResponse(
           "update_todos",
-          {
-            edits: [{ hash: lastHash(request.messages), status: "done" }],
-          },
+          { updates: [`${line.hash} x ${line.text}`] },
           "call-done",
         );
       }
@@ -150,7 +152,7 @@ describe("agent eval harness", () => {
       if (index === 0) {
         return toolCallResponse(
           "update_todos",
-          { edits: [{ hash: "0123456789abcdef", priority: "A" }] },
+          { updates: ["0123456789abcdef (A) Task"] },
           "call-bad",
         );
       }
