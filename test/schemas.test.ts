@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   CompactAddTodosSchema,
   CompactListTodosSchema,
-  CompactSetStatusesSchema,
   CompactDeleteTodosSchema,
   CompactUpdateTodosSchema,
 } from "../server.ts";
@@ -18,7 +17,6 @@ describe("tool schemas", () => {
       list_todos: CompactListTodosSchema,
       add_todos: CompactAddTodosSchema,
       update_todos: CompactUpdateTodosSchema,
-      set_todo_statuses: CompactSetStatusesSchema,
       delete_todos: CompactDeleteTodosSchema,
     };
 
@@ -44,7 +42,6 @@ describe("tool schemas", () => {
         todos: Array.from({ length: 101 }, (_, i) => `todo ${i}`),
       })
     ).toThrow();
-    expect(() => CompactSetStatusesSchema.parse({ hashes: [] })).toThrow();
     expect(() => CompactDeleteTodosSchema.parse({ hashes: [] })).toThrow();
     expect(() =>
       CompactUpdateTodosSchema.parse({
@@ -54,6 +51,11 @@ describe("tool schemas", () => {
     expect(() =>
       CompactUpdateTodosSchema.parse({
         edits: [{ hash: "01234567", priority: "a" }],
+      })
+    ).toThrow();
+    expect(() =>
+      CompactUpdateTodosSchema.parse({
+        edits: [{ hash: "01234567", status: "other" }],
       })
     ).toThrow();
   });

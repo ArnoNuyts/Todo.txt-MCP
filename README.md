@@ -198,15 +198,14 @@ exhaust the process memory:
 
 ## 🔐 Tool surface and token footprint
 
-- **Five tools:** `list_todos`, `add_todos`, `update_todos`,
-  `set_todo_statuses`, `delete_todos`. There are no tool profiles and no
-  read-only mode.
+- **Four tools:** `list_todos`, `add_todos`, `update_todos`, `delete_todos`.
+  There are no tool profiles and no read-only mode.
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Errors still carry a stable
   `structuredContent.error.code`.
 - **Batch-first:** add, priority/context updates, and completion all take
   arrays.
-- **Benchmark:** the multi-item add/edit/status workflow costs ~1,085 tokens
+- **Benchmark:** the multi-item add/edit/status workflow costs ~977 tokens
   (median of 5 runs, chars/4 estimate). Run `npm run bench:actions` to
   reproduce it.
 - **Token rotation:** keep several bearers active with
@@ -232,10 +231,9 @@ guidance.
   lines.
 - `add_todos` — add a batch of todo.txt lines. Returns one `hash text` line per
   item.
-- `update_todos` — set `priority` (or clear it with `null`) and add/remove
-  `contexts` for multiple todos in one call. Returns `hash text` lines.
-- `set_todo_statuses` — set multiple todos `done` or `todo` (undo) by hash.
-  Idempotent.
+- `update_todos` — set `priority` (or clear it with `null`), add/remove
+  contexts, and set `status` (`done` or `todo` to undo) for multiple todos in
+  one call. Returns `hash text` lines.
 - `delete_todos` — delete multiple todos by hash in one batch.
 
 All tools are text-only. A missing hash is reported in the same text result as
@@ -286,7 +284,7 @@ needed. Two supported patterns:
    server is not used.
 2. **Gateway:** run behind an MCP gateway that connects the server on demand.
 
-Version 3.0 reduces the surface to five batch tools, makes results text-only,
+Version 3.0 reduces the surface to four batch tools, makes results text-only,
 removes `get_todo`, `delete_completed`, `summary`, `export_todos`,
 `import_todos`, and `changes_since`, and changes todo hashes from 16 hex
 characters to 11 base64url characters.

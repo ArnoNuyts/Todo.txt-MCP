@@ -293,7 +293,10 @@ class MockAgentModel implements AgentModel {
     const setStatuses = (
       hashes: string[],
       status: "done" | "todo",
-    ) => this.tool("set_todo_statuses", { hashes, status });
+    ) =>
+      this.tool("update_todos", {
+        edits: hashes.map((hash) => ({ hash, status })),
+      });
 
     switch (this.task.id) {
       case "add-priority-context-due": {

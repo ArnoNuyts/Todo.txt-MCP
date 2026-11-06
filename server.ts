@@ -95,16 +95,10 @@ export const CompactUpdateTodosSchema = z.object({
     removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
       "Contexts to remove",
     ),
+    status: z.enum(["done", "todo"]).optional().describe(
+      "done to complete, todo to undo",
+    ),
   })).min(1).max(100).describe("Edits to apply"),
-});
-
-export const CompactSetStatusesSchema = z.object({
-  hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
-    "Todo hashes",
-  ),
-  status: z.enum(["done", "todo"]).describe(
-    "done to complete, todo to undo completion",
-  ),
 });
 
 export const CompactDeleteTodosSchema = z.object({
@@ -171,15 +165,18 @@ interface TodoPatch {
   priority?: string | null;
   addContexts?: string[];
   removeContexts?: string[];
+  status?: "done" | "todo";
 }
 
 function hasTodoPatch(patch: TodoPatch): boolean {
   return patch.priority !== undefined ||
+    patch.status !== undefined ||
     (patch.addContexts?.length ?? 0) > 0 ||
     (patch.removeContexts?.length ?? 0) > 0;
 }
 
-function applyTodoPatch(todo: Todo, patch: TodoPatch): void {
+function applyTodoPatch(todo: Todo, patch: TodoPatch): Todo | undefined {
+  let next: Todo | undefined;
   if (patch.priority !== undefined) {
     todo.priority = patch.priority === null
       ? undefined
@@ -197,6 +194,15 @@ function applyTodoPatch(todo: Todo, patch: TodoPatch): void {
       todo.setText(addContextToText(todo.text, name));
     }
   }
+  if (patch.status !== undefined) {
+    const targetState = patch.status === "done"
+      ? TodoStateEnum.done
+      : TodoStateEnum.todo;
+    if (todo.state !== targetState) {
+      next = todo.toggleState();
+    }
+  }
+  return next;
 }
 
 async function todoLine(todo: Todo): Promise<string> {
@@ -313,8 +319,11 @@ async function updateTodosOperation(
         continue;
       }
       const before = target.toString();
-      applyTodoPatch(target, edit);
-      if (target.toString() !== before) {
+      const next = applyTodoPatch(target, edit);
+      if (next) {
+        todos.push(next);
+      }
+      if (next !== undefined || target.toString() !== before) {
         changed = true;
       }
       updated.push(target);
@@ -336,64 +345,6 @@ async function updateTodosOperation(
 
 export function updateTodosHandler(backend: TodoBackend, rawArgs: unknown) {
   return guardTool(() => updateTodosOperation(backend, rawArgs));
-}
-
-// Tool: set_todo_statuses
-async function setTodoStatusesOperation(
-  backend: TodoBackend,
-  rawArgs: unknown,
-) {
-  const { hashes, status } = CompactSetStatusesSchema.parse(rawArgs);
-  const targetState = status === "done"
-    ? TodoStateEnum.done
-    : TodoStateEnum.todo;
-
-  return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
-    const todoHashMap = new Map<string, Todo>();
-    for (const todo of todos) {
-      todoHashMap.set(await todo.getHash(), todo);
-    }
-
-    const updated: Todo[] = [];
-    const missing: string[] = [];
-    let changed = false;
-
-    for (const hash of new Set(hashes)) {
-      const target = todoHashMap.get(hash);
-      if (target === undefined) {
-        missing.push(hash);
-        continue;
-      }
-      if (target.state !== targetState) {
-        const next = target.toggleState();
-        if (next) {
-          todos.push(next);
-        }
-        changed = true;
-      }
-      updated.push(target);
-    }
-
-    if (changed) {
-      await backend.save(todos);
-    }
-    if (updated.length === 0) {
-      return notFoundError(missing[0]);
-    }
-
-    return compactLines([
-      ...await Promise.all(updated.map(todoLine)),
-      ...missing.map((hash) => `ERROR ${hash} not found`),
-    ]);
-  });
-}
-
-export function setTodoStatusesHandler(
-  backend: TodoBackend,
-  rawArgs: unknown,
-) {
-  return guardTool(() => setTodoStatusesOperation(backend, rawArgs));
 }
 
 // Tool: delete_todos
@@ -558,23 +509,12 @@ export function createTodoMcpServer(backend: TodoBackend) {
     "update_todos",
     {
       description:
-        "Set priority or move contexts for multiple todos by hash; " +
-        "returns 'hash text' lines.",
+        "Set priority, move contexts, or change status for multiple todos " +
+        "by hash; returns 'hash text' lines.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
     (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
-  );
-
-  server.registerTool(
-    "set_todo_statuses",
-    {
-      description:
-        "Set todos done or active by hash; returns 'hash text' lines.",
-      inputSchema: CompactSetStatusesSchema.shape,
-      annotations: { destructiveHint: true, idempotentHint: true },
-    },
-    (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
   );
 
   server.registerTool(

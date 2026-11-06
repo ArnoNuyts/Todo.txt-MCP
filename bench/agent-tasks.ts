@@ -261,14 +261,14 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         passport?.isDone() === true &&
         unrelated?.isDone() === false &&
         todos.length === MARK_DONE_SEED.length &&
-        batchCalls(trace, ["set_todo_statuses"]) === 1;
+        batchCalls(trace, ["update_todos"]) === 1;
       return {
         ok,
         detail: `dentist=${dentist?.isDone() ?? "missing"}, ` +
           `milk=${milk?.isDone() ?? "missing"}, ` +
           `passport=${passport?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["set_todo_statuses"])
+            batchCalls(trace, ["update_todos"])
           }`,
       };
     },
@@ -287,12 +287,12 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         second?.isDone() === false &&
         open?.isDone() === false &&
         todos.length === UNDO_SEED.length &&
-        batchCalls(trace, ["set_todo_statuses"]) === 1;
+        batchCalls(trace, ["update_todos"]) === 1;
       return {
         ok,
         detail: `first=${first?.isDone() ?? "missing"}, ` +
           `second=${second?.isDone() ?? "missing"}, ` +
-          `batch_calls=${batchCalls(trace, ["set_todo_statuses"])}`,
+          `batch_calls=${batchCalls(trace, ["update_todos"])}`,
       };
     },
   },
@@ -500,14 +500,14 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         old?.isDone() === true &&
         milk?.isDone() === false &&
         todos.length === OVERDUE_SEED.length &&
-        batchCalls(trace, ["set_todo_statuses"]) === 1;
+        batchCalls(trace, ["update_todos"]) === 1;
       return {
         ok,
         detail: `taxes=${taxes?.isDone() ?? "missing"}, ` +
           `report=${report?.isDone() ?? "missing"}, ` +
           `flights=${flights?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["set_todo_statuses"])
+            batchCalls(trace, ["update_todos"])
           }`,
       };
     },

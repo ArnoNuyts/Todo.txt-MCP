@@ -108,8 +108,10 @@ describe("agent eval harness", () => {
       }
       if (index === 2) {
         return toolCallResponse(
-          "set_todo_statuses",
-          { hashes: [lastHash(request.messages)], status: "done" },
+          "update_todos",
+          {
+            edits: [{ hash: lastHash(request.messages), status: "done" }],
+          },
           "call-done",
         );
       }
@@ -130,7 +132,7 @@ describe("agent eval harness", () => {
     expect(record.trace.map((entry) => entry.name)).toEqual([
       "add_todos",
       "update_todos",
-      "set_todo_statuses",
+      "update_todos",
     ]);
     expect(modelCalls).toBe(4);
   });

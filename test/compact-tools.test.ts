@@ -61,7 +61,6 @@ describe("tool surface", () => {
       "add_todos",
       "delete_todos",
       "list_todos",
-      "set_todo_statuses",
       "update_todos",
     ]);
     for (const tool of tools) {
@@ -184,8 +183,10 @@ describe("tool surface", () => {
     backend.saveCalls = 0;
 
     const first = await client.callTool({
-      name: "set_todo_statuses",
-      arguments: { hashes, status: "done" },
+      name: "update_todos",
+      arguments: {
+        edits: hashes.map((hash) => ({ hash, status: "done" })),
+      },
     });
     expect(linesOf(first)).toHaveLength(2);
     expect(backend.loadCalls).toBe(1);
@@ -194,8 +195,10 @@ describe("tool surface", () => {
 
     const doneHashes = hashesOf(first);
     const second = await client.callTool({
-      name: "set_todo_statuses",
-      arguments: { hashes: doneHashes, status: "done" },
+      name: "update_todos",
+      arguments: {
+        edits: doneHashes.map((hash) => ({ hash, status: "done" })),
+      },
     });
     expect(linesOf(second)).toHaveLength(2);
     expect(backend.saveCalls).toBe(1);
@@ -207,8 +210,13 @@ describe("tool surface", () => {
     const hash = await todo.getHash();
 
     const result = await client.callTool({
-      name: "set_todo_statuses",
-      arguments: { hashes: [hash, "0123456789abcdef"], status: "done" },
+      name: "update_todos",
+      arguments: {
+        edits: [
+          { hash, status: "done" },
+          { hash: "0123456789abcdef", status: "done" },
+        ],
+      },
     });
 
     expect(textOf(result)).toContain("ERROR 0123456789abcdef not found");
@@ -226,8 +234,10 @@ describe("tool surface", () => {
     backend.saveCalls = 0;
 
     const result = await client.callTool({
-      name: "set_todo_statuses",
-      arguments: { hashes, status: "todo" },
+      name: "update_todos",
+      arguments: {
+        edits: hashes.map((hash) => ({ hash, status: "todo" })),
+      },
     });
 
     expect(linesOf(result)).toHaveLength(2);
