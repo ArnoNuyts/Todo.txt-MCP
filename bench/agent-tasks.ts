@@ -2,10 +2,14 @@
  * Natural-language tasks and deterministic graders for the LLM usability
  * benchmark (`npm run bench:agent`).
  *
+ * The write tasks are deliberately multi-item: they ask the model to add,
+ * update, or complete several todos in one request. This measures whether the
+ * batch tools are actually used, rather than rewarding a chatty loop of
+ * single-item calls.
+ *
  * Every task has a seed fixture and a `verify` function that inspects the
  * final todo state through the normal `Todo` parser. Read-only tasks may also
- * inspect the tool trace, because their outcome is a retrieval rather than a
- * mutation.
+ * inspect the tool trace and final answer.
  */
 import { computeContentVersion } from "../logic/content.ts";
 import { Todo } from "../logic/todo.ts";
@@ -73,27 +77,65 @@ function succeeded(trace: readonly ToolTraceEntry[], name: string): boolean {
   return trace.some((entry) => entry.name === name && !entry.isError);
 }
 
+function batchCalls(
+  trace: readonly ToolTraceEntry[],
+  names: readonly string[],
+): number {
+  return trace.filter((entry) => names.includes(entry.name)).length;
+}
+
+function claimsOverdue(finalText: string, names: readonly string[]): boolean {
+  return finalText
+    .toLowerCase()
+    .split(/[\n.]/)
+    .map((sentence) => sentence.trim())
+    .some((sentence) =>
+      names.some((name) => sentence.includes(name)) &&
+      sentence.includes("overdue") &&
+      !sentence.includes("not overdue") &&
+      !sentence.includes("aren't overdue") &&
+      !sentence.includes("isn't overdue") &&
+      !sentence.includes("no due")
+    );
+}
+
 const ADD_SEED = [
   "(B) Existing report @work +finance due:2026-11-30",
 ];
 
+const ADD_TEXTS = [
+  "(A) Pay electricity bill @home +finance due:2026-12-01",
+  "(B) Book dentist @health due:2026-11-20",
+  "Renew passport @errands +travel due:2027-01-15",
+];
+
 const EDIT_SEED = [
   "(C) 2025-01-02 Prepare quarterly report @work +finance due:2026-12-15",
-  "(D) 2025-01-02 Filler task @ctx +proj",
+  "(D) 2025-01-02 Draft budget @work +finance",
 ];
 
 const MARK_DONE_SEED = [
   "Call the dentist @phone",
   "Buy milk @home",
   "(A) Renew passport @errands",
+  "Unrelated task @work",
 ];
 
 const BATCH_ADD_SEED = [
   "Existing task @home",
 ];
 
+const BATCH_ADD_TEXTS = [
+  "Buy milk @home",
+  "Renew passport @errands",
+  "Book a haircut @personal",
+  "File receipts @finance",
+  "Clean the desk @home",
+];
+
 const OVERDUE_SEED = [
   "(A) File taxes @finance due:2020-04-15",
+  "(B) Submit report @work due:2021-01-10",
   "Book flights @travel due:2999-12-31",
   "x 2020-05-01 2020-04-01 Old overdue task @archive due:2020-04-01",
   "Buy milk @home",
@@ -101,14 +143,16 @@ const OVERDUE_SEED = [
 
 const MOVE_SEED = [
   "Draft budget @work +finance",
+  "Review contracts @work +legal",
   "Buy milk @home",
 ];
 
-const STALE_HASH = "deadbeefdeadbeef";
+const STALE_HASHES = ["deadbeefdeadbeef", "cafebabecafebabe"];
 
 const STALE_SEED = [
   "(A) Plan launch @work",
   "Buy milk @home",
+  "Write report @work",
 ];
 
 const CLEANUP_SEED = [
@@ -137,94 +181,131 @@ export const AGENT_TASKS: readonly AgentTask[] = [
   {
     id: "add-priority-context-due",
     prompt:
-      "Add a todo titled 'Pay electricity bill' with priority A, in the " +
-      "@home context, under the +finance project, due 2026-12-01.",
+      "Add these three todos in one request: " +
+      "'Pay electricity bill' with priority A, @home, +finance, due " +
+      "2026-12-01; 'Book dentist' with priority B, @health, due 2026-11-20; " +
+      "and 'Renew passport' with @errands, +travel, due 2027-01-15.",
     seed: seeded(...ADD_SEED),
-    verify: (todos) => {
-      const added = findTodo(todos, "Pay electricity bill");
-      const ok = added !== undefined &&
-        added.priority === "A" &&
-        hasContext(added, "home") &&
-        added.projects.has("finance") &&
-        added.tags.due === "2026-12-01" &&
-        todos.length === ADD_SEED.length + 1;
+    verify: (todos, trace) => {
+      const bill = findTodo(todos, "Pay electricity bill");
+      const dentist = findTodo(todos, "Book dentist");
+      const passport = findTodo(todos, "Renew passport");
+      const ok = bill !== undefined &&
+        bill.priority === "A" &&
+        hasContext(bill, "home") &&
+        bill.projects.has("finance") &&
+        bill.tags.due === "2026-12-01" &&
+        dentist !== undefined &&
+        dentist.priority === "B" &&
+        hasContext(dentist, "health") &&
+        dentist.tags.due === "2026-11-20" &&
+        passport !== undefined &&
+        hasContext(passport, "errands") &&
+        passport.projects.has("travel") &&
+        passport.tags.due === "2027-01-15" &&
+        todos.length === ADD_SEED.length + ADD_TEXTS.length &&
+        batchCalls(trace, ["add_todos"]) === 1;
       return {
         ok,
-        detail: added
-          ? `added priority=${added.priority ?? "none"}, ` +
-            `home=${hasContext(added, "home")}, ` +
-            `finance=${added.projects.has("finance")}, ` +
-            `due=${String(added.tags.due)}`
-          : "added todo not found",
+        detail: `bill=${bill?.priority ?? "missing"}, ` +
+          `dentist=${dentist?.priority ?? "missing"}, ` +
+          `passport=${passport !== undefined}, ` +
+          `total=${todos.length}, add_batches=${batchCalls(trace, ["add_todos"])}`,
       };
     },
   },
   {
     id: "edit-priority-context",
     prompt:
-      "Change 'Prepare quarterly report' from priority C to priority A and " +
-      "move it from @work to @office. Keep the rest of the line unchanged.",
+      "In one update, change both 'Prepare quarterly report' and 'Draft " +
+      "budget' to priority A, and move both from @work to @office. Keep " +
+      "their projects and due date.",
     seed: seeded(...EDIT_SEED),
     verify: (todos) => {
-      const target = findTodo(todos, "Prepare quarterly report");
-      const ok = target !== undefined &&
-        target.priority === "A" &&
-        hasContext(target, "office") &&
-        !hasContext(target, "work") &&
-        target.projects.has("finance") &&
-        target.tags.due === "2026-12-15" &&
-        !target.isDone() &&
+      const report = findTodo(todos, "Prepare quarterly report");
+      const budget = findTodo(todos, "Draft budget");
+      const ok = report !== undefined &&
+        report.priority === "A" &&
+        hasContext(report, "office") &&
+        !hasContext(report, "work") &&
+        report.projects.has("finance") &&
+        report.tags.due === "2026-12-15" &&
+        budget !== undefined &&
+        budget.priority === "A" &&
+        hasContext(budget, "office") &&
+        !hasContext(budget, "work") &&
+        budget.projects.has("finance") &&
+        !report.isDone() &&
+        !budget.isDone() &&
         todos.length === EDIT_SEED.length;
       return {
         ok,
-        detail: target
-          ? `priority=${target.priority ?? "none"}, ` +
-            `office=${hasContext(target, "office")}, ` +
-            `work=${hasContext(target, "work")}, done=${target.isDone()}`
-          : "target todo not found",
+        detail: `report=${report?.priority ?? "missing"}/` +
+          `office=${report ? hasContext(report, "office") : "missing"}, ` +
+          `budget=${budget?.priority ?? "missing"}/` +
+          `office=${budget ? hasContext(budget, "office") : "missing"}`,
       };
     },
   },
   {
     id: "mark-done",
     prompt:
-      "Mark the 'Call the dentist' task as done. Leave the other tasks alone.",
+      "Mark these three tasks done in one request: 'Call the dentist', " +
+      "'Buy milk', and 'Renew passport'. Leave the other task alone.",
     seed: seeded(...MARK_DONE_SEED),
-    verify: (todos) => {
-      const target = findTodo(todos, "Call the dentist");
+    verify: (todos, trace) => {
+      const dentist = findTodo(todos, "Call the dentist");
       const milk = findTodo(todos, "Buy milk");
       const passport = findTodo(todos, "Renew passport");
-      const ok = target?.isDone() === true &&
-        milk?.isDone() === false &&
-        passport?.isDone() === false &&
-        todos.length === MARK_DONE_SEED.length;
+      const unrelated = findTodo(todos, "Unrelated task");
+      const ok = dentist?.isDone() === true &&
+        milk?.isDone() === true &&
+        passport?.isDone() === true &&
+        unrelated?.isDone() === false &&
+        todos.length === MARK_DONE_SEED.length &&
+        batchCalls(trace, ["mark_done", "set_todo_statuses"]) === 1;
       return {
         ok,
-        detail: `dentist done=${target?.isDone() ?? "missing"}, ` +
-          `milk done=${milk?.isDone() ?? "missing"}, ` +
-          `passport done=${passport?.isDone() ?? "missing"}`,
+        detail: `dentist=${dentist?.isDone() ?? "missing"}, ` +
+          `milk=${milk?.isDone() ?? "missing"}, ` +
+          `passport=${passport?.isDone() ?? "missing"}, ` +
+          `batch_calls=${
+            batchCalls(trace, ["mark_done", "set_todo_statuses"])
+          }`,
       };
     },
   },
   {
     id: "batch-add",
     prompt:
-      "Add three tasks: 'Buy milk @home', 'Renew passport @errands', and " +
-      "'Book a haircut @personal'.",
+      "Add these five tasks in one request: 'Buy milk @home', 'Renew " +
+      "passport @errands', 'Book a haircut @personal', 'File receipts " +
+      "@finance', and 'Clean the desk @home'.",
     seed: seeded(...BATCH_ADD_SEED),
-    verify: (todos) => {
-      const milk = findTodo(todos, "Buy milk");
-      const passport = findTodo(todos, "Renew passport");
-      const haircut = findTodo(todos, "Book a haircut");
-      const ok = milk !== undefined && hasContext(milk, "home") &&
-        passport !== undefined && hasContext(passport, "errands") &&
-        haircut !== undefined && hasContext(haircut, "personal") &&
-        todos.length === BATCH_ADD_SEED.length + 3;
+    verify: (todos, trace) => {
+      const names = [
+        "Buy milk",
+        "Renew passport",
+        "Book a haircut",
+        "File receipts",
+        "Clean the desk",
+      ];
+      const found = names.filter((name) => findTodo(todos, name) !== undefined);
+      const contextsOk = findTodo(todos, "Buy milk") !== undefined &&
+        hasContext(findTodo(todos, "Buy milk")!, "home") &&
+        hasContext(findTodo(todos, "Renew passport")!, "errands") &&
+        hasContext(findTodo(todos, "Book a haircut")!, "personal") &&
+        hasContext(findTodo(todos, "File receipts")!, "finance") &&
+        hasContext(findTodo(todos, "Clean the desk")!, "home");
+      const ok = found.length === names.length &&
+        contextsOk &&
+        todos.length === BATCH_ADD_SEED.length + names.length &&
+        batchCalls(trace, ["add_todos"]) === 1;
       return {
         ok,
-        detail: `milk=${milk !== undefined}, ` +
-          `passport=${passport !== undefined}, ` +
-          `haircut=${haircut !== undefined}, total=${todos.length}`,
+        detail: `found=${found.length}/${names.length}, ` +
+          `contexts=${contextsOk}, total=${todos.length}, ` +
+          `add_batches=${batchCalls(trace, ["add_todos"])}`,
       };
     },
   },
@@ -234,29 +315,21 @@ export const AGENT_TASKS: readonly AgentTask[] = [
       "Which of my open tasks are overdue? List only the overdue ones and " +
       "do not change anything.",
     seed: seeded(...OVERDUE_SEED),
-    verify: (todos, _trace, finalText) => {
+    verify: (todos, trace, finalText) => {
       const stateUnchanged = unchanged(todos, OVERDUE_SEED);
       const answer = finalText.toLowerCase();
-      const sawOverdue = answer.includes("file taxes");
-      const falsePositive = answer
-        .split(/[\n.]/)
-        .map((sentence) => sentence.trim())
-        .some((sentence) =>
-          (sentence.includes("book flights") ||
-            sentence.includes("buy milk")) &&
-          sentence.includes("overdue") &&
-          !sentence.includes("not overdue") &&
-          !sentence.includes("aren't overdue") &&
-          !sentence.includes("isn't overdue") &&
-          !sentence.includes("no due")
-        );
-      const read = usedTool(_trace, "list_todos") ||
-        usedTool(_trace, "summary");
-      const ok = stateUnchanged && sawOverdue && !falsePositive && read;
+      const sawBoth = answer.includes("file taxes") &&
+        answer.includes("submit report");
+      const falsePositive = claimsOverdue(
+        finalText,
+        ["book flights", "buy milk"],
+      );
+      const read = usedTool(trace, "list_todos") || usedTool(trace, "summary");
+      const ok = stateUnchanged && sawBoth && !falsePositive && read;
       return {
         ok,
         detail: `state unchanged=${stateUnchanged}, ` +
-          `read=${read}, overdue answer=${sawOverdue}, ` +
+          `read=${read}, both overdue=${sawBoth}, ` +
           `false positive=${falsePositive}`,
       };
     },
@@ -264,55 +337,57 @@ export const AGENT_TASKS: readonly AgentTask[] = [
   {
     id: "move-work-to-office",
     prompt:
-      "Move the 'Draft budget' task from @work to @office. Keep its " +
-      "+finance project.",
+      "Move both 'Draft budget' and 'Review contracts' from @work to " +
+      "@office in one update. Keep their projects.",
     seed: seeded(...MOVE_SEED),
     verify: (todos) => {
-      const target = findTodo(todos, "Draft budget");
-      const ok = target !== undefined &&
-        hasContext(target, "office") &&
-        !hasContext(target, "work") &&
-        target.projects.has("finance") &&
+      const budget = findTodo(todos, "Draft budget");
+      const contracts = findTodo(todos, "Review contracts");
+      const ok = budget !== undefined &&
+        hasContext(budget, "office") &&
+        !hasContext(budget, "work") &&
+        budget.projects.has("finance") &&
+        contracts !== undefined &&
+        hasContext(contracts, "office") &&
+        !hasContext(contracts, "work") &&
+        contracts.projects.has("legal") &&
         todos.length === MOVE_SEED.length;
       return {
         ok,
-        detail: target
-          ? `office=${hasContext(target, "office")}, ` +
-            `work=${hasContext(target, "work")}, ` +
-            `finance=${target.projects.has("finance")}`
-          : "target todo not found",
+        detail: `budget=${budget ? hasContext(budget, "office") : "missing"}, ` +
+          `contracts=${
+            contracts ? hasContext(contracts, "office") : "missing"
+          }`,
       };
     },
   },
   {
     id: "stale-hash-recovery",
     prompt:
-      `I saved the hash ${STALE_HASH} for the 'Plan launch' task, but I am ` +
-      "not sure it is current. Mark 'Plan launch' done. If that hash is " +
-      "stale, refresh the task list and try once more.",
+      `I saved hashes ${STALE_HASHES[0]} for 'Plan launch' and ` +
+      `${STALE_HASHES[1]} for 'Buy milk', but they may be stale. Mark both ` +
+      "done in one request. If they are stale, refresh the list and retry once.",
     seed: seeded(...STALE_SEED),
     verify: (todos, trace) => {
-      const target = findTodo(todos, "Plan launch");
+      const plan = findTodo(todos, "Plan launch");
       const milk = findTodo(todos, "Buy milk");
+      const report = findTodo(todos, "Write report");
       const staleAttempt = trace.some((entry) =>
-        JSON.stringify(entry.arguments).includes(STALE_HASH)
+        STALE_HASHES.some((hash) =>
+          JSON.stringify(entry.arguments).includes(hash)
+        )
       );
-      const staleRejected = trace.some((entry) =>
-        JSON.stringify(entry.arguments).includes(STALE_HASH) &&
-        (entry.isError || entry.text.toLowerCase().includes("not found"))
-      );
-      // Listing first and using the fresh hash is as valid as trying the stale
-      // hash and recovering; both prove the model refreshed its state.
       const refreshed = staleAttempt || usedTool(trace, "list_todos");
-      const ok = target?.isDone() === true &&
-        milk?.isDone() === false &&
+      const ok = plan?.isDone() === true &&
+        milk?.isDone() === true &&
+        report?.isDone() === false &&
         refreshed &&
         todos.length === STALE_SEED.length;
       return {
         ok,
-        detail: `plan done=${target?.isDone() ?? "missing"}, ` +
-          `refreshed=${refreshed}, stale attempted=${staleAttempt}, ` +
-          `rejected=${staleRejected}`,
+        detail: `plan=${plan?.isDone() ?? "missing"}, ` +
+          `milk=${milk?.isDone() ?? "missing"}, ` +
+          `refreshed=${refreshed}, stale attempted=${staleAttempt}`,
       };
     },
   },
@@ -396,25 +471,30 @@ export const AGENT_TASKS: readonly AgentTask[] = [
   {
     id: "complete-overdue",
     prompt:
-      "Mark every open task that is overdue as done. Leave tasks that are " +
-      "not overdue alone.",
+      "Mark every open task that is overdue as done in one request. Leave " +
+      "tasks that are not overdue alone.",
     seed: seeded(...OVERDUE_SEED),
-    verify: (todos) => {
+    verify: (todos, trace) => {
       const taxes = findTodo(todos, "File taxes");
+      const report = findTodo(todos, "Submit report");
       const flights = findTodo(todos, "Book flights");
       const old = findTodo(todos, "Old overdue task");
       const milk = findTodo(todos, "Buy milk");
       const ok = taxes?.isDone() === true &&
+        report?.isDone() === true &&
         flights?.isDone() === false &&
         old?.isDone() === true &&
         milk?.isDone() === false &&
-        todos.length === OVERDUE_SEED.length;
+        todos.length === OVERDUE_SEED.length &&
+        batchCalls(trace, ["mark_done", "set_todo_statuses"]) === 1;
       return {
         ok,
-        detail: `taxes done=${taxes?.isDone() ?? "missing"}, ` +
-          `flights done=${flights?.isDone() ?? "missing"}, ` +
-          `old done=${old?.isDone() ?? "missing"}, ` +
-          `milk done=${milk?.isDone() ?? "missing"}`,
+        detail: `taxes=${taxes?.isDone() ?? "missing"}, ` +
+          `report=${report?.isDone() ?? "missing"}, ` +
+          `flights=${flights?.isDone() ?? "missing"}, ` +
+          `batch_calls=${
+            batchCalls(trace, ["mark_done", "set_todo_statuses"])
+          }`,
       };
     },
   },

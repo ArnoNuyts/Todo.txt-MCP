@@ -206,15 +206,15 @@ exhaust the process memory:
 - **Tool profiles:** `MCP_TOOLSET=full|core|compact|compact-plus|readonly|off`
   controls the exposed toolset. `off` exposes resources only, `readonly` the
   five read tools, `core` the read tools plus add/update/status/delete,
-  `compact` four single-purpose tools, `compact-plus` those four plus
+  `compact` four batch tools, `compact-plus` those four plus
   `changes_since`, and `full` (default) every tool. Combine this with a gateway
   or per-agent MCP config to expose the server only on demand.
-- **Compact profiles:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todo`,
-  `edit_todo`, and `mark_done`. `edit_todo` can change text, priority, and
-  contexts in one call. `compact-plus` adds `changes_since` for version checks.
-  Results are terse text (`hash text`, or just the new hash for `add_todo`) and
-  omit output schemas. In the repository benchmark the four-tool profile cuts
-  the add/edit/mark-done workflow from ~6,149 to ~736 tokens (median of 5 runs,
+- **Compact profiles:** `MCP_TOOLSET=compact` exposes `list_todos`, `add_todos`,
+  `update_todos`, and `mark_done`. `update_todos` changes priority and contexts
+  for multiple todos in one call. `compact-plus` adds `changes_since` for
+  version checks. Results are terse text (`hash text` lines) and omit output
+  schemas. In the repository multi-item benchmark the four-tool profile cuts
+  the add/edit/mark-done workflow from ~6,483 to ~960 tokens (median of 5 runs,
   chars/4 estimate) while keeping the final todo.txt identical. Run
   `npm run bench:actions` to reproduce it. `summary` was evaluated as an
   optional sixth tool, but its schema cost outweighed the saved call, so
@@ -276,10 +276,10 @@ When `MCP_TOOLSET=compact`, only these tools are exposed:
 
 - `list_todos` — search by text, status, or context; returns `hash text` lines
   (up to `limit`, default 20).
-- `add_todo` — add one todo and return its new hash.
-- `edit_todo` — change `text`, `priority` (or clear it with `null`), and
-  `addContexts`/`removeContexts` in one call; returns `hash text`.
-- `mark_done` — mark one todo done by hash; idempotent.
+- `add_todos` — add multiple todos; returns one `hash text` line per item.
+- `update_todos` — set priority (or clear it with `null`) and add/remove
+  contexts for multiple todos in one call; returns `hash text` lines.
+- `mark_done` — mark multiple todos done by hash; idempotent.
 
 The compact profile is intentionally text-only: it does not return
 `structuredContent` or output schemas, which keeps both `tools/list` and each

@@ -290,8 +290,10 @@ export const CompactListTodosSchema = z.object({
   ),
 });
 
-export const CompactAddTodoSchema = z.object({
-  text: z.string().min(1).max(2000).describe("Todo text"),
+export const CompactAddTodosSchema = z.object({
+  todos: z.array(z.string().min(1).max(2000)).min(1).max(100).describe(
+    "Todo texts",
+  ),
 });
 
 const ContextNameSchema = z.string().min(1).max(100).regex(
@@ -299,25 +301,26 @@ const ContextNameSchema = z.string().min(1).max(100).regex(
   "Use letters, digits, '.', '_' or '-'",
 ).describe("Context name");
 
-export const CompactEditTodoSchema = z.object({
-  hash: z.string().min(8).max(64).describe("Todo hash"),
-  text: TodoBodySchema.optional().describe(
-    "New body text; omit to keep it",
-  ),
-  priority: z.string().regex(
-    /^[A-Z]$/,
-    "Expected a single uppercase priority letter (A-Z)",
-  ).nullable().optional().describe("A-Z, or null to clear"),
-  addContexts: z.array(ContextNameSchema).max(20).optional().describe(
-    "Contexts to add",
-  ),
-  removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
-    "Contexts to remove",
-  ),
+export const CompactUpdateTodosSchema = z.object({
+  edits: z.array(z.object({
+    hash: z.string().min(8).max(64).describe("Todo hash"),
+    priority: z.string().regex(
+      /^[A-Z]$/,
+      "Expected a single uppercase priority letter (A-Z)",
+    ).nullable().optional().describe("A-Z, or null to clear"),
+    addContexts: z.array(ContextNameSchema).max(20).optional().describe(
+      "Contexts to add",
+    ),
+    removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
+      "Contexts to remove",
+    ),
+  })).min(1).max(100).describe("Edits to apply"),
 });
 
 export const CompactMarkDoneSchema = z.object({
-  hash: z.string().min(8).max(64).describe("Todo hash"),
+  hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
+    "Todo hashes",
+  ),
 });
 
 export const CompactChangesSinceSchema = z.object({
@@ -1034,19 +1037,12 @@ export async function setTodoStatusHandler(
   });
 }
 
-// Compact profile handlers. Results are a single "hash text" line (or just the
-// hash for add) so the caller can chain the next mutation without a structured
-// payload.
+// Compact profile handlers. Results are one "hash text" line per item so the
+// caller can chain the next mutation without a structured payload.
 
-function compactTextResult(hash: string, text: string) {
+function compactLines(lines: readonly string[]) {
   return {
-    content: [{ type: "text" as const, text: `${hash} ${text}` }],
-  };
-}
-
-function compactHashResult(hash: string) {
-  return {
-    content: [{ type: "text" as const, text: hash }],
+    content: [{ type: "text" as const, text: lines.join("\n") }],
   };
 }
 
@@ -1074,39 +1070,46 @@ export function compactListTodosHandler(
   return guardTool(() => compactListTodosOperation(backend, rawArgs));
 }
 
-async function compactAddTodoOperation(
+async function compactAddTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { text } = CompactAddTodoSchema.parse(rawArgs);
-  const result = await addTodosOperation(backend, { todos: [text] });
+  const { todos } = CompactAddTodosSchema.parse(rawArgs);
+  const result = await addTodosOperation(backend, { todos });
   if (isToolError(result)) {
     return result;
   }
-  const added = result.structuredContent.added[0];
-  return compactHashResult(added.hash);
+  return compactLines(
+    result.structuredContent.added.map(({ hash, text }) => `${hash} ${text}`),
+  );
 }
 
-export function compactAddTodoHandler(
+export function compactAddTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  return guardTool(() => compactAddTodoOperation(backend, rawArgs));
+  return guardTool(() => compactAddTodosOperation(backend, rawArgs));
 }
 
-async function compactEditTodoOperation(
+async function compactUpdateTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const patch = CompactEditTodoSchema.parse(rawArgs);
-  if (!hasTodoPatch(patch)) {
+  const { edits } = CompactUpdateTodosSchema.parse(rawArgs);
+  edits.forEach((edit, index) => {
+    if (!hasTodoPatch(edit)) {
+      throw new ToolFailure(
+        "INVALID_ARGUMENT",
+        `edits.${index}: provide priority, addContexts, or removeContexts.`,
+      );
+    }
+  });
+  const hashes = edits.map((edit) => edit.hash);
+  if (new Set(hashes).size !== hashes.length) {
     throw new ToolFailure(
       "INVALID_ARGUMENT",
-      "Provide at least one of text, priority, addContexts, or removeContexts.",
+      "Each edit must target a different hash.",
     );
-  }
-  if (patch.text !== undefined) {
-    assertTodoBody(patch.text, 0);
   }
 
   return await withBackendLock(backend, async () => {
@@ -1116,34 +1119,51 @@ async function compactEditTodoOperation(
       todoHashMap.set(await todo.getHash(), todo);
     }
 
-    const target = todoHashMap.get(patch.hash);
-    if (target === undefined) {
-      return notFoundError(patch.hash);
+    const updated: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const missing: string[] = [];
+    let changed = false;
+
+    for (const edit of edits) {
+      const target = todoHashMap.get(edit.hash);
+      if (target === undefined) {
+        missing.push(edit.hash);
+        continue;
+      }
+      const before = target.toString();
+      applyTodoPatch(target, edit);
+      if (target.toString() !== before) {
+        changed = true;
+      }
+      updated.push(await summarizeTodo(target));
     }
 
-    const before = target.toString();
-    applyTodoPatch(target, patch);
-    if (target.toString() !== before) {
+    if (changed) {
       await backend.save(todos);
     }
 
-    const summary = await summarizeTodo(target);
-    return compactTextResult(summary.hash, summary.text);
+    if (updated.length === 0) {
+      return notFoundError(missing[0]);
+    }
+
+    return compactLines([
+      ...updated.map(({ hash, text }) => `${hash} ${text}`),
+      ...missing.map((hash) => `ERROR ${hash} not found`),
+    ]);
   });
 }
 
-export function compactEditTodoHandler(
+export function compactUpdateTodosHandler(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  return guardTool(() => compactEditTodoOperation(backend, rawArgs));
+  return guardTool(() => compactUpdateTodosOperation(backend, rawArgs));
 }
 
 async function compactMarkDoneOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hash } = CompactMarkDoneSchema.parse(rawArgs);
+  const { hashes } = CompactMarkDoneSchema.parse(rawArgs);
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -1152,21 +1172,38 @@ async function compactMarkDoneOperation(
       todoHashMap.set(await todo.getHash(), todo);
     }
 
-    const target = todoHashMap.get(hash);
-    if (target === undefined) {
-      return notFoundError(hash);
+    const updated: Awaited<ReturnType<typeof summarizeTodo>>[] = [];
+    const missing: string[] = [];
+    let changed = false;
+
+    for (const hash of new Set(hashes)) {
+      const target = todoHashMap.get(hash);
+      if (target === undefined) {
+        missing.push(hash);
+        continue;
+      }
+      if (target.state !== TodoStateEnum.done) {
+        const next = target.toggleState();
+        if (next) {
+          todos.push(next);
+        }
+        changed = true;
+      }
+      updated.push(await summarizeTodo(target));
     }
 
-    if (target.state !== TodoStateEnum.done) {
-      const next = target.toggleState();
-      if (next) {
-        todos.push(next);
-      }
+    if (changed) {
       await backend.save(todos);
     }
 
-    const summary = await summarizeTodo(target);
-    return compactTextResult(summary.hash, summary.text);
+    if (updated.length === 0) {
+      return notFoundError(missing[0]);
+    }
+
+    return compactLines([
+      ...updated.map(({ hash, text }) => `${hash} ${text}`),
+      ...missing.map((hash) => `ERROR ${hash} not found`),
+    ]);
   });
 }
 
@@ -1763,7 +1800,7 @@ export function createTodoMcpServer(
     return server;
   }
 
-  // The compact profiles are deliberately small: four single-purpose tools
+  // The compact profiles are deliberately small: four batch tools
   // with terse text results. `compact-plus` adds `changes_since`, the only
   // read tool the eval showed was worth its fixed schema cost.
   if (toolset === "compact" || toolset === "compact-plus") {
@@ -1782,30 +1819,31 @@ export function createTodoMcpServer(
     }
 
     server.registerTool(
-      "add_todo",
+      "add_todos",
       {
-        description: "Add a todo; returns its hash.",
-        inputSchema: CompactAddTodoSchema.shape,
+        description: "Add todos; returns 'hash text' lines.",
+        inputSchema: CompactAddTodosSchema.shape,
         annotations: { destructiveHint: false },
       },
-      (rawArgs: unknown) => compactAddTodoHandler(backend, rawArgs),
+      (rawArgs: unknown) => compactAddTodosHandler(backend, rawArgs),
     );
 
     server.registerTool(
-      "edit_todo",
+      "update_todos",
       {
         description:
-          "Edit text, priority, or contexts by hash; returns 'hash text'.",
-        inputSchema: CompactEditTodoSchema.shape,
+          "Set priority or move contexts for multiple todos by hash; " +
+          "returns 'hash text' lines.",
+        inputSchema: CompactUpdateTodosSchema.shape,
         annotations: { destructiveHint: true },
       },
-      (rawArgs: unknown) => compactEditTodoHandler(backend, rawArgs),
+      (rawArgs: unknown) => compactUpdateTodosHandler(backend, rawArgs),
     );
 
     server.registerTool(
       "mark_done",
       {
-        description: "Mark a todo done; returns 'hash text'.",
+        description: "Mark todos done by hash; returns 'hash text' lines.",
         inputSchema: CompactMarkDoneSchema.shape,
         annotations: { destructiveHint: true, idempotentHint: true },
       },

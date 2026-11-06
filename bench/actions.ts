@@ -1,6 +1,6 @@
 /**
- * Protocol-cost benchmark for the three common single-todo actions:
- * add, edit (priority + context) and mark done.
+ * Protocol-cost benchmark for a multi-item workflow: add several todos,
+ * change priority + context on several existing todos, and mark several done.
  *
  * It measures what an MCP client actually pays: the tools/list payload plus
  * every tool request and result, in approximate tokens (chars / 4). The
@@ -14,12 +14,18 @@ import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "../test/helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
 
-const TARGET_SEARCH = "Prepare quarterly report";
-const TARGET =
-  `(C) 2025-01-02 ${TARGET_SEARCH} @work +finance due:2026-12-15`;
-const NEW_TODO = "Pay electricity bill @home +finance due:2026-12-01";
+const TARGETS = [
+  "(C) 2025-01-02 Prepare quarterly report @work +finance due:2026-12-15",
+  "(D) 2025-01-02 Draft budget @work +finance",
+];
+const TARGET_SEARCHES = ["Prepare quarterly report", "Draft budget"];
+const NEW_TODOS = [
+  "(A) Pay electricity bill @home +finance due:2026-12-01",
+  "(B) Book dentist @health due:2026-11-20",
+  "(C) Renew passport @errands +travel due:2027-01-15",
+];
 const TRIALS = 5;
-const FILLERS = 99;
+const FILLERS = 98;
 
 type Phase = "lookup" | "add" | "edit" | "done";
 type Stats = Record<Phase | "schema" | "requests" | "responses" | "calls", number>;
@@ -55,7 +61,7 @@ function emptyStats(): Stats {
 }
 
 function seedTodos(): Todo[] {
-  const todos = [new Todo(TARGET)];
+  const todos = TARGETS.map((line) => new Todo(line));
   for (let i = 0; i < FILLERS; i++) {
     todos.push(
       new Todo(
@@ -66,30 +72,48 @@ function seedTodos(): Todo[] {
   return todos;
 }
 
-function firstHash(result: unknown): string {
+function hashesOf(result: unknown): string[] {
   const payload = result as {
     content?: Array<{ type: string; text?: string }>;
   };
   const text = payload.content?.map((item) => item.text ?? "").join("\n") ?? "";
-  const match = text.match(/^\[?([0-9a-f]{16})\]?/m);
-  if (!match) {
-    throw new Error(`No hash in tool result: ${text.slice(0, 200)}`);
+  return [...text.matchAll(/^\[?([0-9a-f]{16})\]?/gm)].map((match) => match[1]);
+}
+
+function firstHash(result: unknown): string {
+  const hash = hashesOf(result)[0];
+  if (hash === undefined) {
+    throw new Error(`No hash in tool result: ${JSON.stringify(result)}`);
   }
-  return match[1];
+  return hash;
 }
 
 function verify(backend: MockBackend): boolean {
   const todos = backend.getTodos();
-  const target = todos.find((todo) => todo.text.includes(TARGET_SEARCH));
-  const added = todos.find((todo) => todo.text.includes("Pay electricity bill"));
-  return todos.length === FILLERS + 2 &&
-    target !== undefined &&
-    target.isDone() &&
-    target.priority === "A" &&
-    target.contexts.has("office") &&
-    !target.contexts.has("work") &&
-    added !== undefined &&
-    added.contexts.has("home");
+  const report = todos.find((todo) =>
+    todo.text.includes("Prepare quarterly report")
+  );
+  const budget = todos.find((todo) => todo.text.includes("Draft budget"));
+  const bill = todos.find((todo) => todo.text.includes("Pay electricity bill"));
+  const dentist = todos.find((todo) => todo.text.includes("Book dentist"));
+  const passport = todos.find((todo) => todo.text.includes("Renew passport"));
+
+  return todos.length === FILLERS + TARGETS.length + NEW_TODOS.length &&
+    report?.isDone() === true &&
+    report.priority === "A" &&
+    report.contexts.has("office") &&
+    !report.contexts.has("work") &&
+    report.tags.due === "2026-12-15" &&
+    budget?.isDone() === true &&
+    budget.priority === "A" &&
+    budget.contexts.has("office") &&
+    !budget.contexts.has("work") &&
+    bill !== undefined &&
+    bill.contexts.has("home") &&
+    dentist !== undefined &&
+    dentist.contexts.has("health") &&
+    passport !== undefined &&
+    passport.contexts.has("errands");
 }
 
 async function runWorkflow(
@@ -135,29 +159,44 @@ async function runWorkflow(
   }
 }
 
-async function baseline(): Promise<RunResult> {
-  return await runWorkflow("full", async ({ call }) => {
-    const list1 = await call("lookup", "list_todos", {
-      search: TARGET_SEARCH,
+async function targetHashes(
+  call: CallContext["call"],
+  phase: Phase,
+): Promise<string[]> {
+  const hashes: string[] = [];
+  for (const search of TARGET_SEARCHES) {
+    const result = await call(phase, "list_todos", {
+      search,
       format: "text",
     });
-    const originalHash = firstHash(list1);
+    hashes.push(firstHash(result));
+  }
+  return hashes;
+}
 
-    await call("add", "add_todos", { todos: [NEW_TODO] });
+async function baseline(): Promise<RunResult> {
+  return await runWorkflow("full", async ({ call }) => {
+    const originalHashes = await targetHashes(call, "lookup");
+
+    await call("add", "add_todos", { todos: NEW_TODOS });
 
     // The current update_todos cannot change a priority, so the smallest
-    // correct workflow is export -> edit the line -> import replace.
+    // correct batch workflow is export -> edit both lines -> import replace.
     const exported = await call("edit", "export_todos", {});
     const exportedContent = (exported as {
       structuredContent: { content: string; version: string };
     }).structuredContent;
     const edited = exportedContent.content
       .split("\n")
-      .map((line) =>
-        line.includes(TARGET_SEARCH)
-          ? line.replace(/^\([A-Z]\) /, "(A) ").replace("@work", "@office")
-          : line
-      )
+      .map((line) => {
+        if (line.includes(TARGET_SEARCHES[0])) {
+          return line.replace(/^\([A-Z]\) /, "(A) ").replace("@work", "@office");
+        }
+        if (line.includes(TARGET_SEARCHES[1])) {
+          return line.replace(/^\([A-Z]\) /, "(A) ").replace("@work", "@office");
+        }
+        return line;
+      })
       .join("\n");
     await call("edit", "import_todos", {
       content: edited,
@@ -165,41 +204,39 @@ async function baseline(): Promise<RunResult> {
       expectedVersion: exportedContent.version,
     });
 
-    // import_todos does not return hashes, so refresh before marking done.
-    const list2 = await call("edit", "list_todos", {
-      search: TARGET_SEARCH,
-      format: "text",
-    });
-    const newHash = firstHash(list2);
+    // import_todos does not return hashes, so refresh both before marking done.
+    const newHashes = await targetHashes(call, "done");
     await call("done", "set_todo_statuses", {
-      hashes: [newHash],
+      hashes: newHashes,
       status: "done",
     });
 
-    if (originalHash === newHash) {
-      throw new Error("baseline workflow did not change the target hash");
+    if (originalHashes.some((hash) => newHashes.includes(hash))) {
+      throw new Error("baseline workflow did not change the target hashes");
     }
   });
 }
 
 async function compact(): Promise<RunResult> {
   return await runWorkflow("compact", async ({ call }) => {
-    const list = await call("lookup", "list_todos", {
-      search: TARGET_SEARCH,
+    const hashes = await targetHashes(call, "lookup");
+
+    await call("add", "add_todos", { todos: NEW_TODOS });
+
+    const edited = await call("edit", "update_todos", {
+      edits: hashes.map((hash) => ({
+        hash,
+        priority: "A",
+        removeContexts: ["work"],
+        addContexts: ["office"],
+      })),
     });
-    const hash = firstHash(list);
+    const newHashes = hashesOf(edited);
+    if (newHashes.length !== hashes.length) {
+      throw new Error("compact workflow did not return every new hash");
+    }
 
-    await call("add", "add_todo", { text: NEW_TODO });
-
-    const edited = await call("edit", "edit_todo", {
-      hash,
-      priority: "A",
-      removeContexts: ["work"],
-      addContexts: ["office"],
-    });
-    const newHash = firstHash(edited);
-
-    await call("done", "mark_done", { hash: newHash });
+    await call("done", "mark_done", { hashes: newHashes });
   });
 }
 
@@ -231,9 +268,9 @@ console.log("| Phase | full | compact | Reduction |");
 console.log("|---|---:|---:|---:|");
 console.log(row("tools/list", baselineRuns.median("schema"), compactRuns.median("schema")));
 console.log(row("lookup", baselineRuns.median("lookup"), compactRuns.median("lookup")));
-console.log(row("add", baselineRuns.median("add"), compactRuns.median("add")));
-console.log(row("edit priority+context", baselineRuns.median("edit"), compactRuns.median("edit")));
-console.log(row("mark done", baselineRuns.median("done"), compactRuns.median("done")));
+console.log(row("add 3 todos", baselineRuns.median("add"), compactRuns.median("add")));
+console.log(row("edit 2 priorities+contexts", baselineRuns.median("edit"), compactRuns.median("edit")));
+console.log(row("mark 2 done", baselineRuns.median("done"), compactRuns.median("done")));
 console.log(row("**total tokens**", baselineRuns.total, compactRuns.total));
 console.log(
   row(

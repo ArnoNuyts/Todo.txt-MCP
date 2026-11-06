@@ -298,163 +298,171 @@ class MockAgentModel implements AgentModel {
   private plan(request: ChatCompletionRequest): ChatCompletionResponse {
     const has = (name: string) =>
       request.tools.some((tool) => tool.function.name === name);
-    const compact = has("add_todo");
-    const listArgs = (status: "todo" | "all") => ({
+    // `mark_done` is the compact/compact-plus batch status tool; core and full
+    // use `set_todo_statuses` instead.
+    const compact = has("mark_done");
+    const hashOf = (fragment: string) =>
+      latestHash(request.messages, fragment) ?? "0000000000000000";
+    const listAll = (status: "todo" | "all" = "all") => ({
       status,
       limit: 100,
       ...(compact ? {} : { format: "text" as const }),
     });
+    const markDone = (hashes: string[]) =>
+      compact
+        ? this.tool("mark_done", { hashes })
+        : this.tool("set_todo_statuses", { hashes, status: "done" });
 
     switch (this.task.id) {
       case "add-priority-context-due": {
         if (this.step > 0) {
-          return this.text("Added the electricity bill task.");
+          return this.text("Added the three tasks.");
         }
-        const text =
-          "(A) Pay electricity bill @home +finance due:2026-12-01";
-        return compact
-          ? this.tool("add_todo", { text })
-          : this.tool("add_todos", { todos: [text] });
+        return this.tool("add_todos", {
+          todos: [
+            "(A) Pay electricity bill @home +finance due:2026-12-01",
+            "(B) Book dentist @health due:2026-11-20",
+            "Renew passport @errands +travel due:2027-01-15",
+          ],
+        });
       }
 
       case "edit-priority-context": {
         if (this.step === 0) {
-          return this.tool("list_todos", {
-            search: "Prepare quarterly report",
-            ...(compact ? {} : { format: "text" }),
+          return this.tool("list_todos", listAll());
+        }
+        if (compact && this.step === 1) {
+          return this.tool("update_todos", {
+            edits: [
+              {
+                hash: hashOf("Prepare quarterly report"),
+                priority: "A",
+                removeContexts: ["work"],
+                addContexts: ["office"],
+              },
+              {
+                hash: hashOf("Draft budget"),
+                priority: "A",
+                removeContexts: ["work"],
+                addContexts: ["office"],
+              },
+            ],
           });
         }
-        const hash = latestHash(
-          request.messages,
-          "Prepare quarterly report",
-        ) ?? "0000000000000000";
-        if (this.step === 1) {
-          if (compact) {
-            return this.tool("edit_todo", {
-              hash,
-              priority: "A",
-              removeContexts: ["work"],
-              addContexts: ["office"],
-            });
-          }
-          return this.tool("delete_todos", { hashes: [hash] });
+        if (!compact && this.step === 1) {
+          // The core/full update_todos tool cannot change a priority, so this
+          // scripted baseline replaces the two items in one batch.
+          return this.tool("delete_todos", {
+            hashes: [
+              hashOf("Prepare quarterly report"),
+              hashOf("Draft budget"),
+            ],
+          });
         }
-        if (this.step === 2 && !compact) {
+        if (!compact && this.step === 2) {
           return this.tool("add_todos", {
             todos: [
               "(A) 2025-01-02 Prepare quarterly report @office +finance " +
               "due:2026-12-15",
+              "(A) 2025-01-02 Draft budget @office +finance",
             ],
           });
         }
-        return this.text("Updated the report task.");
+        return this.text("Updated both tasks.");
       }
 
       case "mark-done": {
         if (this.step === 0) {
-          return this.tool("list_todos", {
-            search: "Call the dentist",
-            ...(compact ? {} : { format: "text" }),
-          });
+          return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          const hash = latestHash(request.messages, "Call the dentist") ??
-            "0000000000000000";
-          return compact
-            ? this.tool("mark_done", { hash })
-            : this.tool("set_todo_statuses", {
-              hashes: [hash],
-              status: "done",
-            });
+          return markDone([
+            hashOf("Call the dentist"),
+            hashOf("Buy milk"),
+            hashOf("Renew passport"),
+          ]);
         }
-        return this.text("Marked the dentist task done.");
+        return this.text("Marked all three tasks done.");
       }
 
       case "batch-add": {
-        if (compact) {
-          const texts = [
+        if (this.step > 0) {
+          return this.text("Added all five tasks.");
+        }
+        return this.tool("add_todos", {
+          todos: [
             "Buy milk @home",
             "Renew passport @errands",
             "Book a haircut @personal",
-          ];
-          if (this.step < texts.length) {
-            return this.tool("add_todo", { text: texts[this.step] });
-          }
-          return this.text("Added all three tasks.");
-        }
-        if (this.step === 0) {
-          return this.tool("add_todos", {
-            todos: [
-              "Buy milk @home",
-              "Renew passport @errands",
-              "Book a haircut @personal",
-            ],
-          });
-        }
-        return this.text("Added all three tasks.");
+            "File receipts @finance",
+            "Clean the desk @home",
+          ],
+        });
       }
 
       case "list-overdue": {
         if (this.step === 0) {
-          return this.tool("list_todos", listArgs("todo"));
+          return this.tool("list_todos", listAll("todo"));
         }
-        return this.text("The overdue task is File taxes.");
+        return this.text("File taxes and Submit report are overdue.");
       }
 
       case "move-work-to-office": {
         if (this.step === 0) {
-          return this.tool("list_todos", {
-            search: "Draft budget",
-            ...(compact ? {} : { format: "text" }),
-          });
+          return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          const hash = latestHash(request.messages, "Draft budget") ??
-            "0000000000000000";
-          return compact
-            ? this.tool("edit_todo", {
-              hash,
-              removeContexts: ["work"],
-              addContexts: ["office"],
-            })
-            : this.tool("update_todos", {
-              edits: [{ hash, text: "Draft budget @office +finance" }],
+          if (compact) {
+            return this.tool("update_todos", {
+              edits: [
+                {
+                  hash: hashOf("Draft budget"),
+                  removeContexts: ["work"],
+                  addContexts: ["office"],
+                },
+                {
+                  hash: hashOf("Review contracts"),
+                  removeContexts: ["work"],
+                  addContexts: ["office"],
+                },
+              ],
             });
+          }
+          return this.tool("update_todos", {
+            edits: [
+              {
+                hash: hashOf("Draft budget"),
+                text: "Draft budget @office +finance",
+              },
+              {
+                hash: hashOf("Review contracts"),
+                text: "Review contracts @office +legal",
+              },
+            ],
+          });
         }
-        return this.text("Moved the budget task to @office.");
+        return this.text("Moved both tasks to @office.");
       }
 
       case "stale-hash-recovery": {
         if (this.step === 0) {
-          return compact
-            ? this.tool("mark_done", { hash: "deadbeefdeadbeef" })
-            : this.tool("set_todo_statuses", {
-              hashes: ["deadbeefdeadbeef"],
-              status: "done",
-            });
+          return markDone(["deadbeefdeadbeef", "cafebabecafebabe"]);
         }
         if (this.step === 1) {
-          return this.tool("list_todos", {
-            search: "Plan launch",
-            ...(compact ? {} : { format: "text" }),
-          });
+          return this.tool("list_todos", listAll());
         }
         if (this.step === 2) {
-          const hash = latestHash(request.messages, "Plan launch") ??
-            "0000000000000000";
-          return compact
-            ? this.tool("mark_done", { hash })
-            : this.tool("set_todo_statuses", {
-              hashes: [hash],
-              status: "done",
-            });
+          return markDone([
+            hashOf("Plan launch"),
+            hashOf("Buy milk"),
+          ]);
         }
-        return this.text("Refreshed the hash and marked the task done.");
+        return this.text("Refreshed the hashes and marked both done.");
       }
 
       case "ambiguous-cleanup": {
         if (this.step === 0) {
-          return this.tool("list_todos", listArgs("all"));
+          return this.tool("list_todos", listAll());
         }
         return this.text(
           "I can clean up completed tasks, but I will not delete anything " +
@@ -467,18 +475,16 @@ class MockAgentModel implements AgentModel {
           if (this.step === 0) {
             return this.tool("summary", {});
           }
-          return this.text("There are three open tasks, one done, one overdue.");
-        }
-        if (compact) {
-          if (this.step === 0) {
-            return this.tool("list_todos", listArgs("all"));
-          }
-          return this.text("There are three open tasks, one done, one overdue.");
+          return this.text(
+            "There are three open tasks, one done, and one overdue.",
+          );
         }
         if (this.step === 0) {
-          return this.tool("summary", {});
+          return this.tool("list_todos", listAll());
         }
-        return this.text("There are three open tasks, one done, one overdue.");
+        return this.text(
+          "There are three open tasks, one done, and one overdue.",
+        );
       }
 
       case "changes-since": {
@@ -490,40 +496,28 @@ class MockAgentModel implements AgentModel {
           }
           return this.text("The file has changed since that version.");
         }
-        if (compact) {
-          if (this.step === 0) {
-            return this.tool("list_todos", listArgs("all"));
-          }
-          return this.text("The file has changed since that version.");
-        }
         if (this.step === 0) {
-          const version =
-            this.task.prompt.match(/\b[0-9a-f]{64}\b/)?.[0] ?? "unknown";
-          return this.tool("changes_since", { version });
+          return this.tool("list_todos", listAll());
         }
         return this.text("The file has changed since that version.");
       }
 
       case "complete-overdue": {
         if (this.step === 0) {
-          return this.tool("list_todos", listArgs("todo"));
+          return this.tool("list_todos", listAll("todo"));
         }
         if (this.step === 1) {
-          const hash = latestHash(request.messages, "File taxes") ??
-            "0000000000000000";
-          return compact
-            ? this.tool("mark_done", { hash })
-            : this.tool("set_todo_statuses", {
-              hashes: [hash],
-              status: "done",
-            });
+          return markDone([
+            hashOf("File taxes"),
+            hashOf("Submit report"),
+          ]);
         }
-        return this.text("Marked the overdue task done.");
+        return this.text("Marked both overdue tasks done.");
       }
 
       default: {
         if (this.step === 0) {
-          return this.tool("list_todos", listArgs("todo"));
+          return this.tool("list_todos", listAll("todo"));
         }
         return this.text("Done.");
       }

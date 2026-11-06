@@ -87,19 +87,21 @@ describe("agent eval harness", () => {
       modelCalls += 1;
       if (index === 0) {
         return toolCallResponse(
-          "add_todo",
-          { text: "Write report @work" },
+          "add_todos",
+          { todos: ["Write report @work"] },
           "call-add",
         );
       }
       if (index === 1) {
         return toolCallResponse(
-          "edit_todo",
+          "update_todos",
           {
-            hash: lastHash(request.messages),
-            priority: "A",
-            removeContexts: ["work"],
-            addContexts: ["office"],
+            edits: [{
+              hash: lastHash(request.messages),
+              priority: "A",
+              removeContexts: ["work"],
+              addContexts: ["office"],
+            }],
           },
           "call-edit",
         );
@@ -107,7 +109,7 @@ describe("agent eval harness", () => {
       if (index === 2) {
         return toolCallResponse(
           "mark_done",
-          { hash: lastHash(request.messages) },
+          { hashes: [lastHash(request.messages)] },
           "call-done",
         );
       }
@@ -127,8 +129,8 @@ describe("agent eval harness", () => {
     expect(record.invalidToolCalls).toBe(0);
     expect(record.turns).toBe(4);
     expect(record.trace.map((entry) => entry.name)).toEqual([
-      "add_todo",
-      "edit_todo",
+      "add_todos",
+      "update_todos",
       "mark_done",
     ]);
     expect(modelCalls).toBe(4);
@@ -146,8 +148,8 @@ describe("agent eval harness", () => {
     const model = new ScriptedModel((request, index) => {
       if (index === 0) {
         return toolCallResponse(
-          "edit_todo",
-          { hash: "0123456789abcdef", priority: "A" },
+          "update_todos",
+          { edits: [{ hash: "0123456789abcdef", priority: "A" }] },
           "call-bad",
         );
       }
@@ -288,8 +290,17 @@ describe("agent eval harness", () => {
     const good = task.seed();
     good.push(
       new Todo("(A) Pay electricity bill @home +finance due:2026-12-01"),
+      new Todo("(B) Book dentist @health due:2026-11-20"),
+      new Todo("Renew passport @errands +travel due:2027-01-15"),
     );
-    expect(task.verify(good, [], "").ok).toBe(true);
+    const addTrace = [{
+      turn: 1,
+      name: "add_todos",
+      arguments: {},
+      isError: false,
+      text: "",
+    }];
+    expect(task.verify(good, addTrace, "").ok).toBe(true);
     expect(task.verify(task.seed(), [], "").ok).toBe(false);
 
     const record = await runTask(task, 1, {
