@@ -330,6 +330,22 @@ class MockAgentModel implements AgentModel {
         return this.text("Added the task and completed it.");
       }
 
+      case "edit-threshold-recurrence": {
+        if (this.step === 0) {
+          return this.tool("list_todos", listAll());
+        }
+        if (this.step === 1) {
+          return this.tool("update_todos", {
+            edits: [{
+              hash: hashOf("Water plants"),
+              threshold: "2026-12-01",
+              recurrence: "+2w",
+            }],
+          });
+        }
+        return this.text("Updated the threshold and recurrence.");
+      }
+
       case "edit-priority-context": {
         if (this.step === 0) {
           return this.tool("list_todos", listAll());

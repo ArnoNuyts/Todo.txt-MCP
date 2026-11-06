@@ -253,6 +253,29 @@ export const AGENT_TASKS: readonly AgentTask[] = [
     },
   },
   {
+    id: "edit-threshold-recurrence",
+    prompt:
+      "Change 'Water plants' threshold to t:2026-12-01 and recurrence to " +
+      "rec:+2w in one update. Keep @home and leave it open.",
+    seed: seeded("Water plants @home t:2026-01-01 rec:+1w"),
+    verify: (todos, trace) => {
+      const plants = findTodo(todos, "Water plants");
+      const ok = plants !== undefined &&
+        plants.tags.t === "2026-12-01" &&
+        plants.tags.rec === "+2w" &&
+        hasContext(plants, "home") &&
+        !plants.isDone() &&
+        todos.length === 1 &&
+        batchCalls(trace, ["update_todos"]) === 1;
+      return {
+        ok,
+        detail: `threshold=${plants?.tags.t ?? "missing"}, ` +
+          `rec=${plants?.tags.rec ?? "missing"}, ` +
+          `home=${plants ? hasContext(plants, "home") : "missing"}`,
+      };
+    },
+  },
+  {
     id: "edit-priority-context",
     prompt:
       "In one update, change both 'Prepare quarterly report' and 'Draft " +

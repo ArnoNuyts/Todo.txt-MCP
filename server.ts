@@ -84,6 +84,20 @@ const ContextNameSchema = z.string().min(1).max(100).regex(
   "Use letters, digits, '.', '_' or '-'",
 ).describe("Context name");
 
+const ThresholdSchema = z.string().regex(
+  /^\d{4}-\d{2}-\d{2}$/,
+  "Expected YYYY-MM-DD",
+).nullable().optional().describe(
+  "t: YYYY-MM-DD (defer until); null clears",
+);
+
+const RecurrenceSchema = z.string().regex(
+  /^\+?\d+[dwmy]$/i,
+  "Expected +N[dwmy], e.g. +2w",
+).nullable().optional().describe(
+  "rec: +2w; null clears",
+);
+
 export const CompactUpdateTodosSchema = z.object({
   edits: z.array(z.object({
     hash: z.string().min(8).max(64).describe("Todo hash"),
@@ -97,6 +111,8 @@ export const CompactUpdateTodosSchema = z.object({
     removeContexts: z.array(ContextNameSchema).max(20).optional().describe(
       "Contexts to remove",
     ),
+    threshold: ThresholdSchema,
+    recurrence: RecurrenceSchema,
     status: z.enum(["done", "todo"]).optional().describe(
       "done to complete, todo to undo",
     ),
@@ -157,11 +173,15 @@ interface TodoPatch {
   priority?: string | null;
   addContexts?: string[];
   removeContexts?: string[];
+  threshold?: string | null;
+  recurrence?: string | null;
   status?: "done" | "todo";
 }
 
 function hasTodoPatch(patch: TodoPatch): boolean {
   return patch.priority !== undefined ||
+    patch.threshold !== undefined ||
+    patch.recurrence !== undefined ||
     patch.status !== undefined ||
     (patch.addContexts?.length ?? 0) > 0 ||
     (patch.removeContexts?.length ?? 0) > 0;
@@ -190,6 +210,20 @@ function applyTodoPatch(todo: Todo, patch: TodoPatch): TodoPatchResult {
     const name = normalizeContextName(raw);
     if (name.length > 0) {
       todo.setText(addContextToText(todo.text, name));
+    }
+  }
+  if (patch.threshold !== undefined) {
+    if (patch.threshold === null) {
+      delete todo.tags.t;
+    } else {
+      todo.tags.t = patch.threshold;
+    }
+  }
+  if (patch.recurrence !== undefined) {
+    if (patch.recurrence === null) {
+      delete todo.tags.rec;
+    } else {
+      todo.tags.rec = patch.recurrence.toLowerCase();
     }
   }
   if (patch.status !== undefined) {
@@ -350,7 +384,8 @@ async function updateTodosOperation(
     if (!hasTodoPatch(edit)) {
       throw new ToolFailure(
         "INVALID_ARGUMENT",
-        `edits.${index}: provide priority, addContexts, removeContexts, or status.`,
+        `edits.${index}: provide priority, addContexts, removeContexts, ` +
+          "threshold, recurrence, or status.",
       );
     }
   });
@@ -552,7 +587,7 @@ export function createTodoMcpServer(backend: TodoBackend) {
     "list_todos",
     {
       description:
-        "List todos as 'hash text' lines. Use offset to page through results.",
+        "List todos as 'hash text' lines. Use offset to page.",
       inputSchema: CompactListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
@@ -562,7 +597,9 @@ export function createTodoMcpServer(backend: TodoBackend) {
   server.registerTool(
     "add_todos",
     {
-      description: "Add todos; returns 'hash text' lines.",
+      description:
+        "Add todo.txt lines (supports due:, t:, rec:); returns " +
+        "'hash text' lines.",
       inputSchema: CompactAddTodosSchema.shape,
       annotations: { destructiveHint: false },
     },
@@ -573,9 +610,9 @@ export function createTodoMcpServer(backend: TodoBackend) {
     "update_todos",
     {
       description:
-        "Set priority, move contexts, or change status for multiple todos " +
-        "by hash; returns 'hash text' lines. Missing hashes return ERROR " +
-        "lines; refresh with list_todos.",
+        "Set priority, contexts, threshold, recurrence, or status by hash; " +
+        "returns 'hash text' lines. Missing hashes return ERROR lines; " +
+        "refresh with list_todos.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },

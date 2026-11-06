@@ -206,7 +206,7 @@ exhaust the process memory:
 - **Batch-first:** add, priority/context updates, and completion all take
   arrays.
 - **Benchmark:** the multi-item add/edit/status/pagination workflow costs
-  ~1,293 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
+  ~1,365 tokens over a 120-todo file (median of 5 runs, 6 calls, chars/4
   estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
@@ -230,12 +230,15 @@ guidance.
   `all`), `context`, `limit` (default 20, max 100), and `offset`. Returns
   `hash text` lines and a `MORE <count> (offset=<next>)` line when a page is
   truncated.
-- `add_todos` — add a batch of todo.txt lines. Returns one `hash text` line per
-  item.
-- `update_todos` — set `priority` (or clear it with `null`), add/remove
-  contexts, and set `status` (`done` or `todo` to undo) for multiple todos in
-  one call. Returns `hash text` lines.
+- `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
+  `rec:` tags. Returns one `hash text` line per item.
+- `update_todos` — set `priority`, add/remove contexts, set `threshold` (`t:`)
+  or `recurrence` (`rec:`), and set `status` (`done` or `todo` to undo) for
+  multiple todos in one call. `null` clears priority, threshold, or recurrence.
+  Returns `hash text` lines.
 - `delete_todos` — delete multiple todos by hash in one batch.
+
+`due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
 
 All tools are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful

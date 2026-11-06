@@ -60,5 +60,24 @@ describe("tool schemas", () => {
         edits: [{ hash: "01234567", status: "other" }],
       })
     ).toThrow();
+    expect(() =>
+      CompactUpdateTodosSchema.parse({
+        edits: [{
+          hash: "01234567",
+          threshold: "2026-12-01",
+          recurrence: "+2w",
+        }],
+      })
+    ).not.toThrow();
+    expect(() =>
+      CompactUpdateTodosSchema.parse({
+        edits: [{ hash: "01234567", threshold: "12/01/2026" }],
+      })
+    ).toThrow();
+    expect(() =>
+      CompactUpdateTodosSchema.parse({
+        edits: [{ hash: "01234567", recurrence: "weekly" }],
+      })
+    ).toThrow();
   });
 });

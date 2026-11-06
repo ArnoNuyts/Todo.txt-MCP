@@ -161,6 +161,43 @@ describe("tool surface", () => {
     expect(backend.getTodos()[1].contexts.has("work")).toBe(false);
   });
 
+  it("sets and clears threshold and recurrence tags", async () => {
+    const todos = [new Todo("Water plants @home"), new Todo("Feed cat @home")];
+    await backend.save(todos);
+    const hashes = await Promise.all(todos.map((todo) => todo.getHash()));
+    backend.saveCalls = 0;
+
+    const updated = await client.callTool({
+      name: "update_todos",
+      arguments: {
+        edits: hashes.map((hash) => ({
+          hash,
+          threshold: "2026-12-01",
+          recurrence: "+2W",
+        })),
+      },
+    });
+
+    expect(linesOf(updated)).toHaveLength(2);
+    expect(backend.saveCalls).toBe(1);
+    expect(backend.getTodos()[0].tags.t).toBe("2026-12-01");
+    expect(backend.getTodos()[0].tags.rec).toBe("+2w");
+    expect(backend.getTodos()[1].tags.t).toBe("2026-12-01");
+
+    const newHash = await backend.getTodos()[0].getHash();
+    await client.callTool({
+      name: "update_todos",
+      arguments: {
+        edits: [{ hash: newHash, threshold: null, recurrence: null }],
+      },
+    });
+
+    expect(backend.saveCalls).toBe(2);
+    expect(backend.getTodos()[0].tags.t).toBeUndefined();
+    expect(backend.getTodos()[0].tags.rec).toBeUndefined();
+    expect(backend.getTodos()[1].tags.rec).toBe("+2w");
+  });
+
   it("rejects duplicate hashes and edits with no changes", async () => {
     const todo = new Todo("Keep me @home");
     await backend.save([todo]);
