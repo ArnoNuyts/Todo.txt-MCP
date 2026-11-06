@@ -16,7 +16,7 @@ export interface AuthTokenSourceOptions {
   authTokens?: string[];
 }
 
-export type AuthTokenSource = "options" | "file" | "env" | "none";
+type AuthTokenSource = "options" | "file" | "env" | "none";
 
 export interface ResolvedAuthTokens {
   tokens: string[];

@@ -19,7 +19,7 @@ const WebDavConfig = z.object({
   }),
 });
 
-export const ConfigSchema = z.discriminatedUnion("backend", [
+const ConfigSchema = z.discriminatedUnion("backend", [
   LocalConfig,
   WebDavConfig,
 ]);

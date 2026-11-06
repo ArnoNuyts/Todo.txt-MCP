@@ -16,7 +16,7 @@ const MAX_RETRY_AFTER_MS = 60_000;
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /** Status codes worth retrying. Auth, missing and conflict responses are not. */
-export const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
   408, // Request Timeout
   425, // Too Early
   429, // Too Many Requests

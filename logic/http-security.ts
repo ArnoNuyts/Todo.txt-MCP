@@ -8,14 +8,14 @@ export const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 export const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"];
 export const DEFAULT_HOST = "127.0.0.1";
 
-export const CORS_METHODS = ["GET", "POST", "DELETE", "OPTIONS"];
-export const CORS_ALLOWED_HEADERS = [
+const CORS_METHODS = ["GET", "POST", "DELETE", "OPTIONS"];
+const CORS_ALLOWED_HEADERS = [
   "content-type",
   "authorization",
   "mcp-session-id",
   "mcp-protocol-version",
 ];
-export const CORS_EXPOSED_HEADERS = ["mcp-session-id"];
+const CORS_EXPOSED_HEADERS = ["mcp-session-id"];
 
 export interface HttpSecurityOptions {
   allowedHosts?: string | string[];

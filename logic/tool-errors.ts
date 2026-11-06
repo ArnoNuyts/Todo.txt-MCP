@@ -17,7 +17,7 @@ export interface ToolErrorDetails {
   [key: string]: unknown;
 }
 
-export interface ToolErrorPayload {
+interface ToolErrorPayload {
   code: ToolErrorCode;
   message: string;
   details?: ToolErrorDetails;
@@ -53,7 +53,7 @@ export class ToolFailure extends Error {
 }
 
 /** Builds the canonical structured error result. */
-export function toolError(
+function toolError(
   code: ToolErrorCode,
   message: string,
   details?: ToolErrorDetails,
@@ -84,7 +84,7 @@ export function notFoundError(hash: string): ToolErrorResult {
  * Converts an unexpected exception into a `BACKEND_ERROR` result without
  * exposing a stack trace or a nested error's internals.
  */
-export function mapError(error: unknown): ToolErrorResult {
+function mapError(error: unknown): ToolErrorResult {
   if (error instanceof ToolFailure) {
     return toolError(error.code, error.message, error.details);
   }

@@ -1,5 +1,5 @@
 /** Accepted `rec:` values: optional `+` for strict recurrence, positive amount. */
-export const RECURRENCE_PATTERN = /^(\+)?([1-9]\d*)([dwmy])$/i;
+const RECURRENCE_PATTERN = /^(\+)?([1-9]\d*)([dwmy])$/i;
 
 export interface Recurrence {
   strict: boolean;

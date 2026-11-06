@@ -23,7 +23,7 @@ export interface ToolTraceEntry {
   text: string;
 }
 
-export interface GradeResult {
+interface GradeResult {
   ok: boolean;
   detail: string;
 }

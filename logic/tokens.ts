@@ -5,20 +5,19 @@ export const CONTEXT_REGEX = /\s+\@(?<name>[\w.\_\-]+)/g;
 export const TAG_REGEX = /\s+(?<key>[A-Za-z]+):(?!\/\/)(?<value>[^\s]+)/g;
 
 /** Escapes a string for literal use inside a regular expression. */
-export function escapeRegExp(value: string): string {
+function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
  * Matches one `@context` token at a word boundary. The leading `@` is
- * optional. `global` is for repeated removals; callers that only test should
- * pass `false`.
+ * optional.
  */
-export function contextTokenPattern(name: string, global: boolean): RegExp {
+export function contextTokenPattern(name: string): RegExp {
   const normalized = name.replace(/^@+/, "").trim();
   if (normalized.length === 0) {
     return /(?!)/;
   }
   const marker = `@${escapeRegExp(normalized)}`;
-  return new RegExp(`(^|\\s)${marker}(?=$|\\s)`, global ? "gi" : "i");
+  return new RegExp(`(^|\\s)${marker}(?=$|\\s)`, "i");
 }

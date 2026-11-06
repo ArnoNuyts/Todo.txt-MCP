@@ -27,7 +27,7 @@ function matchesContext(todo: Todo, context: string): boolean {
 
   // The parser only recognizes tokens preceded by whitespace, so also check
   // the raw text with an explicit start anchor.
-  return contextTokenPattern(normalized, false).test(todo.text);
+  return contextTokenPattern(normalized).test(todo.text);
 }
 
 /** Filters todos by status, text, and context. */
