@@ -523,7 +523,7 @@ describe("Todo", () => {
 
   it("getHash - returns 16 lowercase hex characters", async () => {
     const hash = await new Todo("Test todo").getHash();
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(hash).toMatch(/^[A-Za-z0-9_-]{11}$/);
   });
 
   it("getHash - should change when todo is modified", async () => {

@@ -77,7 +77,7 @@ function hashesOf(result: unknown): string[] {
     content?: Array<{ type: string; text?: string }>;
   };
   const text = payload.content?.map((item) => item.text ?? "").join("\n") ?? "";
-  return [...text.matchAll(/^\[?([0-9a-f]{16})\]?/gm)].map((match) => match[1]);
+  return [...text.matchAll(/^\[?([A-Za-z0-9_-]{11})\]?/gm)].map((match) => match[1]);
 }
 
 function firstHash(result: unknown): string {
@@ -165,10 +165,7 @@ async function targetHashes(
 ): Promise<string[]> {
   const hashes: string[] = [];
   for (const search of TARGET_SEARCHES) {
-    const result = await call(phase, "list_todos", {
-      search,
-      format: "text",
-    });
+    const result = await call(phase, "list_todos", { search });
     hashes.push(firstHash(result));
   }
   return hashes;
@@ -184,9 +181,9 @@ async function baseline(): Promise<RunResult> {
     // correct batch workflow is export -> edit both lines -> import replace.
     const exported = await call("edit", "export_todos", {});
     const exportedContent = (exported as {
-      structuredContent: { content: string; version: string };
-    }).structuredContent;
-    const edited = exportedContent.content
+      content: Array<{ text?: string }>;
+    }).content.map((item) => item.text ?? "").join("\n");
+    const edited = exportedContent
       .split("\n")
       .map((line) => {
         if (line.includes(TARGET_SEARCHES[0])) {
@@ -201,7 +198,6 @@ async function baseline(): Promise<RunResult> {
     await call("edit", "import_todos", {
       content: edited,
       mode: "replace",
-      expectedVersion: exportedContent.version,
     });
 
     // import_todos does not return hashes, so refresh both before marking done.

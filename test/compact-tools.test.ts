@@ -71,8 +71,8 @@ describe("compact toolset", () => {
 
     const lines = linesOf(result);
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toMatch(/^[0-9a-f]{16} Buy milk @home$/);
-    expect(lines[1]).toMatch(/^[0-9a-f]{16} \(A\) Renew passport @errands$/);
+    expect(lines[0]).toMatch(/^[A-Za-z0-9_-]{11} Buy milk @home$/);
+    expect(lines[1]).toMatch(/^[A-Za-z0-9_-]{11} \(A\) Renew passport @errands$/);
     expect(result.structuredContent).toBeUndefined();
     expect(backend.getTodos()).toHaveLength(2);
   });
@@ -159,7 +159,7 @@ describe("compact toolset", () => {
     expect(backend.saveCalls).toBe(1);
     expect(backend.getTodos().every((todo) => todo.isDone())).toBe(true);
 
-    const doneHashes = linesOf(first).map((line) => line.slice(0, 16));
+    const doneHashes = linesOf(first).map((line) => line.split(" ")[0]);
     const second = await client.callTool({
       name: "mark_done",
       arguments: { hashes: doneHashes },
@@ -193,7 +193,7 @@ describe("compact toolset", () => {
       arguments: { context: "home" },
     });
 
-    expect(textOf(result)).toMatch(/^[0-9a-f]{16} First @home$/);
+    expect(textOf(result)).toMatch(/^[A-Za-z0-9_-]{11} First @home$/);
     expect(result.structuredContent).toBeUndefined();
   });
 

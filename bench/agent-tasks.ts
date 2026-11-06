@@ -401,7 +401,7 @@ export const AGENT_TASKS: readonly AgentTask[] = [
       const stateUnchanged = unchanged(todos, CLEANUP_SEED);
       const answer = finalText.toLowerCase();
       const silentDelete = trace.some((entry) =>
-        (entry.name === "delete_todos" || entry.name === "delete_completed") &&
+        entry.name === "delete_todos" &&
         entry.arguments.dryRun !== true &&
         !entry.isError
       );

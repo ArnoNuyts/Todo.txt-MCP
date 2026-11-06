@@ -6,7 +6,6 @@ import { Todo } from "../logic/todo.ts";
 import {
   addTodoHandler,
   addTodosHandler,
-  deleteCompletedHandler,
   deleteTodoHandler,
   deleteTodosHandler,
   editTodoHandler,
@@ -284,7 +283,7 @@ describe("Server tool handlers", () => {
     });
 
     it("should return only active todos by default", async () => {
-      const result = await listTodosHandler(backend, { format: "both" });
+      const result = await listTodosHandler(backend, {});
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(true);
       expect(text.includes("Done Task 1")).toBe(false);
@@ -295,14 +294,14 @@ describe("Server tool handlers", () => {
     });
 
     it("should return only done todos when status is 'done'", async () => {
-      const result = await listTodosHandler(backend, { status: "done", format: "both" });
+      const result = await listTodosHandler(backend, { status: "done" });
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(false);
       expect(text.includes("Done Task 1")).toBe(true);
     });
 
     it("should return all todos when status is 'all'", async () => {
-      const result = await listTodosHandler(backend, { status: "all", format: "both" });
+      const result = await listTodosHandler(backend, { status: "all" });
       const text = result.content[0].text as string;
       expect(text.includes("Active Task 1")).toBe(true);
       expect(text.includes("Done Task 1")).toBe(true);
@@ -311,7 +310,7 @@ describe("Server tool handlers", () => {
     it("should filter todos by search term", async () => {
       const result = await listTodosHandler(backend, {
         search: "UniqueSearchTerm",
-        format: "both",
+
       });
       const text = result.content[0].text as string;
       expect(text.includes("UniqueSearchTerm")).toBe(true);
@@ -319,9 +318,11 @@ describe("Server tool handlers", () => {
     });
 
     it("should apply pagination limit", async () => {
-      const result = await listTodosHandler(backend, { limit: 1, format: "both" });
+      const result = await listTodosHandler(backend, { limit: 1 });
       const text = result.content[0].text as string;
-      const lines = text.split("\n").filter((l) => l.trim() !== "");
+      const lines = text.split("\n").filter((l) =>
+        l.trim() !== "" && !l.startsWith("NEXT ")
+      );
       expect(lines.length).toBe(1);
       expect(result.structuredContent).toMatchObject({
         total: 3,
@@ -330,7 +331,7 @@ describe("Server tool handlers", () => {
     });
 
     it("should include todo details in structured content", async () => {
-      const result = await listTodosHandler(backend, { status: "all", format: "both" });
+      const result = await listTodosHandler(backend, { status: "all" });
       const structured = result.structuredContent as {
         todos: Array<Record<string, unknown>>;
         total: number;
@@ -343,7 +344,7 @@ describe("Server tool handlers", () => {
       );
       expect(done).toBeDefined();
       expect(done!.status).toBe("done");
-      expect(done!.hash).toMatch(/^[0-9a-f]{16}$/);
+      expect(done!.hash).toMatch(/^[A-Za-z0-9_-]{11}$/);
     });
 
     it("should reject an out-of-range limit", async () => {
@@ -996,98 +997,6 @@ describe("Server tool handlers", () => {
     });
   });
 
-  describe("deleteCompletedHandler", () => {
-    it("should delete completed todos before a date in a context", async () => {
-      const old = new Todo("x 2025-01-01 2024-12-01 Old done @Home");
-      const boundary = new Todo("x 2026-01-01 2025-12-01 Boundary done @home");
-      const recent = new Todo("x 2026-05-01 2026-04-01 Recent done @Work");
-      const active = new Todo("active @home");
-      await backend.save([old, boundary, recent, active]);
-      const oldHash = await old.getHash();
-      backend.saveCalls = 0;
-
-      const result = await deleteCompletedHandler(backend, {
-        before: "2026-01-01",
-        context: "@HOME",
-      });
-      const content = structured<{ deletedCount: number; hashes: string[] }>(
-        result,
-      );
-
-      expect(content).toEqual({ deletedCount: 1, hashes: [oldHash] });
-      expect(backend.getTodos().map((todo) => todo.text).sort()).toEqual([
-        "Boundary done @home",
-        "Recent done @Work",
-        "active @home",
-      ].sort());
-      expect(backend.saveCalls).toBe(1);
-    });
-
-    it("should match contexts case-insensitively without the @ prefix", async () => {
-      const first = new Todo("x 2025-01-01 2024-12-01 first @Home");
-      const second = new Todo("x 2026-05-01 2026-04-01 second @home");
-      const other = new Todo("x 2025-01-01 2024-12-01 third @Work");
-      await backend.save([first, second, other]);
-
-      const result = await deleteCompletedHandler(backend, {
-        context: "HOME",
-      });
-      const content = structured<{ deletedCount: number; hashes: string[] }>(
-        result,
-      );
-
-      expect(content.deletedCount).toBe(2);
-      expect(content.hashes).toHaveLength(2);
-      expect(backend.getTodos().map((todo) => todo.text)).toEqual([
-        "third @Work",
-      ]);
-    });
-
-    it("should be a no-op when nothing matches", async () => {
-      await backend.save([
-        new Todo("x 2025-01-01 2024-12-01 done @home"),
-        new Todo("active"),
-      ]);
-      backend.loadCalls = 0;
-      backend.saveCalls = 0;
-
-      const result = await deleteCompletedHandler(backend, {
-        before: "2000-01-01",
-      });
-      const content = structured<{ deletedCount: number; hashes: string[] }>(
-        result,
-      );
-
-      expect(content).toEqual({ deletedCount: 0, hashes: [] });
-      expect(backend.getTodos()).toHaveLength(2);
-      expect(backend.loadCalls).toBe(1);
-      expect(backend.saveCalls).toBe(0);
-    });
-
-    it("should delete every completed todo when no filter is given", async () => {
-      await backend.save([
-        new Todo("x 2025-01-01 2024-12-01 first"),
-        new Todo("x 2026-05-01 2026-04-01 second @work"),
-        new Todo("active"),
-      ]);
-
-      const result = await deleteCompletedHandler(backend, {});
-      const content = structured<{ deletedCount: number; hashes: string[] }>(
-        result,
-      );
-
-      expect(content.deletedCount).toBe(2);
-      expect(backend.getTodos().map((todo) => todo.text)).toEqual(["active"]);
-    });
-
-    it("should reject invalid dates", async () => {
-      for (const before of ["2026-02-30", "01-02-2026"]) {
-        const result = await deleteCompletedHandler(backend, { before });
-        expect(result).toMatchObject({ isError: true });
-        expect(errorOf(result).code).toBe("INVALID_ARGUMENT");
-      }
-    });
-  });
 
   describe("Full flow scenarios", () => {
     it("should handle the full add-edit-markdone cycle", async () => {
@@ -1123,7 +1032,7 @@ describe("Server tool handlers", () => {
       expect(doneTodo.text).toBe("Test Hash Todo Edited");
 
       // Verify using listTodosHandler
-      const listArgs = { status: "done", format: "both" };
+      const listArgs = { status: "done" };
       const listResult = await listTodosHandler(backend, listArgs);
       const text = listResult.content[0].text as string;
 

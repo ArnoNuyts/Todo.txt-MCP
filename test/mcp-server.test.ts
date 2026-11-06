@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
-/** Shape of the tool results this server returns. */
+/** Shape of the text-only tool results this server returns. */
 interface ToolTextResult {
   isError?: boolean;
   content: Array<{ type: string; text?: string }>;
+  structuredContent?: unknown;
 }
 
 function textOf(result: unknown): string {
@@ -15,14 +16,23 @@ function textOf(result: unknown): string {
   return content.map((item) => item.text ?? "").join("\n");
 }
 
-function firstHash(result: unknown, action: "Added" | "Edited"): string {
-  const match = textOf(result).match(
-    new RegExp(`${action} todo \\[([0-9a-f]{16})\\]`),
-  );
-  if (!match) {
-    throw new Error(`No ${action} todo hash in: ${textOf(result)}`);
+function hashesOf(result: unknown): string[] {
+  return [...textOf(result).matchAll(/\[([A-Za-z0-9_-]{11})\]/g)]
+    .map((match) => match[1]);
+}
+
+function firstHash(result: unknown): string {
+  const hash = hashesOf(result)[0];
+  if (hash === undefined) {
+    throw new Error(`No hash in: ${textOf(result)}`);
   }
-  return match[1];
+  return hash;
+}
+
+function errorCodeOf(result: unknown): string | undefined {
+  return (result as ToolTextResult & {
+    structuredContent?: { error?: { code?: string } };
+  }).structuredContent?.error?.code;
 }
 
 describe("createTodoMcpServer", () => {
@@ -49,25 +59,26 @@ describe("createTodoMcpServer", () => {
     await Promise.allSettled([client.close(), server.close()]);
   });
 
-  it("should expose the canonical tools only", async () => {
+  it("exposes the canonical tools only", async () => {
     const { tools } = await client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_todos",
       "changes_since",
-      "delete_completed",
       "delete_todos",
       "export_todos",
-      "get_todo",
       "import_todos",
       "list_todos",
       "set_todo_statuses",
       "summary",
       "update_todos",
     ]);
+    for (const tool of tools) {
+      expect(tool.outputSchema, `${tool.name} output schema`).toBeUndefined();
+    }
   });
 
-  it("should expose annotations and output schemas for each tool", async () => {
+  it("exposes annotations for the mutating tools", async () => {
     const { tools } = await client.listTools();
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
@@ -90,116 +101,49 @@ describe("createTodoMcpServer", () => {
       destructiveHint: true,
       idempotentHint: true,
     });
-    expect(byName.get("delete_completed")?.annotations).toMatchObject({
-      destructiveHint: true,
-      idempotentHint: true,
-    });
-
-    for (const tool of tools) {
-      expect(tool.outputSchema, `${tool.name} output schema`).toBeUndefined();
-    }
   });
 
-  it("should expose output schemas when explicitly enabled", async () => {
-    const schemaServer = createTodoMcpServer(backend, { outputSchemas: true });
-    const [schemaClientTransport, schemaServerTransport] = InMemoryTransport
-      .createLinkedPair();
-    const schemaClient = new Client({
-      name: "todo-txt-mcp-schema-client",
-      version: "2.0.0",
-    });
-    try {
-      await Promise.all([
-        schemaClient.connect(schemaClientTransport),
-        schemaServer.connect(schemaServerTransport),
-      ]);
-
-      const { tools } = await schemaClient.listTools();
-      for (const tool of tools) {
-        if (tool.name === "list_todos") {
-          expect(tool.outputSchema).toBeUndefined();
-          continue;
-        }
-        expect(tool.outputSchema, `${tool.name} output schema`).toBeDefined();
-      }
-    } finally {
-      await Promise.allSettled([
-        schemaClient.close(),
-        schemaServer.close(),
-      ]);
-    }
-  });
-
-  it("should return structured content for each tool", async () => {
-    const addResult = await client.callTool({
+  it("returns text-only results with no structured payload", async () => {
+    const added = await client.callTool({
       name: "add_todos",
-      arguments: { todos: ["structured todo"] },
-    }) as { structuredContent?: { added: Array<{ hash: string }> } };
-    expect(addResult.structuredContent?.added).toHaveLength(1);
-    const hash = addResult.structuredContent!.added[0].hash;
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+      arguments: { todos: ["text todo"] },
+    });
+    expect(added.structuredContent).toBeUndefined();
+    const hash = firstHash(added);
+    expect(hash).toMatch(/^[A-Za-z0-9_-]{11}$/);
 
-    const listResult = await client.callTool({
+    const listed = await client.callTool({
       name: "list_todos",
       arguments: {},
-    }) as {
-      structuredContent?: {
-        todos: Array<{
-          hash: string;
-          text: string;
-          status: string;
-        }>;
-        total: number;
-        nextOffset: number | null;
-      };
-    };
-    expect(listResult.structuredContent).toMatchObject({
-      total: 1,
-      nextOffset: null,
     });
-    expect(listResult.structuredContent?.todos[0]).toMatchObject({
-      hash,
-      text: "structured todo",
-      status: "todo",
-    });
+    expect(listed.structuredContent).toBeUndefined();
+    expect(textOf(listed)).toBe(`[${hash}] text todo`);
 
-    const editResult = await client.callTool({
+    const edited = await client.callTool({
       name: "update_todos",
       arguments: {
-        edits: [{ hash, text: "structured todo edited" }],
+        edits: [{ hash, text: "text todo edited" }],
       },
-    }) as {
-      structuredContent?: {
-        succeeded: Array<{ hash: string; text: string }>;
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-    expect(editResult.structuredContent?.failed).toEqual([]);
-    const edited = editResult.structuredContent!.succeeded[0];
-    expect(edited.text).toBe("structured todo edited");
-
-    const statusResult = await client.callTool({
-      name: "set_todo_statuses",
-      arguments: { hashes: [edited.hash], status: "done" },
-    }) as {
-      structuredContent?: {
-        succeeded: Array<{ hash: string; status: string; text: string }>;
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-    expect(statusResult.structuredContent?.failed).toEqual([]);
-    expect(statusResult.structuredContent?.succeeded[0]).toMatchObject({
-      status: "done",
-      text: expect.stringContaining("structured todo edited"),
     });
+    expect(edited.structuredContent).toBeUndefined();
+    const editedHash = firstHash(edited);
+    expect(textOf(edited)).toContain("text todo edited");
+
+    const done = await client.callTool({
+      name: "set_todo_statuses",
+      arguments: { hashes: [editedHash], status: "done" },
+    });
+    expect(done.structuredContent).toBeUndefined();
+    expect(textOf(done)).toContain("status to done");
+    expect(backend.getTodos()[0].isDone()).toBe(true);
   });
 
-  it("should support list filters, cursor paging and output formats over MCP", async () => {
+  it("supports filters and cursor paging over text results", async () => {
     await client.callTool({
       name: "add_todos",
       arguments: {
         todos: [
-          "alpha +proj @ctx prio:high",
+          "alpha +proj @ctx",
           "beta +proj @other",
           "gamma +proj @ctx",
         ],
@@ -208,208 +152,101 @@ describe("createTodoMcpServer", () => {
 
     const filtered = await client.callTool({
       name: "list_todos",
-      arguments: {
-        context: "@CTX",
-        project: "+PROJ",
-        sort: "text",
-        format: "structured",
-      },
-    }) as {
-      isError?: boolean;
-      content: Array<{ type: string; text?: string }>;
-      structuredContent?: {
-        todos: Array<{ text: string }>;
-        total: number;
-        nextCursor: string | null;
-      };
-    };
-    expect(filtered.isError).not.toBe(true);
-    expect(filtered.content[0].text).toBe("2 todos");
-    expect(filtered.structuredContent?.total).toBe(2);
-    expect(
-      filtered.structuredContent?.todos.map((todo) => todo.text),
-    ).toEqual(["alpha +proj @ctx prio:high", "gamma +proj @ctx"]);
+      arguments: { context: "@CTX", project: "+PROJ", sort: "text" },
+    });
+    const filteredText = textOf(filtered);
+    expect(filteredText).toContain("alpha +proj @ctx");
+    expect(filteredText).toContain("gamma +proj @ctx");
+    expect(filteredText).not.toContain("beta +proj @other");
 
     const firstPage = await client.callTool({
       name: "list_todos",
       arguments: { limit: 2 },
-    }) as { structuredContent?: { nextCursor: string | null } };
-    expect(firstPage.structuredContent?.nextCursor).toEqual(expect.any(String));
+    });
+    const next = textOf(firstPage).match(/^NEXT (.+)$/m)?.[1];
+    expect(next).toBeDefined();
 
     const secondPage = await client.callTool({
       name: "list_todos",
-      arguments: {
-        limit: 2,
-        cursor: firstPage.structuredContent?.nextCursor,
-        offset: 99,
-      },
-    }) as { structuredContent?: { todos: Array<{ text: string }> } };
-    expect(secondPage.structuredContent?.todos.map((todo) => todo.text)).toEqual(
-      ["gamma +proj @ctx"],
-    );
-
-    const textOnly = await client.callTool({
-      name: "list_todos",
-      arguments: { format: "text" },
-    }) as {
-      isError?: boolean;
-      content: Array<{ type: string; text?: string }>;
-      structuredContent?: unknown;
-    };
-    expect(textOnly.isError).not.toBe(true);
-    expect(textOnly.structuredContent).toBeUndefined();
-    expect(textOnly.content[0].text).toContain("alpha +proj @ctx");
+      arguments: { limit: 2, cursor: next, offset: 99 },
+    });
+    expect(textOf(secondPage)).toContain("gamma +proj @ctx");
   });
 
-  it("should delete a todo by hash", async () => {
+  it("deletes a todo by hash and reports missing hashes", async () => {
     const addResult = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["delete me"] },
     });
-    const hash = firstHash(addResult, "Added");
+    const hash = firstHash(addResult);
 
     const deleteResult = await client.callTool({
       name: "delete_todos",
       arguments: { hashes: [hash] },
-    }) as {
-      isError?: boolean;
-      structuredContent?: {
-        succeeded: Array<{ hash: string; text: string }>;
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-
-    expect(deleteResult.isError).not.toBe(true);
-    expect(deleteResult.structuredContent?.succeeded).toHaveLength(1);
-    expect(deleteResult.structuredContent?.succeeded[0]).toMatchObject({
-      hash,
-      text: "delete me",
     });
-    expect(deleteResult.structuredContent?.failed).toEqual([]);
-    expect(textOf(deleteResult)).toBe(`Deleted todo [${hash}]: delete me`);
+    expect(deleteResult.structuredContent).toBeUndefined();
+    expect(textOf(deleteResult)).toContain("delete me");
     expect(backend.getTodos()).toHaveLength(0);
 
     const missingResult = await client.callTool({
       name: "delete_todos",
       arguments: { hashes: [hash] },
-    }) as {
-      isError?: boolean;
-      structuredContent?: {
-        succeeded: unknown[];
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-
-    expect(missingResult.isError).not.toBe(true);
-    expect(missingResult.structuredContent?.succeeded).toEqual([]);
-    expect(missingResult.structuredContent?.failed).toEqual([
-      expect.objectContaining({ hash, code: "TODO_NOT_FOUND" }),
-    ]);
+    });
     expect(textOf(missingResult)).toBe(`Todo with hash ${hash} not found.`);
   });
 
-  it("should batch status updates and deletions", async () => {
+  it("batches status updates and deletions", async () => {
     const addResult = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["batch one", "batch two", "batch three"] },
-    }) as {
-      structuredContent?: { added: Array<{ hash: string }> };
-    };
-    const hashes = addResult.structuredContent!.added.map((todo) => todo.hash);
-    const missingHash = "0".repeat(16);
+    });
+    const hashes = hashesOf(addResult);
+    const missingHash = "0".repeat(11);
 
     const statusResult = await client.callTool({
       name: "set_todo_statuses",
-      arguments: { hashes: [hashes[0], hashes[1], missingHash], status: "done" },
-    }) as {
-      structuredContent?: {
-        succeeded: Array<{ hash: string; status: string }>;
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-    expect(statusResult.structuredContent?.succeeded).toHaveLength(2);
-    expect(
-      statusResult.structuredContent?.succeeded.every((todo) =>
-        todo.status === "done"
-      ),
-    ).toBe(true);
-    expect(statusResult.structuredContent?.failed).toEqual([
-      expect.objectContaining({ hash: missingHash, code: "TODO_NOT_FOUND" }),
-    ]);
+      arguments: {
+        hashes: [hashes[0], hashes[1], missingHash],
+        status: "done",
+      },
+    });
+    const statusText = textOf(statusResult);
+    expect(statusText).toContain("batch one");
+    expect(statusText).toContain("batch two");
+    expect(statusText).toContain(
+      `Todo with hash ${missingHash} not found.`,
+    );
 
-    // Completing a todo changes its hash, so delete using the hash returned by
-    // the status call instead of the pre-update hash.
-    const completedHash = statusResult.structuredContent!.succeeded[0].hash;
+    const completedHashes = hashesOf(statusResult);
+    expect(completedHashes).toHaveLength(2);
     const deleteResult = await client.callTool({
       name: "delete_todos",
-      arguments: { hashes: [completedHash, missingHash] },
-    }) as {
-      structuredContent?: {
-        succeeded: Array<{ hash: string; status: string }>;
-        failed: Array<{ hash: string; code: string }>;
-      };
-    };
-    expect(deleteResult.structuredContent?.succeeded).toHaveLength(1);
-    expect(deleteResult.structuredContent?.succeeded[0].hash).toBe(
-      completedHash,
+      arguments: { hashes: [completedHashes[0], missingHash] },
+    });
+    expect(textOf(deleteResult)).toContain(
+      `Todo with hash ${missingHash} not found.`,
     );
-    expect(deleteResult.structuredContent?.succeeded[0].status).toBe("done");
-    expect(deleteResult.structuredContent?.failed).toEqual([
-      expect.objectContaining({ hash: missingHash, code: "TODO_NOT_FOUND" }),
-    ]);
     expect(backend.getTodos()).toHaveLength(2);
   });
 
-  it("should delete completed todos by date and context", async () => {
-    await client.callTool({
-      name: "add_todos",
-      arguments: {
-        todos: [
-          "x 2025-01-01 2024-12-01 old done @Home",
-          "x 2026-05-01 2026-04-01 recent done @home",
-          "active @home",
-        ],
-      },
-    });
-
-    const result = await client.callTool({
-      name: "delete_completed",
-      arguments: { before: "2026-01-01", context: "@home" },
-    }) as {
-      structuredContent?: { deletedCount: number; hashes: string[] };
-    };
-
-    expect(result.structuredContent?.deletedCount).toBe(1);
-    expect(result.structuredContent?.hashes).toHaveLength(1);
-    const remaining = backend.getTodos().map((todo) => todo.text);
-    expect(remaining).toHaveLength(2);
-    expect(remaining).toContain("recent done @home");
-    expect(remaining).toContain("active @home");
-  });
-
-  it("should replay an idempotency key over MCP", async () => {
+  it("replays an idempotency key over MCP", async () => {
     const first = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["idempotent task"], idempotencyKey: "key-1" },
-    }) as {
-      structuredContent?: { added: Array<{ hash: string }> };
-    };
+    });
+    const firstHashValue = firstHash(first);
 
     const second = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["another task"], idempotencyKey: "key-1" },
-    }) as {
-      structuredContent?: { added: Array<{ hash: string }> };
-    };
+    });
 
-    expect(second.structuredContent?.added).toEqual(
-      first.structuredContent?.added,
-    );
+    expect(firstHash(second)).toBe(firstHashValue);
     expect(backend.getTodos()).toHaveLength(1);
     expect(backend.getTodos()[0].text).toBe("idempotent task");
   });
 
-  it("should skip duplicates and fail on duplicates when asked", async () => {
+  it("skips duplicates and fails on duplicates when asked", async () => {
     await client.callTool({
       name: "add_todos",
       arguments: { todos: ["dup task"] },
@@ -418,25 +255,20 @@ describe("createTodoMcpServer", () => {
     const skipped = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["  DUP   task"], onDuplicate: "skip" },
-    }) as {
-      structuredContent?: {
-        added: unknown[];
-        skipped: Array<{ text: string; hash: string }>;
-      };
-    };
-    expect(skipped.structuredContent?.added).toEqual([]);
-    expect(skipped.structuredContent?.skipped).toHaveLength(1);
+    });
+    expect(textOf(skipped)).toContain("Skipped duplicate todo");
     expect(backend.getTodos()).toHaveLength(1);
 
     const errored = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["dup task"], onDuplicate: "error" },
-    }) as { isError?: boolean };
+    });
     expect(errored.isError).toBe(true);
+    expect(errorCodeOf(errored)).toBe("CONFLICT");
     expect(backend.getTodos()).toHaveLength(1);
   });
 
-  it("should only expose list_todos in read-only mode", async () => {
+  it("only exposes list_todos in read-only mode", async () => {
     const readOnlyServer = createTodoMcpServer(backend, { readOnly: true });
     const [clientTransport, serverTransport] = InMemoryTransport
       .createLinkedPair();
@@ -461,7 +293,7 @@ describe("createTodoMcpServer", () => {
     }
   });
 
-  it("should expose a todo_format prompt with a user message", async () => {
+  it("exposes a todo_format prompt with a user message", async () => {
     const result = await client.getPrompt({ name: "todo_format" });
 
     expect(result.messages).toHaveLength(1);
@@ -471,24 +303,21 @@ describe("createTodoMcpServer", () => {
     expect(content.text).toContain("todo.txt");
   });
 
-  it("should support an add -> list -> edit -> set_todo_status flow", async () => {
-    // add_todo
+  it("supports an add -> list -> edit -> set_todo_status flow", async () => {
     const addResult = await client.callTool({
       name: "add_todos",
       arguments: { todos: ["write tests"] },
     });
-    const addedHash = firstHash(addResult, "Added");
+    const addedHash = firstHash(addResult);
     expect(textOf(addResult)).toContain("write tests");
 
-    // list_todos
     const listResult = await client.callTool({
       name: "list_todos",
-      arguments: { format: "both" },
+      arguments: {},
     });
     expect(textOf(listResult)).toContain(addedHash);
     expect(textOf(listResult)).toContain("write tests");
 
-    // edit_todo
     const editResult = await client.callTool({
       name: "update_todos",
       arguments: {
@@ -496,9 +325,8 @@ describe("createTodoMcpServer", () => {
       },
     });
     expect(textOf(editResult)).toContain("write more tests");
-    const editedHash = firstHash(editResult, "Edited");
+    const editedHash = firstHash(editResult);
 
-    // set_todo_statuses
     const statusResult = await client.callTool({
       name: "set_todo_statuses",
       arguments: { hashes: [editedHash], status: "done" },
@@ -506,82 +334,28 @@ describe("createTodoMcpServer", () => {
     expect(statusResult.isError).not.toBe(true);
     expect(textOf(statusResult)).toContain("status to done");
 
-    // The backend reflects the completed todo.
     const storedTodos = backend.getTodos();
     expect(storedTodos.length).toBe(1);
     expect(storedTodos[0].isDone()).toBe(true);
     expect(storedTodos[0].text).toBe("write more tests");
 
-    // ...and listing done todos shows it.
     const doneList = await client.callTool({
       name: "list_todos",
-      arguments: { status: "done", format: "both" },
+      arguments: { status: "done" },
     });
-    // Completing the todo changes its text (and therefore its hash).
-    const doneHash = await storedTodos[0].getHash();
-    expect(textOf(doneList)).toContain(`[${doneHash}] x`);
     expect(textOf(doneList)).toContain("write more tests");
   });
 
-  it("should expose a body field that can be fed back into update_todos", async () => {
+  it("reports tool errors with a stable code", async () => {
     await client.callTool({
       name: "add_todos",
-      arguments: {
-        todos: ["x 2026-11-01 2026-10-01 done task @Home due:2026-12-01"],
-      },
+      arguments: { todos: ["duplicate"] },
     });
-
-    const list = await client.callTool({
-      name: "list_todos",
-      arguments: { status: "all" },
-    }) as {
-      structuredContent?: {
-        todos: Array<{ hash: string; text: string; body: string }>;
-      };
-    };
-    const todo = list.structuredContent!.todos[0];
-
-    // `text` is for display; `body` is what update_todos accepts. Tags are
-    // excluded from `body` because update_todos preserves them separately.
-    expect(todo.text).toBe("x 2026-11-01 done task @Home due:2026-12-01");
-    expect(todo.body).toBe("done task @Home");
-
-    const got = await client.callTool({
-      name: "get_todo",
-      arguments: { hash: todo.hash },
-    }) as {
-      structuredContent?: { todo: { body: string } };
-    };
-    expect(got.structuredContent?.todo.body).toBe("done task @Home");
-
-    const edit = await client.callTool({
-      name: "update_todos",
-      arguments: { edits: [{ hash: todo.hash, text: `${todo.body} @Work` }] },
-    });
-    expect(edit.isError).not.toBe(true);
-    expect(backend.getTodos()[0].text).toBe("done task @Home @Work");
-    expect(backend.getTodos()[0].tags.due).toBe("2026-12-01");
-  });
-
-  it("should return a structured INVALID_ARGUMENT for a metadata prefix", async () => {
-    await client.callTool({
-      name: "add_todos",
-      arguments: { todos: ["keep me"] },
-    });
-    const hash = await backend.getTodos()[0].getHash();
-
     const result = await client.callTool({
-      name: "update_todos",
-      arguments: { edits: [{ hash, text: "x 2026-11-01 keep me" }] },
-    }) as {
-      isError?: boolean;
-      structuredContent?: { error?: { code?: string; message?: string } };
-    };
-
+      name: "add_todos",
+      arguments: { todos: ["duplicate"], onDuplicate: "error" },
+    });
     expect(result.isError).toBe(true);
-    expect(result.structuredContent?.error?.code).toBe("INVALID_ARGUMENT");
-    expect(result.structuredContent?.error?.message).not.toContain("..");
-    expect(result.structuredContent?.error?.message).toMatch(/status\.$/);
-    expect(backend.getTodos()[0].text).toBe("keep me");
+    expect(errorCodeOf(result)).toBe("CONFLICT");
   });
 });

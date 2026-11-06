@@ -198,8 +198,6 @@ describe("MCP HTTP endpoint", () => {
         "update_todos",
         "set_todo_statuses",
         "delete_todos",
-        "delete_completed",
-        "get_todo",
         "summary",
         "export_todos",
         "changes_since",
@@ -218,7 +216,7 @@ describe("MCP HTTP endpoint", () => {
 
     const listed = await rpc("tools/call", {
       name: "list_todos",
-      arguments: { format: "both" },
+      arguments: {},
     });
     expect(listed.result?.content?.[0]?.text).toContain("http todo");
   });

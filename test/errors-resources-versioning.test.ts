@@ -5,10 +5,8 @@ import {
   addTodosHandler,
   changesSinceHandler,
   createTodoMcpServer,
-  deleteCompletedHandler,
   deleteTodosHandler,
   exportTodosHandler,
-  getTodoHandler,
   importTodosHandler,
   listTodosHandler,
   summaryHandler,
@@ -149,21 +147,6 @@ describe("structured tool errors", () => {
     });
   });
 
-  it("returns TODO_NOT_FOUND with hash and hint for a missing todo", async () => {
-    const hash = "0123456789abcdef";
-    const result = await getTodoHandler(new MockBackend(), { hash });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(result.content[0].text).toBe(
-      `Todo with hash ${hash} not found. Call list_todos to refresh hashes.`,
-    );
-    expect(errorOf(result)).toEqual({
-      code: "TODO_NOT_FOUND",
-      message:
-        `Todo with hash ${hash} not found. Call list_todos to refresh hashes.`,
-      details: { hash, hint: "call list_todos to refresh hashes" },
-    });
-  });
 
   it("reports partial batch misses as succeeded/failed", async () => {
     const backend = new MockBackend();
@@ -218,21 +201,6 @@ describe("content versioning", () => {
     expect(changed.version).not.toBe(version);
   });
 
-  it("gets a single todo by hash with the content version", async () => {
-    const todo = new Todo("only todo +proj @ctx");
-    await backend.save([todo]);
-    const hash = await todo.getHash();
-
-    const result = await getTodoHandler(backend, { hash });
-    const content = structured<{
-      todo: { hash: string; text: string };
-      version: string;
-    }>(result);
-
-    expect(content.todo).toMatchObject({ hash, text: "only todo +proj @ctx" });
-    expect(content.version).toBe(computeContentVersion(backend.getTodos()));
-    expect(textOf(result)).toBe(`[${hash}] only todo +proj @ctx`);
-  });
 
   it("summarizes counts by status, context, project, priority and overdue", async () => {
     await backend.save([
@@ -506,24 +474,6 @@ describe("dryRun deletions", () => {
     expect(backend.saveCalls).toBe(0);
   });
 
-  it("delete_completed reports candidates without writing", async () => {
-    const backend = new MockBackend();
-    await backend.save([
-      new Todo("x 2024-01-01 2023-12-01 done"),
-      new Todo("active"),
-    ]);
-    backend.saveCalls = 0;
-
-    const result = await deleteCompletedHandler(backend, { dryRun: true });
-    const content = structured<{ deletedCount: number; dryRun?: boolean }>(
-      result,
-    );
-
-    expect(content.deletedCount).toBe(1);
-    expect(content.dryRun).toBe(true);
-    expect(backend.getTodos()).toHaveLength(2);
-    expect(backend.saveCalls).toBe(0);
-  });
 });
 
 describe("MCP resources", () => {
@@ -578,64 +528,32 @@ describe("MCP resources", () => {
     const summaryResult = await client.callTool({
       name: "summary",
       arguments: {},
-    }) as {
-      structuredContent?: {
-        total: number;
-        open: number;
-        done: number;
-        version: string;
-      };
-    };
-    expect(summaryResult.structuredContent).toMatchObject({
-      total: length,
-      open: 2,
-      done: 1,
     });
+    const summaryText = textOf(summaryResult);
+    expect(summaryText).toContain(`${length} todos`);
+    expect(summaryText).toContain("VERSION ");
+    const version = summaryText.match(/VERSION (\S+)/)?.[1];
+    expect(version).toBeDefined();
 
-    const version = summaryResult.structuredContent!.version;
     const exportResult = await client.callTool({
       name: "export_todos",
       arguments: {},
-    }) as { structuredContent?: { content: string; version: string } };
-    expect(exportResult.structuredContent?.version).toBe(version);
-    expect(exportResult.structuredContent?.content).toBe(
+    });
+    expect(textOf(exportResult)).toBe(
       serializeTodoContent(backend.getTodos()),
     );
 
     const changes = await client.callTool({
       name: "changes_since",
       arguments: { version },
-    }) as { structuredContent?: { changed: boolean } };
-    expect(changes.structuredContent?.changed).toBe(false);
-
-    const hash = await backend.getTodos()[0].getHash();
-    const fetched = await client.callTool({
-      name: "get_todo",
-      arguments: { hash },
-    }) as {
-      structuredContent?: { todo: { hash: string }; version: string };
-    };
-    expect(fetched.structuredContent?.todo.hash).toBe(hash);
-    expect(fetched.structuredContent?.version).toBe(version);
-
-    const missing = await client.callTool({
-      name: "get_todo",
-      arguments: { hash: "0".repeat(16) },
-    }) as {
-      isError?: boolean;
-      structuredContent?: { error?: { code: string } };
-    };
-    expect(missing.isError).toBe(true);
-    expect(missing.structuredContent?.error?.code).toBe("TODO_NOT_FOUND");
+    });
+    expect(textOf(changes)).toContain("No changes since version");
 
     const dryRun = await client.callTool({
       name: "import_todos",
       arguments: { content: "imported\n", mode: "merge", dryRun: true },
-    }) as { structuredContent?: { dryRun: boolean; changed: boolean } };
-    expect(dryRun.structuredContent).toMatchObject({
-      dryRun: true,
-      changed: true,
     });
+    expect(textOf(dryRun)).toContain("Dry run");
     expect(backend.getTodos()).toHaveLength(length);
   });
 

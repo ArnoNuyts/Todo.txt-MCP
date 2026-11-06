@@ -22,9 +22,9 @@ function lastHash(messages: readonly ChatMessage[]): string {
     if (message.role !== "tool" || message.content === null) {
       continue;
     }
-    const match = message.content.match(/\b[0-9a-f]{16}\b/);
+    const match = message.content.match(/^\[?([A-Za-z0-9_-]{11})\]?(?=\s|$)/);
     if (match) {
-      return match[0];
+      return match[1];
     }
   }
   throw new Error("No hash found in tool results");

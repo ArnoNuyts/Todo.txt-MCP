@@ -4,12 +4,10 @@ import {
   AddTodosSchema,
   AddTodoSchema,
   ChangesSinceSchema,
-  DeleteCompletedSchema,
   DeleteTodosSchema,
   DeleteTodoSchema,
   EditTodoSchema,
   ExportTodosSchema,
-  GetTodoSchema,
   ImportTodosSchema,
   ListTodosSchema,
   CompactAddTodosSchema,
@@ -39,8 +37,6 @@ describe("Tool schemas", () => {
       set_todo_status: SetTodoStatusSchema,
       delete_todos: DeleteTodosSchema,
       delete_todo: DeleteTodoSchema,
-      delete_completed: DeleteCompletedSchema,
-      get_todo: GetTodoSchema,
       summary: SummarySchema,
       export_todos: ExportTodosSchema,
       changes_since: ChangesSinceSchema,
@@ -113,7 +109,6 @@ describe("Tool schemas", () => {
     expect(() => ListTodosSchema.parse({ createdAfter: "02-01-2026" }))
       .toThrow();
     expect(() => ListTodosSchema.parse({ sort: "alphabetical" })).toThrow();
-    expect(() => ListTodosSchema.parse({ format: "json" })).toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "short" })).toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "a".repeat(65) })).toThrow();
     expect(() =>
@@ -143,11 +138,6 @@ describe("Tool schemas", () => {
     expect(() =>
       SetTodoStatusesSchema.parse({ hashes: ["01234567"], status: "other" })
     ).toThrow();
-    expect(() => DeleteCompletedSchema.parse({ before: "2026-02-30" }))
-      .toThrow();
-    expect(() => DeleteCompletedSchema.parse({ before: "01-02-2026" }))
-      .toThrow();
-    expect(() => DeleteCompletedSchema.parse({ context: "" })).toThrow();
   });
 
   it("should accept inputs on the allowed bounds", () => {
@@ -168,7 +158,6 @@ describe("Tool schemas", () => {
         createdAfter: "2026-01-01",
         sort: "priority",
         cursor: "b2Zmc2V0OjI",
-        format: "text",
       })
     ).not.toThrow();
     expect(() => DeleteTodoSchema.parse({ hash: "01234567" })).not.toThrow();
@@ -189,9 +178,5 @@ describe("Tool schemas", () => {
         status: "todo",
       })
     ).not.toThrow();
-    expect(() =>
-      DeleteCompletedSchema.parse({ before: "2026-02-28", context: "@home" })
-    ).not.toThrow();
-    expect(() => DeleteCompletedSchema.parse({})).not.toThrow();
   });
 });

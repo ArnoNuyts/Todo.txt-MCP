@@ -251,9 +251,9 @@ function latestHash(
       if (!line.toLowerCase().includes(needle)) {
         continue;
       }
-      const match = line.match(/\b[0-9a-f]{16}\b/);
+      const match = line.match(/^\[?([A-Za-z0-9_-]{11})\]?(?=\s|$)/);
       if (match) {
-        return match[0];
+        return match[1];
       }
     }
   }

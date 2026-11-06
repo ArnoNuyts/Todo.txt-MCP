@@ -4,6 +4,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
 import type { Request, Response } from "express";
@@ -203,11 +204,6 @@ export const ListTodosSchema = z.object({
     "Opaque cursor from a previous response's 'nextCursor'; when set, " +
       "'offset' is ignored",
   ),
-  format: z.enum(["text", "structured", "both"]).optional().describe(
-    "Output format: 'structured' (default) returns structured content with a " +
-      "short summary line; 'text' returns only the text list; 'both' returns " +
-      "both and is the most token-heavy.",
-  ),
 });
 
 export const SetTodoStatusesSchema = z.object({
@@ -232,31 +228,13 @@ export const DeleteTodosSchema = z.object({
   ),
 });
 
-export const DeleteCompletedSchema = z.object({
-  before: DateOnlySchema.optional().describe(
-    "Only delete todos completed strictly before this date (YYYY-MM-DD)",
-  ),
-  context: z.string().min(1).max(100).optional().describe(
-    "Only delete todos in this context; the leading '@' is optional and " +
-      "matching is case-insensitive",
-  ),
-  dryRun: z.boolean().optional().describe(
-    "When true, report what would be deleted without writing to the backend",
-  ),
-});
-
-export const GetTodoSchema = z.object({
-  hash: z.string().min(8).max(64).describe("Hash of the todo to fetch"),
-});
-
 export const SummarySchema = z.object({});
 
 export const ExportTodosSchema = z.object({});
 
 export const ChangesSinceSchema = z.object({
   version: z.string().min(1).max(128).describe(
-    "Content version returned by a previous list_todos, get_todo, summary or " +
-      "export_todos response",
+    "Content version from a previous summary or export_todos response",
   ),
 });
 
@@ -341,141 +319,6 @@ export const SetTodoStatusSchema = z.object({
 export const DeleteTodoSchema = z.object({
   hash: z.string().min(8).max(64).describe("Hash of the todo to delete"),
 });
-
-// Output schemas (raw shapes, as expected by registerTool)
-const TodoSummaryShape = {
-  hash: z.string(),
-  text: z.string(),
-  status: z.enum(["todo", "done"]),
-};
-
-const TodoOutputShape = {
-  ...TodoSummaryShape,
-  body: z.string(),
-  priority: z.string().optional(),
-  creationDate: z.string().optional(),
-  completionDate: z.string().optional(),
-};
-
-const UpdatedTodoSummaryShape = {
-  ...TodoSummaryShape,
-  previousHash: z.string(),
-};
-
-export const ListTodosOutputShape = {
-  todos: z.array(z.object(TodoOutputShape)),
-  total: z.number().int(),
-  nextOffset: z.number().int().nullable(),
-  nextCursor: z.string().nullable(),
-  version: z.string(),
-};
-
-const BatchFailureShape = z.object({
-  hash: z.string(),
-  code: z.enum([
-    "TODO_NOT_FOUND",
-    "INVALID_ARGUMENT",
-    "LIMIT_EXCEEDED",
-    "CONFLICT",
-    "BACKEND_ERROR",
-    "UNSUPPORTED",
-  ]),
-  message: z.string(),
-});
-
-const BatchOutputFields = {
-  succeeded: z.array(z.object(TodoSummaryShape)),
-  failed: z.array(BatchFailureShape),
-};
-
-const AddTodosOutputShape = {
-  added: z.array(z.object(TodoSummaryShape)),
-  skipped: z.array(z.object({ text: z.string(), hash: z.string() })),
-};
-
-const UpdateTodosOutputShape = {
-  ...BatchOutputFields,
-  succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
-  dryRun: z.boolean().optional(),
-};
-
-const DeleteTodosOutputShape = {
-  ...BatchOutputFields,
-  dryRun: z.boolean().optional(),
-};
-
-const SetTodoStatusesOutputShape = {
-  ...BatchOutputFields,
-  succeeded: z.array(z.object(UpdatedTodoSummaryShape)),
-  dryRun: z.boolean().optional(),
-};
-
-const DeleteCompletedOutputShape = {
-  deletedCount: z.number().int(),
-  hashes: z.array(z.string()),
-  dryRun: z.boolean().optional(),
-};
-
-const GetTodoOutputShape = {
-  todo: z.object(TodoOutputShape),
-  version: z.string(),
-};
-
-const SummaryOutputShape = {
-  version: z.string(),
-  total: z.number().int(),
-  open: z.number().int(),
-  done: z.number().int(),
-  overdue: z.number().int(),
-  status: z.object({
-    todo: z.number().int(),
-    done: z.number().int(),
-  }),
-  contexts: z.record(z.string(), z.number().int()),
-  projects: z.record(z.string(), z.number().int()),
-  priorities: z.record(z.string(), z.number().int()),
-};
-
-const ExportTodosOutputShape = {
-  content: z.string(),
-  version: z.string(),
-};
-
-const ChangesSinceOutputShape = {
-  changed: z.boolean(),
-  version: z.string(),
-  content: z.string().optional(),
-};
-
-const ImportTodosOutputShape = {
-  dryRun: z.boolean(),
-  mode: z.enum(["merge", "replace"]),
-  changed: z.boolean(),
-  version: z.string(),
-  total: z.number().int(),
-  importedCount: z.number().int(),
-  diff: z.object({
-    added: z.number().int(),
-    removed: z.number().int(),
-    unchanged: z.number().int(),
-  }),
-};
-
-/** @deprecated Kept so the deprecated `add_todo` alias keeps its old name. */
-const AddTodoOutputShape = AddTodosOutputShape;
-/** @deprecated Kept so the deprecated `edit_todo` alias keeps its old name. */
-const EditTodoOutputShape = UpdateTodosOutputShape;
-/** Deprecated single-hash response shape for `set_todo_status`. */
-const SetTodoStatusOutputShape = {
-  hash: z.string(),
-  status: z.enum(["done", "todo"]),
-  text: z.string(),
-};
-/** Deprecated single-hash response shape for `delete_todo`. */
-const DeleteTodoOutputShape = {
-  deleted: z.literal(true),
-  hash: z.string(),
-};
 
 export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
   switch (config.backend) {
@@ -847,7 +690,7 @@ async function listTodosOperation(
   rawArgs: unknown,
 ) {
   const args = ListTodosSchema.parse(rawArgs);
-  const { limit = 50, offset = 0, cursor, format = "structured" } = args;
+  const { limit = 50, offset = 0, cursor } = args;
   const allTodos = await backend.load();
   const version = computeContentVersion(allTodos);
 
@@ -889,27 +732,12 @@ async function listTodosOperation(
   const text = todoStrings.length > 0
     ? todoStrings.join("\n")
     : "No todos found matching criteria.";
-
-  if (format === "text") {
-    return {
-      content: [{ type: "text" as const, text }],
-    };
-  }
-
-  if (format === "structured") {
-    return {
-      content: [{
-        type: "text" as const,
-        text: filteredTodos.length === 1
-          ? "1 todo"
-          : `${filteredTodos.length} todos`,
-      }],
-      structuredContent,
-    };
-  }
+  const contentText = nextCursor === null
+    ? text
+    : `${text}\nNEXT ${nextCursor}`;
 
   return {
-    content: [{ type: "text" as const, text }],
+    content: [{ type: "text" as const, text: contentText }],
     structuredContent,
   };
 }
@@ -1053,13 +881,12 @@ async function compactListTodosOperation(
   const args = CompactListTodosSchema.parse(rawArgs ?? {});
   const result = await listTodosOperation(backend, {
     ...args,
-    format: "text",
     limit: args.limit ?? 20,
   });
   const text = result.content
     .map((item) => item.text ?? "")
     .join("\n")
-    .replace(/^\[([0-9a-f]{16})\]/gm, "$1");
+    .replace(/^\[([A-Za-z0-9_-]{11})\]/gm, "$1");
   return { content: [{ type: "text" as const, text }] };
 }
 
@@ -1331,97 +1158,6 @@ export async function deleteTodoHandler(
   });
 }
 
-// Tool: delete_completed handler
-async function deleteCompletedOperation(
-  backend: TodoBackend,
-  rawArgs: unknown,
-) {
-  const { before, context, dryRun = false } = DeleteCompletedSchema.parse(
-    rawArgs,
-  );
-  const normalizedContext = context?.replace(/^@/, "").toLowerCase();
-  const beforeTime = before === undefined
-    ? undefined
-    : new Date(`${before}T00:00:00.000Z`).getTime();
-
-  return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
-    const remaining: Todo[] = [];
-    const hashes: string[] = [];
-
-    for (const todo of todos) {
-      const completedBefore = beforeTime === undefined ||
-        (todo.completionDate !== undefined &&
-          todo.completionDate.getTime() < beforeTime);
-      const inContext = normalizedContext === undefined ||
-        todoHasContext(todo, normalizedContext);
-
-      if (todo.isDone() && completedBefore && inContext) {
-        hashes.push(await todo.getHash());
-      } else {
-        remaining.push(todo);
-      }
-    }
-
-    if (hashes.length > 0 && !dryRun) {
-      await backend.save(remaining);
-    }
-
-    const action = dryRun ? "Would delete" : "Deleted";
-    const text = hashes.length > 0
-      ? `${action} ${hashes.length} completed todo(s):\n` +
-        hashes.map((hash) => `[${hash}]`).join("\n")
-      : dryRun
-      ? "No completed todos matched. Nothing would be deleted."
-      : "No completed todos matched. Nothing was deleted.";
-
-    return {
-      content: [{
-        type: "text" as const,
-        text,
-      }],
-      structuredContent: {
-        deletedCount: hashes.length,
-        hashes,
-        ...(dryRun ? { dryRun: true } : {}),
-      },
-    };
-  });
-}
-
-export function deleteCompletedHandler(
-  backend: TodoBackend,
-  rawArgs: unknown,
-) {
-  return guardTool(() => deleteCompletedOperation(backend, rawArgs));
-}
-
-// Tool: get_todo handler
-async function getTodoOperation(backend: TodoBackend, rawArgs: unknown) {
-  const { hash } = GetTodoSchema.parse(rawArgs);
-  const todos = await backend.load();
-  const version = computeContentVersion(todos);
-
-  for (const todo of todos) {
-    if (await todo.getHash() === hash) {
-      const summary = await summarizeTodoDetail(todo);
-      return {
-        content: [{
-          type: "text" as const,
-          text: `[${hash}] ${summary.text}`,
-        }],
-        structuredContent: { todo: summary, version },
-      };
-    }
-  }
-
-  return notFoundError(hash);
-}
-
-export function getTodoHandler(backend: TodoBackend, rawArgs: unknown) {
-  return guardTool(() => getTodoOperation(backend, rawArgs));
-}
-
 // Tool: summary handler
 async function summaryOperation(backend: TodoBackend, rawArgs: unknown) {
   SummarySchema.parse(rawArgs ?? {});
@@ -1432,6 +1168,7 @@ async function summaryOperation(backend: TodoBackend, rawArgs: unknown) {
   const lines = [
     `${report.total} todos (${report.open} open, ${report.done} done, ` +
     `${report.overdue} overdue)`,
+    `VERSION ${version}`,
   ];
   for (const [label, counts] of [
     ["Contexts", report.contexts],
@@ -1494,7 +1231,8 @@ async function changesSinceOperation(backend: TodoBackend, rawArgs: unknown) {
   return {
     content: [{
       type: "text" as const,
-      text: `Todo file changed. Current version: ${currentVersion}.`,
+      text: `Todo file changed. Current version: ${currentVersion}.\n` +
+        serializeTodoContent(todos),
     }],
     structuredContent: {
       changed: true,
@@ -1630,12 +1368,6 @@ export interface CreateTodoMcpServerOptions {
   readOnly?: boolean;
   /** Expose coarse tool profiles; `off` exposes resources only. */
   toolset?: TodoToolset;
-  /**
-   * Include `outputSchema` in `tools/list`. Off by default: output schemas are
-   * roughly half of the tool-definition payload and most clients do not
-   * validate them.
-   */
-  outputSchemas?: boolean;
 }
 
 /**
@@ -1678,34 +1410,30 @@ export function resolveToolset(
   return "full";
 }
 
-/**
- * Resolves output-schema exposure from an explicit option, then
- * `MCP_OUTPUT_SCHEMAS`. Off by default; enable with `1`, `true`, or `yes`.
- */
-export function resolveOutputSchemas(
-  options: { outputSchemas?: boolean } = {},
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (options.outputSchemas !== undefined) {
-    return options.outputSchemas;
-  }
-  const value = env.MCP_OUTPUT_SCHEMAS?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
-
 export function createTodoMcpServer(
   backend: TodoBackend,
   options: CreateTodoMcpServerOptions = {},
 ) {
   const toolset = resolveToolset(options);
-  const exposeOutputSchemas = resolveOutputSchemas(options);
-  const outputSchema = (shape: Record<string, z.ZodTypeAny>) =>
-    exposeOutputSchemas ? { outputSchema: shape } : {};
 
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "2.2.0",
+    version: "3.0.0",
   });
+
+  // Every successful tool result is text-only. Handlers keep structured data
+  // internally for tests, but the MCP surface stops at `content`; this avoids
+  // paying for both a text and a structured copy of the same payload.
+  const terse = (
+    handler: (rawArgs: unknown) => Promise<unknown>,
+  ) =>
+  async (rawArgs: unknown): Promise<CallToolResult> => {
+    const result = await handler(rawArgs) as CallToolResult;
+    if (isToolError(result)) {
+      return result;
+    }
+    return { content: result.content };
+  };
 
   // Register a prompt describing the todo.txt format
   server.registerPrompt(
@@ -1811,7 +1539,7 @@ export function createTodoMcpServer(
         inputSchema: CompactListTodosSchema.shape,
         annotations: { readOnlyHint: true },
       },
-      (rawArgs: unknown) => compactListTodosHandler(backend, rawArgs),
+      terse((rawArgs) => compactListTodosHandler(backend, rawArgs)),
     );
 
     if (options.readOnly === true) {
@@ -1825,7 +1553,7 @@ export function createTodoMcpServer(
         inputSchema: CompactAddTodosSchema.shape,
         annotations: { destructiveHint: false },
       },
-      (rawArgs: unknown) => compactAddTodosHandler(backend, rawArgs),
+      terse((rawArgs) => compactAddTodosHandler(backend, rawArgs)),
     );
 
     server.registerTool(
@@ -1837,7 +1565,7 @@ export function createTodoMcpServer(
         inputSchema: CompactUpdateTodosSchema.shape,
         annotations: { destructiveHint: true },
       },
-      (rawArgs: unknown) => compactUpdateTodosHandler(backend, rawArgs),
+      terse((rawArgs) => compactUpdateTodosHandler(backend, rawArgs)),
     );
 
     server.registerTool(
@@ -1847,7 +1575,7 @@ export function createTodoMcpServer(
         inputSchema: CompactMarkDoneSchema.shape,
         annotations: { destructiveHint: true, idempotentHint: true },
       },
-      (rawArgs: unknown) => compactMarkDoneHandler(backend, rawArgs),
+      terse((rawArgs) => compactMarkDoneHandler(backend, rawArgs)),
     );
 
     if (toolset === "compact-plus") {
@@ -1858,7 +1586,7 @@ export function createTodoMcpServer(
           inputSchema: CompactChangesSinceSchema.shape,
           annotations: { readOnlyHint: true },
         },
-        (rawArgs: unknown) => compactChangesSinceHandler(backend, rawArgs),
+        terse((rawArgs) => compactChangesSinceHandler(backend, rawArgs)),
       );
     }
 
@@ -1866,10 +1594,6 @@ export function createTodoMcpServer(
   }
 
   // Tool: list_todos
-  // No `outputSchema` is declared: the `format: "text"` mode returns no
-  // structured content, which the MCP SDK rejects when an output schema is
-  // present. Default ("structured") and "both" responses still include
-  // structured content matching `ListTodosOutputShape`.
   server.registerTool(
     "list_todos",
     {
@@ -1880,7 +1604,7 @@ export function createTodoMcpServer(
       inputSchema: ListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
+    terse((rawArgs) => listTodosHandler(backend, rawArgs)),
   );
 
   // Read-only mode exposes listing only. Returning here keeps the mutating
@@ -1898,13 +1622,12 @@ export function createTodoMcpServer(
           "Add one or more todos in todo.txt format. Supports duplicate " +
           "handling and an idempotency key for safe retries.",
         inputSchema: AddTodosSchema.shape,
-        ...outputSchema(AddTodosOutputShape),
         annotations: {
           destructiveHint: false,
           idempotentHint: false,
         },
       },
-      (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
+      terse((rawArgs) => addTodosHandler(backend, rawArgs)),
     );
 
     // Tool: update_todos
@@ -1919,13 +1642,12 @@ export function createTodoMcpServer(
           "be chained without a re-read. Pass dryRun to preview the resulting " +
           "hashes and text without writing.",
         inputSchema: UpdateTodosSchema.shape,
-        ...outputSchema(UpdateTodosOutputShape),
         annotations: {
           destructiveHint: true,
           idempotentHint: false,
         },
       },
-      (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
+      terse((rawArgs) => updateTodosHandler(backend, rawArgs)),
     );
 
     // Tool: set_todo_statuses
@@ -1939,13 +1661,12 @@ export function createTodoMcpServer(
           "be chained without a re-read. Pass dryRun to preview the resulting " +
           "statuses without writing.",
         inputSchema: SetTodoStatusesSchema.shape,
-        ...outputSchema(SetTodoStatusesOutputShape),
         annotations: {
           destructiveHint: true,
           idempotentHint: true,
         },
       },
-      (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
+      terse((rawArgs) => setTodoStatusesHandler(backend, rawArgs)),
     );
 
     // Tool: delete_todos
@@ -1956,47 +1677,14 @@ export function createTodoMcpServer(
           "Delete todos by hash in one batch. Loads and saves the backend once. " +
           "Pass dryRun to preview the deletion without writing.",
         inputSchema: DeleteTodosSchema.shape,
-        ...outputSchema(DeleteTodosOutputShape),
         annotations: {
           destructiveHint: true,
           idempotentHint: true,
         },
       },
-      (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
+      terse((rawArgs) => deleteTodosHandler(backend, rawArgs)),
     );
   }
-
-  if (toolset === "full") {
-    // Tool: delete_completed
-    server.registerTool(
-      "delete_completed",
-      {
-        description:
-          "Delete completed todos, optionally only those completed before a " +
-          "date and/or in a context. Pass dryRun to preview without writing.",
-        inputSchema: DeleteCompletedSchema.shape,
-        ...outputSchema(DeleteCompletedOutputShape),
-        annotations: {
-          destructiveHint: true,
-          idempotentHint: true,
-        },
-      },
-      (rawArgs: unknown) => deleteCompletedHandler(backend, rawArgs),
-    );
-  }
-
-  // Tool: get_todo
-  server.registerTool(
-    "get_todo",
-    {
-      description:
-        "Fetch a single todo by hash, including its content version.",
-      inputSchema: GetTodoSchema.shape,
-      ...outputSchema(GetTodoOutputShape),
-      annotations: { readOnlyHint: true },
-    },
-    (rawArgs: unknown) => getTodoHandler(backend, rawArgs),
-  );
 
   // Tool: summary
   server.registerTool(
@@ -2006,10 +1694,9 @@ export function createTodoMcpServer(
         "Summarize todo counts by status, context, project and priority, " +
         "plus the number of overdue open todos.",
       inputSchema: SummarySchema.shape,
-      ...outputSchema(SummaryOutputShape),
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => summaryHandler(backend, rawArgs),
+    terse((rawArgs) => summaryHandler(backend, rawArgs)),
   );
 
   // Tool: export_todos
@@ -2019,10 +1706,9 @@ export function createTodoMcpServer(
       description:
         "Export the whole todo.txt content together with its content version.",
       inputSchema: ExportTodosSchema.shape,
-      ...outputSchema(ExportTodosOutputShape),
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => exportTodosHandler(backend, rawArgs),
+    terse((rawArgs) => exportTodosHandler(backend, rawArgs)),
   );
 
   // Tool: changes_since
@@ -2033,10 +1719,9 @@ export function createTodoMcpServer(
         "Report whether the todo file changed since a version. When it did, " +
         "the current content is included.",
       inputSchema: ChangesSinceSchema.shape,
-      ...outputSchema(ChangesSinceOutputShape),
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => changesSinceHandler(backend, rawArgs),
+    terse((rawArgs) => changesSinceHandler(backend, rawArgs)),
   );
 
   if (toolset === "full") {
@@ -2048,13 +1733,12 @@ export function createTodoMcpServer(
           "Import todo.txt content in merge or replace mode, optionally guarded " +
           "by an expected content version. Supports a dry run diff.",
         inputSchema: ImportTodosSchema.shape,
-        ...outputSchema(ImportTodosOutputShape),
         annotations: {
           destructiveHint: true,
           idempotentHint: false,
         },
       },
-      (rawArgs: unknown) => importTodosHandler(backend, rawArgs),
+      terse((rawArgs) => importTodosHandler(backend, rawArgs)),
     );
   }
 
@@ -2072,8 +1756,6 @@ export type CreateAppOptions = HttpSecurityOptions & {
   logLevel?: LogLevel;
   /** Overrides `MCP_TOOLSET` for the exposed tool profile. */
   toolset?: TodoToolset;
-  /** Overrides `MCP_OUTPUT_SCHEMAS`; off by default. */
-  outputSchemas?: boolean;
 };
 
 export function createApp(
@@ -2090,7 +1772,6 @@ export function createApp(
   const metrics = createMetrics();
   const readOnly = resolveReadOnlyMode(options, process.env);
   const toolset = resolveToolset(options, process.env);
-  const outputSchemas = resolveOutputSchemas(options, process.env);
   const app = express();
 
   // Do not advertise the framework.
@@ -2338,7 +2019,6 @@ export function createApp(
       const server = createTodoMcpServer(backend, {
         readOnly,
         toolset,
-        outputSchemas,
       });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,

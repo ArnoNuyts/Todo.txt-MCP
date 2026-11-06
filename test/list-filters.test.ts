@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
-import {
-  listTodosHandler,
-  ListTodosOutputShape,
-} from "../server.ts";
+import { listTodosHandler } from "../server.ts";
 import { Todo } from "../logic/todo.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
@@ -229,53 +225,20 @@ describe("list_todos filters, sorting, paging and output format", () => {
     });
   });
 
-  it("returns text and structured content in both format", async () => {
-    const result = await listTodosHandler(backend, {
-      status: "all",
-      format: "both",
-    });
+  it("returns the text list plus internal structured content", async () => {
+    const result = await listTodosHandler(backend, { status: "all" });
     const structured = structuredOf(result);
 
     expect(textsOf(result)).toHaveLength(5);
     expect(structured.total).toBe(5);
     expect(structured.nextCursor).toBeNull();
-    expect(z.object(ListTodosOutputShape).parse(structured)).toEqual(structured);
   });
 
-  it("defaults to structured output with a one-line summary", async () => {
-    const result = await listTodosHandler(backend, { status: "all" });
-    const structured = structuredOf(result);
+  it("returns a NEXT cursor line when more pages exist", async () => {
+    const result = await listTodosHandler(backend, { limit: 2 });
 
-    expect(result.content[0].text).toBe("5 todos");
-    expect(structured.total).toBe(5);
-  });
-
-  it("uses the singular form for a one-todo summary", async () => {
-    const result = await listTodosHandler(backend, { search: "Buy milk" });
-
-    expect(result.content[0].text).toBe("1 todo");
-    expect(structuredOf(result).total).toBe(1);
-  });
-
-  it("returns only a one-line summary in structured format", async () => {
-    const result = await listTodosHandler(backend, {
-      status: "all",
-      format: "structured",
-    });
-    const structured = structuredOf(result);
-
-    expect(result.content[0].text).toBe("5 todos");
-    expect(structured.todos).toHaveLength(5);
-    expect(z.object(ListTodosOutputShape).parse(structured)).toEqual(structured);
-  });
-
-  it("returns only the text block in text format", async () => {
-    const result = await listTodosHandler(backend, {
-      status: "all",
-      format: "text",
-    });
-
-    expect("structuredContent" in result).toBe(false);
-    expect(textsOf(result)).toHaveLength(5);
+    expect(textsOf(result).filter((line) => !line.startsWith("NEXT ")))
+      .toHaveLength(2);
+    expect(result.content[0].text).toContain("NEXT ");
   });
 });

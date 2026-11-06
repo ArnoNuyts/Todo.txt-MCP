@@ -156,8 +156,7 @@ by the test suite) are exempt from the length check.
 ## Read-only mode
 
 Set `MCP_READ_ONLY=1` to publish only `list_todos`. The mutating tools
-(`add_todos`, `update_todos`, `set_todo_statuses`, `delete_todos`,
-`delete_completed`, and their deprecated single-item aliases) are not
+(`add_todos`, `update_todos`, `set_todo_statuses`, `delete_todos`) are
 registered, so they do not appear in `tools/list` and cannot be called. This is
 useful for dashboards, read-only agents, and exposing the todo file to a model
 that should only be able to inspect it. Read-only mode does not replace
