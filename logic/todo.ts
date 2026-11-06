@@ -179,21 +179,24 @@ export class Todo {
 
     const matchTags = text.matchAll(TAG_REGEX);
     for (const tag of matchTags) {
-      switch (typeof this.tags[tag.groups!.key]) {
-        case "object":
-          this.tags[tag.groups!.key] = [
-            ...this.tags[tag.groups!.key],
-            tag.groups!.value,
-          ];
-          break;
-        case "string":
-          this.tags[tag.groups!.key] = [
-            this.tags[tag.groups!.key] as string,
-            tag.groups!.value,
-          ];
-          break;
-        default:
-          this.tags[tag.groups!.key] = tag.groups!.value;
+      const key = tag.groups!.key;
+      const value = tag.groups!.value;
+      const existing = this.tags[key];
+      const alreadyPresent = existing === value ||
+        (Array.isArray(existing) && existing.includes(value));
+      // Re-applying the same body (a common follow-up edit) must not append an
+      // identical tag, which would render as `due:2026-12-15,2026-12-15`.
+      if (!alreadyPresent) {
+        switch (typeof existing) {
+          case "object":
+            this.tags[key] = [...existing, value];
+            break;
+          case "string":
+            this.tags[key] = [existing, value];
+            break;
+          default:
+            this.tags[key] = value;
+        }
       }
       text = text.replace(tag[0], "");
     }

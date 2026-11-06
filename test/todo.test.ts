@@ -245,6 +245,16 @@ describe("Todo", () => {
     }
   });
 
+  it("setText - does not duplicate an identical tag", () => {
+    const todo = new Todo("Report due:2026-12-15 @work +finance");
+    todo.setText("Report @office +finance due:2026-12-15");
+
+    expect(todo.tags.due).toBe("2026-12-15");
+    expect(todo.toString()).toBe(
+      "Report @office +finance due:2026-12-15",
+    );
+  });
+
   it("isDone - returns correctly", () => {
     const testCases = [
       { input: "x Done", expected: true },

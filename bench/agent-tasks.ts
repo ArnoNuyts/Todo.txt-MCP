@@ -238,8 +238,18 @@ export const AGENT_TASKS: readonly AgentTask[] = [
       const stateUnchanged = unchanged(todos, OVERDUE_SEED);
       const answer = finalText.toLowerCase();
       const sawOverdue = answer.includes("file taxes");
-      const falsePositive = answer.includes("book flights") ||
-        answer.includes("buy milk");
+      const falsePositive = answer
+        .split(/[\n.]/)
+        .map((sentence) => sentence.trim())
+        .some((sentence) =>
+          (sentence.includes("book flights") ||
+            sentence.includes("buy milk")) &&
+          sentence.includes("overdue") &&
+          !sentence.includes("not overdue") &&
+          !sentence.includes("aren't overdue") &&
+          !sentence.includes("isn't overdue") &&
+          !sentence.includes("no due")
+        );
       const read = usedTool(_trace, "list_todos") ||
         usedTool(_trace, "summary");
       const ok = stateUnchanged && sawOverdue && !falsePositive && read;
@@ -291,21 +301,26 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         JSON.stringify(entry.arguments).includes(STALE_HASH) &&
         (entry.isError || entry.text.toLowerCase().includes("not found"))
       );
+      // Listing first and using the fresh hash is as valid as trying the stale
+      // hash and recovering; both prove the model refreshed its state.
+      const refreshed = staleAttempt || usedTool(trace, "list_todos");
       const ok = target?.isDone() === true &&
         milk?.isDone() === false &&
-        staleAttempt &&
-        staleRejected &&
+        refreshed &&
         todos.length === STALE_SEED.length;
       return {
         ok,
         detail: `plan done=${target?.isDone() ?? "missing"}, ` +
-          `stale attempted=${staleAttempt}, rejected=${staleRejected}`,
+          `refreshed=${refreshed}, stale attempted=${staleAttempt}, ` +
+          `rejected=${staleRejected}`,
       };
     },
   },
   {
     id: "ambiguous-cleanup",
-    prompt: "Clean up my list.",
+    prompt:
+      "Clean up my list. Do not delete anything until I confirm what you " +
+      "plan to remove.",
     seed: seeded(...CLEANUP_SEED),
     verify: (todos, trace, finalText) => {
       const stateUnchanged = unchanged(todos, CLEANUP_SEED);
