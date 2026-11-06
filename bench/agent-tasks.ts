@@ -128,6 +128,18 @@ const BATCH_ADD_TEXTS = [
   "Clean the desk @home",
 ];
 
+const UNDO_SEED = [
+  "x 2026-01-01 2025-01-01 First done",
+  "x 2026-01-01 2025-01-01 Second done",
+  "Still open",
+];
+
+const DELETE_SEED = [
+  "Delete one",
+  "Delete two",
+  "Keep me",
+];
+
 const OVERDUE_SEED = [
   "(A) File taxes @finance due:2020-04-15",
   "(B) Submit report @work due:2021-01-10",
@@ -249,15 +261,60 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         passport?.isDone() === true &&
         unrelated?.isDone() === false &&
         todos.length === MARK_DONE_SEED.length &&
-        batchCalls(trace, ["mark_done"]) === 1;
+        batchCalls(trace, ["set_todo_statuses"]) === 1;
       return {
         ok,
         detail: `dentist=${dentist?.isDone() ?? "missing"}, ` +
           `milk=${milk?.isDone() ?? "missing"}, ` +
           `passport=${passport?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["mark_done"])
+            batchCalls(trace, ["set_todo_statuses"])
           }`,
+      };
+    },
+  },
+  {
+    id: "batch-undo",
+    prompt:
+      "Reopen 'First done' and 'Second done' in one request. Leave " +
+      "'Still open' alone.",
+    seed: seeded(...UNDO_SEED),
+    verify: (todos, trace) => {
+      const first = findTodo(todos, "First done");
+      const second = findTodo(todos, "Second done");
+      const open = findTodo(todos, "Still open");
+      const ok = first?.isDone() === false &&
+        second?.isDone() === false &&
+        open?.isDone() === false &&
+        todos.length === UNDO_SEED.length &&
+        batchCalls(trace, ["set_todo_statuses"]) === 1;
+      return {
+        ok,
+        detail: `first=${first?.isDone() ?? "missing"}, ` +
+          `second=${second?.isDone() ?? "missing"}, ` +
+          `batch_calls=${batchCalls(trace, ["set_todo_statuses"])}`,
+      };
+    },
+  },
+  {
+    id: "batch-delete",
+    prompt:
+      "Delete 'Delete one' and 'Delete two' in one request. Keep 'Keep me'.",
+    seed: seeded(...DELETE_SEED),
+    verify: (todos, trace) => {
+      const first = findTodo(todos, "Delete one");
+      const second = findTodo(todos, "Delete two");
+      const keep = findTodo(todos, "Keep me");
+      const ok = first === undefined &&
+        second === undefined &&
+        keep !== undefined &&
+        todos.length === 1 &&
+        batchCalls(trace, ["delete_todos"]) === 1;
+      return {
+        ok,
+        detail: `first=${first === undefined}, second=${second === undefined}, ` +
+          `keep=${keep !== undefined}, ` +
+          `batch_calls=${batchCalls(trace, ["delete_todos"])}`,
       };
     },
   },
@@ -443,14 +500,14 @@ export const AGENT_TASKS: readonly AgentTask[] = [
         old?.isDone() === true &&
         milk?.isDone() === false &&
         todos.length === OVERDUE_SEED.length &&
-        batchCalls(trace, ["mark_done"]) === 1;
+        batchCalls(trace, ["set_todo_statuses"]) === 1;
       return {
         ok,
         detail: `taxes=${taxes?.isDone() ?? "missing"}, ` +
           `report=${report?.isDone() ?? "missing"}, ` +
           `flights=${flights?.isDone() ?? "missing"}, ` +
           `batch_calls=${
-            batchCalls(trace, ["mark_done"])
+            batchCalls(trace, ["set_todo_statuses"])
           }`,
       };
     },

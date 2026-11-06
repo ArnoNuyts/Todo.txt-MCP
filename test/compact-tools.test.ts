@@ -59,8 +59,9 @@ describe("tool surface", () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "add_todos",
+      "delete_todos",
       "list_todos",
-      "mark_done",
+      "set_todo_statuses",
       "update_todos",
     ]);
     for (const tool of tools) {
@@ -183,8 +184,8 @@ describe("tool surface", () => {
     backend.saveCalls = 0;
 
     const first = await client.callTool({
-      name: "mark_done",
-      arguments: { hashes },
+      name: "set_todo_statuses",
+      arguments: { hashes, status: "done" },
     });
     expect(linesOf(first)).toHaveLength(2);
     expect(backend.loadCalls).toBe(1);
@@ -193,8 +194,8 @@ describe("tool surface", () => {
 
     const doneHashes = hashesOf(first);
     const second = await client.callTool({
-      name: "mark_done",
-      arguments: { hashes: doneHashes },
+      name: "set_todo_statuses",
+      arguments: { hashes: doneHashes, status: "done" },
     });
     expect(linesOf(second)).toHaveLength(2);
     expect(backend.saveCalls).toBe(1);
@@ -206,11 +207,59 @@ describe("tool surface", () => {
     const hash = await todo.getHash();
 
     const result = await client.callTool({
-      name: "mark_done",
-      arguments: { hashes: [hash, "0123456789abcdef"] },
+      name: "set_todo_statuses",
+      arguments: { hashes: [hash, "0123456789abcdef"], status: "done" },
     });
 
     expect(textOf(result)).toContain("ERROR 0123456789abcdef not found");
     expect(backend.getTodos()[0].isDone()).toBe(true);
+  });
+
+  it("reopens completed todos in one batch", async () => {
+    const todos = [
+      new Todo("x 2026-01-01 2025-01-01 First done"),
+      new Todo("x 2026-01-01 2025-01-01 Second done"),
+      new Todo("Still open"),
+    ];
+    await backend.save(todos);
+    const hashes = await Promise.all(todos.slice(0, 2).map((t) => t.getHash()));
+    backend.saveCalls = 0;
+
+    const result = await client.callTool({
+      name: "set_todo_statuses",
+      arguments: { hashes, status: "todo" },
+    });
+
+    expect(linesOf(result)).toHaveLength(2);
+    expect(backend.saveCalls).toBe(1);
+    expect(backend.getTodos()[0].isDone()).toBe(false);
+    expect(backend.getTodos()[1].isDone()).toBe(false);
+    expect(backend.getTodos()[2].isDone()).toBe(false);
+  });
+
+  it("deletes multiple todos in one batch", async () => {
+    const todos = [
+      new Todo("Delete one"),
+      new Todo("Delete two"),
+      new Todo("Keep me"),
+    ];
+    await backend.save(todos);
+    const hashes = await Promise.all(todos.slice(0, 2).map((t) => t.getHash()));
+    backend.saveCalls = 0;
+
+    const result = await client.callTool({
+      name: "delete_todos",
+      arguments: { hashes },
+    });
+
+    expect(linesOf(result)).toHaveLength(2);
+    expect(backend.saveCalls).toBe(1);
+    expect(backend.getTodos().map((todo) => todo.text)).toEqual(["Keep me"]);
+
+    const missing = await client.callTool({
+      name: "delete_todos",
+      arguments: { hashes: ["0123456789abcdef"] },
+    });
+    expect(textOf(missing)).toContain("not found");
   });
 });

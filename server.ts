@@ -98,7 +98,16 @@ export const CompactUpdateTodosSchema = z.object({
   })).min(1).max(100).describe("Edits to apply"),
 });
 
-export const CompactMarkDoneSchema = z.object({
+export const CompactSetStatusesSchema = z.object({
+  hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
+    "Todo hashes",
+  ),
+  status: z.enum(["done", "todo"]).describe(
+    "done to complete, todo to undo completion",
+  ),
+});
+
+export const CompactDeleteTodosSchema = z.object({
   hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
     "Todo hashes",
   ),
@@ -329,12 +338,15 @@ export function updateTodosHandler(backend: TodoBackend, rawArgs: unknown) {
   return guardTool(() => updateTodosOperation(backend, rawArgs));
 }
 
-// Tool: mark_done
-async function markDoneOperation(
+// Tool: set_todo_statuses
+async function setTodoStatusesOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { hashes } = CompactMarkDoneSchema.parse(rawArgs);
+  const { hashes, status } = CompactSetStatusesSchema.parse(rawArgs);
+  const targetState = status === "done"
+    ? TodoStateEnum.done
+    : TodoStateEnum.todo;
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
@@ -343,7 +355,7 @@ async function markDoneOperation(
       todoHashMap.set(await todo.getHash(), todo);
     }
 
-    const done: Todo[] = [];
+    const updated: Todo[] = [];
     const missing: string[] = [];
     let changed = false;
 
@@ -353,32 +365,84 @@ async function markDoneOperation(
         missing.push(hash);
         continue;
       }
-      if (target.state !== TodoStateEnum.done) {
+      if (target.state !== targetState) {
         const next = target.toggleState();
         if (next) {
           todos.push(next);
         }
         changed = true;
       }
-      done.push(target);
+      updated.push(target);
     }
 
     if (changed) {
       await backend.save(todos);
     }
-    if (done.length === 0) {
+    if (updated.length === 0) {
       return notFoundError(missing[0]);
     }
 
     return compactLines([
-      ...await Promise.all(done.map(todoLine)),
+      ...await Promise.all(updated.map(todoLine)),
       ...missing.map((hash) => `ERROR ${hash} not found`),
     ]);
   });
 }
 
-export function markDoneHandler(backend: TodoBackend, rawArgs: unknown) {
-  return guardTool(() => markDoneOperation(backend, rawArgs));
+export function setTodoStatusesHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => setTodoStatusesOperation(backend, rawArgs));
+}
+
+// Tool: delete_todos
+async function deleteTodosOperation(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  const { hashes } = CompactDeleteTodosSchema.parse(rawArgs);
+
+  return await withBackendLock(backend, async () => {
+    const todos = await backend.load();
+    const todoHashMap = new Map<string, Todo>();
+    for (const todo of todos) {
+      todoHashMap.set(await todo.getHash(), todo);
+    }
+
+    const deleted: Todo[] = [];
+    const missing: string[] = [];
+    const toDelete = new Set<Todo>();
+
+    for (const hash of new Set(hashes)) {
+      const target = todoHashMap.get(hash);
+      if (target === undefined) {
+        missing.push(hash);
+        continue;
+      }
+      deleted.push(target);
+      toDelete.add(target);
+    }
+
+    if (toDelete.size > 0) {
+      await backend.save(todos.filter((todo) => !toDelete.has(todo)));
+    }
+    if (deleted.length === 0) {
+      return notFoundError(missing[0]);
+    }
+
+    return compactLines([
+      ...await Promise.all(deleted.map(todoLine)),
+      ...missing.map((hash) => `ERROR ${hash} not found`),
+    ]);
+  });
+}
+
+export function deleteTodosHandler(
+  backend: TodoBackend,
+  rawArgs: unknown,
+) {
+  return guardTool(() => deleteTodosOperation(backend, rawArgs));
 }
 
 export function createTodoMcpServer(backend: TodoBackend) {
@@ -503,13 +567,24 @@ export function createTodoMcpServer(backend: TodoBackend) {
   );
 
   server.registerTool(
-    "mark_done",
+    "set_todo_statuses",
     {
-      description: "Mark todos done by hash; returns 'hash text' lines.",
-      inputSchema: CompactMarkDoneSchema.shape,
+      description:
+        "Set todos done or active by hash; returns 'hash text' lines.",
+      inputSchema: CompactSetStatusesSchema.shape,
       annotations: { destructiveHint: true, idempotentHint: true },
     },
-    (rawArgs: unknown) => markDoneHandler(backend, rawArgs),
+    (rawArgs: unknown) => setTodoStatusesHandler(backend, rawArgs),
+  );
+
+  server.registerTool(
+    "delete_todos",
+    {
+      description: "Delete todos by hash; returns 'hash text' lines.",
+      inputSchema: CompactDeleteTodosSchema.shape,
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
   );
 
   return server;

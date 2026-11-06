@@ -290,8 +290,10 @@ class MockAgentModel implements AgentModel {
       status,
       limit: 100,
     });
-    const markDone = (hashes: string[]) =>
-      this.tool("mark_done", { hashes });
+    const setStatuses = (
+      hashes: string[],
+      status: "done" | "todo",
+    ) => this.tool("set_todo_statuses", { hashes, status });
 
     switch (this.task.id) {
       case "add-priority-context-due": {
@@ -337,13 +339,41 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 1) {
-          return markDone([
+          return setStatuses([
             hashOf("Call the dentist"),
             hashOf("Buy milk"),
             hashOf("Renew passport"),
-          ]);
+          ], "done");
         }
         return this.text("Marked all three tasks done.");
+      }
+
+      case "batch-undo": {
+        if (this.step === 0) {
+          return this.tool("list_todos", listAll());
+        }
+        if (this.step === 1) {
+          return setStatuses([
+            hashOf("First done"),
+            hashOf("Second done"),
+          ], "todo");
+        }
+        return this.text("Reopened both tasks.");
+      }
+
+      case "batch-delete": {
+        if (this.step === 0) {
+          return this.tool("list_todos", listAll());
+        }
+        if (this.step === 1) {
+          return this.tool("delete_todos", {
+            hashes: [
+              hashOf("Delete one"),
+              hashOf("Delete two"),
+            ],
+          });
+        }
+        return this.text("Deleted both tasks.");
       }
 
       case "batch-add": {
@@ -393,16 +423,19 @@ class MockAgentModel implements AgentModel {
 
       case "stale-hash-recovery": {
         if (this.step === 0) {
-          return markDone(["deadbeefdeadbeef", "cafebabecafebabe"]);
+          return setStatuses(
+            ["deadbeefdeadbeef", "cafebabecafebabe"],
+            "done",
+          );
         }
         if (this.step === 1) {
           return this.tool("list_todos", listAll());
         }
         if (this.step === 2) {
-          return markDone([
+          return setStatuses([
             hashOf("Plan launch"),
             hashOf("Buy milk"),
-          ]);
+          ], "done");
         }
         return this.text("Refreshed the hashes and marked both done.");
       }
@@ -431,10 +464,10 @@ class MockAgentModel implements AgentModel {
           return this.tool("list_todos", listAll("todo"));
         }
         if (this.step === 1) {
-          return markDone([
+          return setStatuses([
             hashOf("File taxes"),
             hashOf("Submit report"),
-          ]);
+          ], "done");
         }
         return this.text("Marked both overdue tasks done.");
       }

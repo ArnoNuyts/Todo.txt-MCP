@@ -195,7 +195,8 @@ describe("MCP HTTP endpoint", () => {
         "list_todos",
         "add_todos",
         "update_todos",
-        "mark_done",
+        "set_todo_statuses",
+        "delete_todos",
       ]);
   });
 

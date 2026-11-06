@@ -94,14 +94,14 @@ npm test              # run once
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
-npm run bench:actions # token cost of add/edit/mark-done workflows
+npm run bench:actions # token cost of add/edit/status workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```
 
 ## 🤖 LLM tool-profile evaluation
 
 `bench:actions` measures deterministic protocol cost: the fixed add, edit, and
-mark-done workflow with no model in the loop. `bench:agent` measures
+status workflow with no model in the loop. `bench:agent` measures
 **usability**: it gives a model a set of natural-language multi-item tasks,
 exposes the real MCP tools, runs an OpenAI-style function-calling loop, and
 grades the resulting `todo.txt` state.
@@ -198,14 +198,15 @@ exhaust the process memory:
 
 ## 🔐 Tool surface and token footprint
 
-- **Four tools:** `list_todos`, `add_todos`, `update_todos`, `mark_done`. There
-  are no tool profiles and no read-only mode.
+- **Five tools:** `list_todos`, `add_todos`, `update_todos`,
+  `set_todo_statuses`, `delete_todos`. There are no tool profiles and no
+  read-only mode.
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Errors still carry a stable
   `structuredContent.error.code`.
 - **Batch-first:** add, priority/context updates, and completion all take
   arrays.
-- **Benchmark:** the multi-item add/edit/mark-done workflow costs ~936 tokens
+- **Benchmark:** the multi-item add/edit/status workflow costs ~1,085 tokens
   (median of 5 runs, chars/4 estimate). Run `npm run bench:actions` to
   reproduce it.
 - **Token rotation:** keep several bearers active with
@@ -233,7 +234,9 @@ guidance.
   item.
 - `update_todos` — set `priority` (or clear it with `null`) and add/remove
   `contexts` for multiple todos in one call. Returns `hash text` lines.
-- `mark_done` — mark multiple todos done by hash. Idempotent.
+- `set_todo_statuses` — set multiple todos `done` or `todo` (undo) by hash.
+  Idempotent.
+- `delete_todos` — delete multiple todos by hash in one batch.
 
 All tools are text-only. A missing hash is reported in the same text result as
 `Todo with hash <hash> not found.`; `update_todos` returns `ERROR <hash> not
@@ -283,10 +286,10 @@ needed. Two supported patterns:
    server is not used.
 2. **Gateway:** run behind an MCP gateway that connects the server on demand.
 
-Version 3.0 reduces the surface to four batch tools, makes results text-only,
+Version 3.0 reduces the surface to five batch tools, makes results text-only,
 removes `get_todo`, `delete_completed`, `summary`, `export_todos`,
-`import_todos`, `changes_since`, `set_todo_statuses`, `delete_todos`, and
-changes todo hashes from 16 hex characters to 11 base64url characters.
+`import_todos`, and `changes_since`, and changes todo hashes from 16 hex
+characters to 11 base64url characters.
 
 Version 2.0 removes the deprecated singular aliases (`add_todo`, `edit_todo`,
 `set_todo_status`, `delete_todo`). Use the plural canonical names instead.

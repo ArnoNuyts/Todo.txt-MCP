@@ -60,7 +60,7 @@ describe("errors and resources", () => {
 
   it("returns a stable error code for a missing hash", async () => {
     const result = await client.callTool({
-      name: "mark_done",
+      name: "delete_todos",
       arguments: { hashes: ["0123456789abcdef"] },
     });
 

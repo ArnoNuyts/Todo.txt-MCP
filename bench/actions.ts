@@ -116,7 +116,7 @@ async function runOnce() {
     });
     const newHashes = hashesOf(updated);
 
-    await call("mark_done", { hashes: newHashes });
+    await call("set_todo_statuses", { hashes: newHashes, status: "done" });
 
     return {
       schema,
