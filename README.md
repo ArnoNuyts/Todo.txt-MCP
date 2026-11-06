@@ -98,7 +98,7 @@ npm run bench:actions # token cost of add/edit/status/pagination workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```
 
-## 🤖 LLM tool-profile evaluation
+## 🤖 LLM usability evaluation
 
 `bench:actions` measures deterministic protocol cost: the fixed add, edit,
 status, and pagination workflow with no model in the loop. `bench:agent` measures
@@ -245,11 +245,11 @@ rejected as `CONFLICT` instead of silently updating one of them.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
-`LIMIT_EXCEEDED`, `CONFLICT`, `BACKEND_ERROR`, or `UNSUPPORTED`.
+`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`.
 
 ### MCP resources
 
-Read-only resources are always available, including in read-only mode:
+Read-only resources are always available:
 
 - `todo://file` — the complete todo.txt content.
 - `todo://active` — open todos only.

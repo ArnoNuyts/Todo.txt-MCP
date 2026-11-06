@@ -517,7 +517,6 @@ export interface OpenAiCompatibleOptions {
   apiKey: string;
   baseUrl: string;
   model: string;
-  temperature: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -526,14 +525,12 @@ export class OpenAICompatibleModel implements AgentModel {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly model: string;
-  private readonly temperature: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: OpenAiCompatibleOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl;
     this.model = options.model;
-    this.temperature = options.temperature;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -1073,7 +1070,6 @@ async function main(): Promise<void> {
       apiKey: apiKey as string,
       baseUrl,
       model: modelName as string,
-      temperature,
     });
 
   const runs: RunRecord[] = [];

@@ -44,8 +44,9 @@ export class Todo {
     }
     this.setText(text);
   }
-  toggleState() {
-    this.state = this.state == TodoStateEnum.todo
+  /** Toggles completion and returns a recurrence todo when one is spawned. */
+  toggleState(): { recurrence?: Todo } {
+    this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
     if (this.state === TodoStateEnum.done && this.creationDate) {
@@ -64,7 +65,7 @@ export class Todo {
       const regex = /(\d+)([dwmy])/;
       const match = recurrence.match(regex);
       if (match) {
-        const amount = parseInt(match[1]);
+        const amount = parseInt(match[1], 10);
         const unit = match[2];
         const newDueDate = new Date();
         /*if (this.tags.due) {
@@ -88,8 +89,9 @@ export class Todo {
         newTodo.setDue(newDueDate);
       }
 
-      return newTodo;
+      return { recurrence: newTodo };
     }
+    return {};
   }
   toString() {
     // Completed todos must be serialized as
@@ -125,12 +127,8 @@ export class Todo {
       (Object.keys(this.tags).map((k) => k + ":" + this.tags[k]).join(" "));
   }
 
-  setPriority(key: UpperCaseLetter) {
-    this.priority = key;
-  }
-
   isDone() {
-    return this.state == TodoStateEnum.done;
+    return this.state === TodoStateEnum.done;
   }
 
   setText(text: string) {
@@ -173,16 +171,8 @@ export class Todo {
     this.text = text;
   }
 
-  setRecurrence(recurrence: string): void {
-    this.tags.rec = recurrence;
-  }
-
   setDue(date: Date): void {
     this.tags.due = date.toISOString().substring(0, 10);
-  }
-
-  setThreshold(date: Date): void {
-    this.tags.t = date.toISOString().substring(0, 10);
   }
 
   async getHash(): Promise<string> {

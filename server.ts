@@ -167,8 +167,14 @@ function hasTodoPatch(patch: TodoPatch): boolean {
     (patch.removeContexts?.length ?? 0) > 0;
 }
 
-function applyTodoPatch(todo: Todo, patch: TodoPatch): Todo | undefined {
-  let next: Todo | undefined;
+interface TodoPatchResult {
+  recurrence?: Todo;
+  changed: boolean;
+}
+
+function applyTodoPatch(todo: Todo, patch: TodoPatch): TodoPatchResult {
+  const before = todo.toString();
+  let recurrence: Todo | undefined;
   if (patch.priority !== undefined) {
     todo.priority = patch.priority === null
       ? undefined
@@ -191,10 +197,10 @@ function applyTodoPatch(todo: Todo, patch: TodoPatch): Todo | undefined {
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
     if (todo.state !== targetState) {
-      next = todo.toggleState();
+      recurrence = todo.toggleState().recurrence;
     }
   }
-  return next;
+  return { recurrence, changed: todo.toString() !== before };
 }
 
 async function todoLine(todo: Todo): Promise<string> {
@@ -379,12 +385,11 @@ async function updateTodosOperation(
       if (target === undefined) {
         continue;
       }
-      const before = target.toString();
-      const next = applyTodoPatch(target, edit);
-      if (next) {
-        todos.push(next);
+      const result = applyTodoPatch(target, edit);
+      if (result.recurrence) {
+        todos.push(result.recurrence);
       }
-      if (next !== undefined || target.toString() !== before) {
+      if (result.changed) {
         changed = true;
       }
       updated.push(target);

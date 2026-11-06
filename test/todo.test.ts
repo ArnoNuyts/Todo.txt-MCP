@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Todo } from "../logic/todo.ts"; // Adjust the path as needed
 import { TodoStateEnum } from "../types/enums.ts";
-import type { UpperCaseLetter } from "../types/types.ts";
 
 const FIXED_NOW = new Date("2024-06-15T12:00:00.000Z");
 
@@ -277,24 +276,6 @@ describe("Todo", () => {
     }
   });
 
-  it("setPriority - sets priority correctly", () => {
-    const testCases = [
-      { text: "todo", input: "A" as UpperCaseLetter, expected: "A" },
-      { text: "(A) todo", input: "A" as UpperCaseLetter, expected: "A" },
-      { text: "(A) todo", input: "B" as UpperCaseLetter, expected: "B" },
-    ];
-
-    for (const { text, input, expected } of testCases) {
-      const todo = new Todo(text);
-      todo.setPriority(input);
-
-      expect(
-        todo.priority,
-        `Input "${input}" should be: ${expected}`,
-      ).toBe(expected);
-    }
-  });
-
   it("setDue - sets correctly", () => {
     const testCases = [
       { text: "todo", input: new Date("1999-01-01"), expected: "1999-01-01" },
@@ -311,27 +292,6 @@ describe("Todo", () => {
 
       expect(
         todo.tags.due,
-        `Input "${input}" should be: ${expected}`,
-      ).toBe(expected);
-    }
-  });
-
-  it("setThreshold - sets correctly", () => {
-    const testCases = [
-      { text: "todo", input: new Date("1999-01-01"), expected: "1999-01-01" },
-      {
-        text: "todo due:3000-03-03",
-        input: new Date("1999-01-01"),
-        expected: "1999-01-01",
-      },
-    ];
-
-    for (const { text, input, expected } of testCases) {
-      const todo = new Todo(text);
-      todo.setThreshold(input);
-
-      expect(
-        todo.tags.t,
         `Input "${input}" should be: ${expected}`,
       ).toBe(expected);
     }

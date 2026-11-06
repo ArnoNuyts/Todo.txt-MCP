@@ -4,7 +4,7 @@ import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createApp,
   type CreateAppOptions,

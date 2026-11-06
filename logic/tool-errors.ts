@@ -11,8 +11,7 @@ export type ToolErrorCode =
   | "INVALID_ARGUMENT"
   | "LIMIT_EXCEEDED"
   | "CONFLICT"
-  | "BACKEND_ERROR"
-  | "UNSUPPORTED";
+  | "BACKEND_ERROR";
 
 export interface ToolErrorDetails {
   [key: string]: unknown;
@@ -137,13 +136,4 @@ export async function guardTool<T>(
   } catch (error) {
     return mapError(error);
   }
-}
-
-/** Narrows a tool handler result to {@link ToolErrorResult}. */
-export function isToolError(result: unknown): result is ToolErrorResult {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    (result as { isError?: unknown }).isError === true
-  );
 }
