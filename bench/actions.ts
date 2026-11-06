@@ -1,6 +1,6 @@
 /**
- * Protocol-cost benchmark for the only tool surface: add a batch, update
- * priorities/contexts for a batch, and mark a batch done.
+ * Protocol-cost benchmark for the only tool surface: page a large file, add a
+ * batch, update priorities/contexts for a batch, and mark a batch done.
  *
  * Run with `npm run bench:actions`.
  */
