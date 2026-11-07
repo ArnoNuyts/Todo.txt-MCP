@@ -226,7 +226,8 @@ export function createTodoMcpServer(
         "Update the first line matching each hash with '<hash> <new " +
         "todo.txt line>' lines. Copy the listed line and edit it; include " +
         "fields to keep. To complete, start with 'x ' and no date unless " +
-        "the user gave one. onDuplicate: allow|skip|error.",
+        "the user gave one. onDuplicate: allow|skip|error. Repeat with the " +
+        "same hash for the next duplicate.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
@@ -238,7 +239,8 @@ export function createTodoMcpServer(
     {
       description:
         "Delete the first line matching each hash; returns 'hash text' " +
-        "lines. Missing hashes return ERROR lines; refresh with list_todos.",
+        "lines. Missing hashes return ERROR lines; refresh with list_todos. " +
+        "Repeat with the same hash for the next duplicate.",
       inputSchema: CompactDeleteTodosSchema.shape,
       annotations: { destructiveHint: true },
     },

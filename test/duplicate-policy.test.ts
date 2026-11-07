@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { Todo } from "../logic/todo.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
@@ -46,6 +46,7 @@ describe("duplicate policy", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.allSettled([client.close(), server.close()]);
   });
 
@@ -80,7 +81,8 @@ describe("duplicate policy", () => {
       const result = await add(["Dup"], "skip");
 
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain("SKIPPED Dup");
+      expect(linesOf(result)).toHaveLength(1);
+      expect(linesOf(result)[0]).toMatch(/^SKIPPED [A-Za-z0-9_-]{11} Dup$/);
       expect(backend.getTodos()).toHaveLength(1);
       expect(backend.saveCalls).toBe(0);
     });
@@ -102,7 +104,7 @@ describe("duplicate policy", () => {
       const result = await add(["New", "Dup", "Dup"], "skip");
 
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain("SKIPPED Dup");
+      expect(textOf(result)).toMatch(/SKIPPED [A-Za-z0-9_-]{11} Dup/);
       expect(backend.getTodos()).toHaveLength(2);
       expect(backend.getTodos().filter((todo) => todo.text === "Dup"))
         .toHaveLength(1);
@@ -117,6 +119,43 @@ describe("duplicate policy", () => {
       expect(errorCodeOf(result)).toBe("CONFLICT");
       expect(backend.saveCalls).toBe(0);
       expect(backend.getTodos()).toHaveLength(0);
+    });
+
+    it("does not treat an undated existing line as a duplicate of a dated add", async () => {
+      await backend.save([new Todo("Dup")]);
+      backend.saveCalls = 0;
+
+      const result = await add(["Dup"], "skip");
+
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).not.toContain("SKIPPED");
+      expect(backend.getTodos()).toHaveLength(2);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("does not count skipped lines toward TODOTXT_MCP_MAX_TODOS", async () => {
+      vi.stubEnv("TODOTXT_MCP_MAX_TODOS", "1");
+      await backend.save([new Todo("2026-11-07 Dup")]);
+      backend.saveCalls = 0;
+
+      const result = await add(["2026-11-07 Dup"], "skip");
+
+      expect(result.isError).toBeFalsy();
+      expect(backend.getTodos()).toHaveLength(1);
+      expect(backend.saveCalls).toBe(0);
+    });
+
+    it("rejects an unknown onDuplicate value", async () => {
+      backend.saveCalls = 0;
+
+      const result = await client.callTool({
+        name: "add_todos",
+        arguments: { todos: ["New"], onDuplicate: "bogus" },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/onDuplicate|Invalid/i);
+      expect(backend.saveCalls).toBe(0);
     });
 
     it("keeps raw-distinct lines separate instead of calling them duplicates", async () => {
@@ -189,6 +228,31 @@ describe("duplicate policy", () => {
         "Dup",
       ]);
       expect(backend.saveCalls).toBe(0);
+    });
+
+    it("saves nothing when a later update in the batch fails the policy", async () => {
+      const first = new Todo("First");
+      const second = new Todo("Second");
+      await backend.save([first, second]);
+      const firstHash = await hashOf(first);
+      const secondHash = await hashOf(second);
+      backend.saveCalls = 0;
+
+      const result = await client.callTool({
+        name: "update_todos",
+        arguments: {
+          updates: [`${firstHash} Shared`, `${secondHash} Shared`],
+          onDuplicate: "error",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(errorCodeOf(result)).toBe("CONFLICT");
+      expect(backend.saveCalls).toBe(0);
+      expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
+        "First",
+        "Second",
+      ]);
     });
 
     it("skips an update that would duplicate an earlier update in the batch", async () => {

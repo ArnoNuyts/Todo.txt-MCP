@@ -257,17 +257,24 @@ async function addTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
-    const existing = new Set(todos.map((todo) => todo.toString()));
+    const todos = [...await backend.load()];
+    const existing = new Map<string, Todo>();
+    for (const todo of todos) {
+      const key = todo.toString();
+      if (!existing.has(key)) {
+        existing.set(key, todo);
+      }
+    }
     const added: Todo[] = [];
-    const skipped: string[] = [];
+    const skipped: Array<{ hash: string; text: string }> = [];
     for (const text of texts) {
       const todo = new Todo(text);
       if (!todo.creationDate) {
         todo.creationDate = new Date();
       }
       const key = todo.toString();
-      if (existing.has(key)) {
+      const duplicate = existing.get(key);
+      if (duplicate !== undefined) {
         if (onDuplicate === "error") {
           throw new ToolFailure(
             "CONFLICT",
@@ -277,11 +284,12 @@ async function addTodosOperation(
           );
         }
         if (onDuplicate === "skip") {
-          skipped.push(text);
+          skipped.push({ hash: await duplicate.getHash(), text });
           continue;
         }
+      } else {
+        existing.set(key, todo);
       }
-      existing.add(key);
       added.push(todo);
     }
 
@@ -307,7 +315,11 @@ async function addTodosOperation(
       await backend.save(todos);
     }
     const lines = await Promise.all(added.map(todoLine));
-    lines.push(...skipped.map((text) => `SKIPPED ${text}`));
+    lines.push(
+      ...await Promise.all(
+        skipped.map(async ({ hash, text }) => `SKIPPED ${hash} ${text}`),
+      ),
+    );
     return compactLines(lines);
   });
 }
@@ -387,7 +399,7 @@ async function updateTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
+    const todos = [...await backend.load()];
     const index = await todoIndex(todos);
 
     const resolved: Array<{ update: TextUpdate; target: Todo }> = [];
@@ -487,7 +499,7 @@ async function deleteTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
+    const todos = [...await backend.load()];
     const index = await todoIndex(todos);
 
     const deleted: Todo[] = [];
