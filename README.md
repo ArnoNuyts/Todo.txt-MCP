@@ -5,6 +5,12 @@ Todo.txt-MCP is a [Model Context Protocol](https://modelcontextprotocol.io)
 and complete tasks. Todos can be stored in a local file or synchronized over
 WebDAV.
 
+<p align="center">
+  <img src="docs/demo.gif" width="640" alt="An MCP client checks a shopping list, adds the missing pancake ingredients with add_todos, and verifies the result with list_todos">
+  <br>
+  <sub>An MCP client checks the list, adds the missing pancake ingredients, and verifies the result.</sub>
+</p>
+
 The server runs on **Node.js 26 LTS** and executes TypeScript directly using
 Node's built-in type stripping, so there is no build step. The minimum supported
 runtime is Node.js 24.15.
