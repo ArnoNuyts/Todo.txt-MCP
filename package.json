@@ -1,14 +1,43 @@
 {
   "name": "todo.txt-mcp",
   "version": "3.2.0",
-  "private": true,
-  "type": "module",
   "description": "Model Context Protocol server for managing a todo.txt file",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "todo.txt-mcp": "./bin/todo.txt-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "SECURITY.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArnoNuyts/Todo.txt-MCP.git"
+  },
+  "homepage": "https://github.com/ArnoNuyts/Todo.txt-MCP#readme",
+  "bugs": {
+    "url": "https://github.com/ArnoNuyts/Todo.txt-MCP/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "todo.txt",
+    "todo",
+    "tasks",
+    "agent"
+  ],
   "engines": {
     "node": ">=24.15.0"
   },
   "packageManager": "npm@12.2.1",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "dev": "node --watch server.ts",
     "start": "node server.ts",
     "typecheck": "tsc -p tsconfig.json",

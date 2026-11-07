@@ -6,7 +6,7 @@ and complete tasks. Todos can be stored in a local file or synchronized over
 WebDAV.
 
 <p align="center">
-  <img src="docs/demo.gif" width="640" alt="An MCP client checks a shopping list, adds the missing pancake ingredients with add_todos, and verifies the result with list_todos">
+  <img src="https://raw.githubusercontent.com/ArnoNuyts/Todo.txt-MCP/main/docs/demo.gif" width="640" alt="An MCP client checks a shopping list, adds the missing pancake ingredients with add_todos, and verifies the result with list_todos">
   <br>
   <sub>An MCP client checks the list, adds the missing pancake ingredients, and verifies the result.</sub>
 </p>
@@ -14,6 +14,28 @@ WebDAV.
 The server runs on **Node.js 26 LTS** and executes TypeScript directly using
 Node's built-in type stripping, so there is no build step. The minimum supported
 runtime is Node.js 24.15.
+
+## 📦 Quick Start with npm
+
+Requires Node.js **26 LTS** (minimum 24.15). The package ships the TypeScript
+sources and runs them with Node's built-in type stripping, so there is no build
+step.
+
+```bash
+export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+npx -y todo.txt-mcp
+```
+
+Or install it globally:
+
+```bash
+npm install -g todo.txt-mcp
+todo.txt-mcp
+```
+
+The server listens on `http://localhost:3000` and the MCP endpoint is
+`http://localhost:3000/mcp`. It reads the same environment variables as the
+Docker setup below.
 
 ## 🚀 Quick Start with Docker
 
