@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
 import { serializeTodoContent } from "../content.ts";
@@ -37,6 +38,20 @@ export interface WebDavBackendOptions {
   random?: () => number;
   /** Maximum allowed todo file size in bytes. Defaults to the env limit. */
   maxFileBytes?: number;
+}
+
+/**
+ * Revision observed by a load. It is scoped to a single load -> save
+ * transaction so a concurrent load in another transaction cannot replace it.
+ */
+interface WebDavRevision {
+  exists: boolean;
+  etag?: string;
+  lastModified?: string;
+}
+
+interface RevisionContext {
+  revision?: WebDavRevision;
 }
 
 /**
@@ -116,8 +131,12 @@ export class WebDavBackend implements TodoBackend {
   private readonly maxDelayMs: number;
   private readonly random: () => number;
   private readonly maxFileBytes: number;
-  /** Revision from the last load, sent as If-Match on save. */
-  private loadedEtag: string | undefined;
+  /**
+   * Holds the revision for one load -> save transaction. `withLock` creates a
+   * fresh context per mutation, so concurrent reads in other contexts cannot
+   * clobber the revision used by an in-flight write.
+   */
+  private readonly revisionStorage = new AsyncLocalStorage<RevisionContext>();
 
   constructor(
     url: string,
@@ -128,8 +147,16 @@ export class WebDavBackend implements TodoBackend {
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
-    } catch (error) {
-      throw new Error(`Invalid WebDAV URL "${url}".`, { cause: error });
+    } catch {
+      // Do not include the input: it may contain credentials.
+      throw new Error("Invalid WebDAV URL.");
+    }
+
+    if (parsedUrl.username !== "" || parsedUrl.password !== "") {
+      throw new Error(
+        "WebDAV URL must not contain credentials. Set " +
+          "TODOTXT_MCP_WEBDAV_USERNAME and TODOTXT_MCP_WEBDAV_PASSWORD instead.",
+      );
     }
 
     const isLocal = LOCAL_HOSTNAMES.has(parsedUrl.hostname);
@@ -222,6 +249,22 @@ export class WebDavBackend implements TodoBackend {
     };
   }
 
+  /**
+   * Runs a load -> mutate -> save cycle in its own revision context.
+   * `withBackendLock` calls this for every mutation, isolating the revision
+   * captured by `load` from concurrent reads.
+   */
+  withLock<T>(work: () => Promise<T>): Promise<T> {
+    return this.revisionStorage.run({}, work);
+  }
+
+  private recordRevision(revision: WebDavRevision): void {
+    const context = this.revisionStorage.getStore();
+    if (context) {
+      context.revision = revision;
+    }
+  }
+
   async load(): Promise<Todo[]> {
     const response = await this.fetchWithRetry({
       method: "GET",
@@ -230,7 +273,7 @@ export class WebDavBackend implements TodoBackend {
 
     if (!response.ok) {
       if (response.status === 404) {
-        this.loadedEtag = undefined;
+        this.recordRevision({ exists: false });
         return [];
       }
       throw new Error(
@@ -238,7 +281,9 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    this.loadedEtag = response.headers.get("ETag") ?? undefined;
+    const etag = response.headers.get("ETag")?.trim() || undefined;
+    const lastModified =
+      response.headers.get("Last-Modified")?.trim() || undefined;
 
     // Reject an obviously oversized file before reading the body.
     const contentLength = response.headers.get("Content-Length");
@@ -250,12 +295,25 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    const text = await response.text();
+    const bytes = await response.arrayBuffer();
     assertFileSizeWithinLimit(
       "WebDAV todo file",
-      Buffer.byteLength(text, "utf8"),
+      bytes.byteLength,
       this.maxFileBytes,
     );
+
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(
+        "WebDAV todo file is not valid UTF-8. Refusing to load or rewrite it.",
+      );
+    }
+
+    // Only record the revision after the body was read successfully, so a
+    // failed load can never be turned into a write in the same transaction.
+    this.recordRevision({ exists: true, etag, lastModified });
 
     return text
       .split("\n")
@@ -264,20 +322,65 @@ export class WebDavBackend implements TodoBackend {
   }
 
   async save(todos: Todo[]): Promise<void> {
+    const context = this.revisionStorage.getStore();
+    const revision = context?.revision;
+    if (!context || revision === undefined) {
+      throw new BackendConflictError(
+        "WebDAV save requires a preceding load in the same transaction. " +
+          "Refusing to send an unconditional PUT.",
+        { backend: "webdav" },
+      );
+    }
+
     const content = serializeTodoContent(todos);
+    assertFileSizeWithinLimit(
+      "WebDAV todo file",
+      Buffer.byteLength(content, "utf8"),
+      this.maxFileBytes,
+    );
+
     const headers: Record<string, string> = {
       ...this.getHeaders(),
       "Content-Type": "text/plain",
     };
-    if (this.loadedEtag) {
-      headers["If-Match"] = this.loadedEtag;
+
+    if (!revision.exists) {
+      // The load saw a missing file: only create if it is still missing.
+      headers["If-None-Match"] = "*";
+    } else if (revision.etag !== undefined && isStrongEtag(revision.etag)) {
+      headers["If-Match"] = revision.etag.trim();
+    } else if (revision.lastModified !== undefined) {
+      // A weak ETag must not be sent as If-Match, but the date still guards
+      // the write against a modification since the load.
+      headers["If-Unmodified-Since"] = revision.lastModified;
+    } else {
+      throw new BackendConflictError(
+        revision.etag === undefined
+          ? "WebDAV server did not provide an ETag or Last-Modified header, " +
+              "so the write cannot be made conditional. Refusing to overwrite " +
+              "the file without a usable validator."
+          : "WebDAV server provided only a weak ETag and no Last-Modified " +
+              "header, so the write cannot be made conditional. Refusing to " +
+              "overwrite the file without a usable validator.",
+        { backend: "webdav" },
+      );
     }
 
     const response = await this.fetchWithRetry({
       method: "PUT",
       headers,
       body: content,
+      // A redirected PUT must never be silently converted into a GET.
+      redirect: "manual",
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      await discardBody(response);
+      throw new Error(
+        `WebDAV PUT was redirected (${response.status} ${response.statusText}). ` +
+          "Refusing to follow a redirect for a write.",
+      );
+    }
 
     if (response.status === 412) {
       throw new BackendConflictError(
@@ -293,6 +396,23 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    this.loadedEtag = response.headers.get("ETag") ?? this.loadedEtag;
+    // Keep the revision current for any further save in this transaction.
+    // If the PUT returned a new Last-Modified but no ETag, the old ETag no
+    // longer describes the stored revision: prefer the new date validator and
+    // drop the stale strong validator.
+    const newEtag = response.headers.get("ETag")?.trim() || undefined;
+    const newLastModified =
+      response.headers.get("Last-Modified")?.trim() || undefined;
+    context.revision = {
+      exists: true,
+      etag: newEtag ??
+        (newLastModified === undefined ? revision.etag : undefined),
+      lastModified: newLastModified ?? revision.lastModified,
+    };
   }
+}
+
+/** An ETag that is safe to use in `If-Match` (not weak, i.e. no `W/` prefix). */
+function isStrongEtag(etag: string): boolean {
+  return !/^W\//i.test(etag.trim());
 }
