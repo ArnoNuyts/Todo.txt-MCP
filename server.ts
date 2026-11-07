@@ -103,7 +103,7 @@ export function createTodoMcpServer(
   const readOnly = resolveReadOnlyMode(options, process.env);
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "3.1.0",
+    version: "3.1.1",
   });
 
   server.registerPrompt(
@@ -152,14 +152,15 @@ export function createTodoMcpServer(
     "todo://active",
     {
       title: "Active todos",
-      description: "Open todos only, one per line.",
+      description:
+        "Visible open todos only; hidden and future-threshold todos omitted.",
       mimeType: "text/plain",
     },
     async (uri) => {
       const todos = await backend.load();
       return textResource(
         uri,
-        serializeTodoContent(todos.filter((todo) => !todo.isDone())),
+        serializeTodoContent(filterTodos(todos, { status: "todo" })),
       );
     },
   );

@@ -35,6 +35,8 @@ export function filterTodos(
   todos: readonly Todo[],
   filters: TodoFilterOptions = {},
 ): Todo[] {
+  // One timestamp for the whole run so a filter never straddles UTC midnight.
+  const now = new Date();
   return todos.filter((todo) => {
     if (filters.status !== undefined && filters.status !== "all") {
       const targetState = filters.status === "done"
@@ -49,7 +51,7 @@ export function filterTodos(
     // from every view except the explicit "all" escape hatch.
     if (
       filters.status !== "all" &&
-      (todo.isHidden() || !todo.isPassedThreshold())
+      (todo.isHidden() || !todo.isPassedThreshold(now))
     ) {
       return false;
     }
