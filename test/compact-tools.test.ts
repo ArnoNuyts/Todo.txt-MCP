@@ -155,6 +155,29 @@ describe("tool surface", () => {
     }
   });
 
+  it("counts only visible todos when paginating", async () => {
+    await backend.save([
+      new Todo("Hidden one h:1"),
+      new Todo("Hidden two h:1"),
+      new Todo("Visible one"),
+      new Todo("Visible two"),
+    ]);
+
+    const first = await client.callTool({
+      name: "list_todos",
+      arguments: { limit: 1 },
+    });
+    expect(textOf(first)).toContain("Visible one");
+    expect(textOf(first)).not.toContain("Hidden");
+    expect(textOf(first)).toContain("MORE 1 (offset=1)");
+
+    const second = await client.callTool({
+      name: "list_todos",
+      arguments: { limit: 1, offset: 1 },
+    });
+    expect(textOf(second)).toContain("Visible two");
+  });
+
   it("updates priority and contexts for multiple todos in one save", async () => {
     const todos = [
       new Todo("(C) 2025-01-02 Report @work +finance due:2026-12-15"),

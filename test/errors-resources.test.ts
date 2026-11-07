@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 import { Todo } from "../logic/todo.ts";
@@ -56,6 +56,28 @@ describe("errors and resources", () => {
 
     expect(content.text).toBe("open one @Home\n");
     expect(backend.saveCalls).toBe(0);
+  });
+
+  it("omits hidden and future-threshold todos from active and context resources", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-07T12:00:00.000Z"));
+    try {
+      await backend.save([
+        new Todo("visible @home"),
+        new Todo("hidden @home h:1"),
+        new Todo("future @home t:2027-05-01"),
+      ]);
+
+      const active = await client.readResource({ uri: "todo://active" });
+      const [activeContent] = active.contents as Array<{ text?: string }>;
+      expect(activeContent.text).toBe("visible @home\n");
+
+      const context = await client.readResource({ uri: "todo://context/home" });
+      const [contextContent] = context.contents as Array<{ text?: string }>;
+      expect(contextContent.text).toBe("visible @home\n");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a stable error code for a missing hash", async () => {
