@@ -66,6 +66,32 @@ describe("WebDavBackend conditional writes", () => {
     });
   });
 
+  it("drops a stale strong ETag when a PUT returns only Last-Modified", async () => {
+    const lastModified = "Thu, 02 Jan 2025 00:00:00 GMT";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response("old\n", 200, { ETag: '"v1"' }))
+      .mockResolvedValueOnce(
+        response("", 201, { "Last-Modified": lastModified }),
+      )
+      .mockResolvedValueOnce(response("", 200, { ETag: '"v3"' }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url, undefined, undefined, fastRetry);
+    await backend.withLock(async () => {
+      await backend.load();
+      await backend.save([new Todo("first")]);
+      await backend.save([new Todo("second")]);
+    });
+
+    expect(putHeaders(fetchMock.mock.calls[1])).toMatchObject({
+      "If-Match": '"v1"',
+    });
+    expect(putHeaders(fetchMock.mock.calls[2])).not.toHaveProperty("If-Match");
+    expect(putHeaders(fetchMock.mock.calls[2])).toMatchObject({
+      "If-Unmodified-Since": lastModified,
+    });
+  });
+
   it("keeps the transaction revision during a concurrent load", async () => {
     let serverContent = "original\n";
     let serverEtag = '"v1"';

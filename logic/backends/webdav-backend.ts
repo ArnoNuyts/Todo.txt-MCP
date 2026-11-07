@@ -397,11 +397,17 @@ export class WebDavBackend implements TodoBackend {
     }
 
     // Keep the revision current for any further save in this transaction.
+    // If the PUT returned a new Last-Modified but no ETag, the old ETag no
+    // longer describes the stored revision: prefer the new date validator and
+    // drop the stale strong validator.
+    const newEtag = response.headers.get("ETag")?.trim() || undefined;
+    const newLastModified =
+      response.headers.get("Last-Modified")?.trim() || undefined;
     context.revision = {
       exists: true,
-      etag: response.headers.get("ETag")?.trim() || revision.etag,
-      lastModified:
-        response.headers.get("Last-Modified")?.trim() || revision.lastModified,
+      etag: newEtag ??
+        (newLastModified === undefined ? revision.etag : undefined),
+      lastModified: newLastModified ?? revision.lastModified,
     };
   }
 }
