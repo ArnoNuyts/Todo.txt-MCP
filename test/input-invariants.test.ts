@@ -83,18 +83,35 @@ describe("todo line invariants", () => {
     },
   );
 
-  it("rejects a multi-line add that would bypass TODOTXT_MCP_MAX_TODOS", async () => {
+  it("rejects a multi-line add as a single-line violation", async () => {
     vi.stubEnv("TODOTXT_MCP_MAX_TODOS", "3");
     await backend.save([new Todo("one")]);
     const before = snapshot(backend);
     const saveSpy = vi.spyOn(backend, "save");
 
-    // One input element, but two persisted lines: the old element-count check
-    // saw 1 + 1 <= 3 and accepted it.
+    // One input element, but two persisted lines: line separators are rejected
+    // before the count check, so this can never bypass MAX_TODOS.
     const result = await addTodosHandler(backend, { todos: ["two\nthree"] });
 
     expect(result).toMatchObject({ isError: true });
     expect(errorCodeOf(result)).toBe("INVALID_ARGUMENT");
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(snapshot(backend)).toEqual(before);
+  });
+
+  it("enforces TODOTXT_MCP_MAX_TODOS on the resulting todo count", async () => {
+    vi.stubEnv("TODOTXT_MCP_MAX_TODOS", "2");
+    await backend.save([new Todo("one")]);
+    const before = snapshot(backend);
+    const saveSpy = vi.spyOn(backend, "save");
+
+    const result = await addTodosHandler(backend, {
+      todos: ["two", "three"],
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(errorCodeOf(result)).toBe("LIMIT_EXCEEDED");
+    expect(textOf(result)).toContain("Nothing was saved");
     expect(saveSpy).not.toHaveBeenCalled();
     expect(snapshot(backend)).toEqual(before);
   });

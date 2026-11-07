@@ -46,7 +46,6 @@ export const CompactDeleteTodosSchema = z.object({
  * treat U+2028/U+2029 as line terminators).
  */
 const LINE_SEPARATOR_PATTERN = /[\n\r\u2028\u2029]/;
-const LINE_SEPARATOR_SPLIT_PATTERN = /\r\n|[\n\r\u2028\u2029]/;
 
 function describeSeparator(separator: string): string {
   switch (separator) {
@@ -80,15 +79,6 @@ function assertSingleLine(text: string, field: string): void {
       "Remove the line separator and retry. Nothing was saved.",
     { separator, index: match.index },
   );
-}
-
-/**
- * Counts the physical todo.txt lines a text would persist. After
- * {@link assertSingleLine} this is always 1, but counting defensively keeps
- * `TODOTXT_MCP_MAX_TODOS` honest if the guard is ever bypassed.
- */
-function countPersistedLines(text: string): number {
-  return text.split(LINE_SEPARATOR_SPLIT_PATTERN).length;
 }
 
 async function todoLine(todo: Todo): Promise<string> {
@@ -200,20 +190,18 @@ async function addTodosOperation(
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
     const maxTodos = resolveMaxTodos();
-    const requestedLines = texts.reduce(
-      (total, text) => total + countPersistedLines(text),
-      0,
-    );
-    if (todos.length + requestedLines > maxTodos) {
+    // Every input element is exactly one persisted line: `assertSingleLine`
+    // rejected embedded separators above.
+    if (todos.length + texts.length > maxTodos) {
       throw new ToolFailure(
         "LIMIT_EXCEEDED",
-        `Cannot add ${requestedLines} todo(s): the file already contains ` +
+        `Cannot add ${texts.length} todo(s): the file already contains ` +
           `${todos.length} and the limit is ${maxTodos} todos ` +
           `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
         {
           maxTodos,
           currentCount: todos.length,
-          requestedCount: requestedLines,
+          requestedCount: texts.length,
         },
       );
     }
