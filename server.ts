@@ -103,7 +103,7 @@ export function createTodoMcpServer(
   const readOnly = resolveReadOnlyMode(options, process.env);
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "3.0.0",
+    version: "3.1.0",
   });
 
   server.registerPrompt(
