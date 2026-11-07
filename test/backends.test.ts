@@ -114,34 +114,49 @@ describe("WebDavBackend", () => {
   });
 
   it("saves with basic auth and text content", async () => {
-    const fetchMock = vi.fn(async () => new Response("", { status: 201 }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response("", { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await new WebDavBackend(url, "user", "pass").save([new Todo("task")]);
+    const backend = new WebDavBackend(url, "user", "pass");
+    await backend.withLock(async () => {
+      await backend.load();
+      await backend.save([new Todo("task")]);
+    });
 
     const expectedAuth = `Basic ${Buffer.from("user:pass").toString("base64")}`;
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       url,
       expect.objectContaining({
         method: "PUT",
         headers: {
           Authorization: expectedAuth,
           "Content-Type": "text/plain",
+          "If-None-Match": "*",
         },
         body: "task\n",
+        redirect: "manual",
         signal: expect.any(AbortSignal),
       }),
     );
   });
 
   it("throws when saving fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("", { status: 500, statusText: "Oops" })),
-    );
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response("task\n", { status: 200, headers: { ETag: '"v1"' } }),
+      )
+      .mockResolvedValue(new Response("", { status: 500, statusText: "Oops" }));
+    vi.stubGlobal("fetch", fetchMock);
 
+    const backend = new WebDavBackend(url);
     await expect(
-      new WebDavBackend(url).save([new Todo("task")]),
+      backend.withLock(async () => {
+        await backend.load();
+        await backend.save([new Todo("task")]);
+      }),
     ).rejects.toThrow("Failed to save todos to WebDAV: 500 Oops");
   });
 
@@ -172,8 +187,10 @@ describe("WebDavBackend", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url);
-    await backend.load();
-    await backend.save([new Todo("task")]);
+    await backend.withLock(async () => {
+      await backend.load();
+      await backend.save([new Todo("task")]);
+    });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -185,33 +202,34 @@ describe("WebDavBackend", () => {
     );
   });
 
-  it("does not send If-Match before an ETag has been seen", async () => {
+  it("refuses a save without a preceding load in the same transaction", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await new WebDavBackend(url).save([new Todo("task")]);
+    await expect(
+      new WebDavBackend(url).save([new Todo("task")]),
+    ).rejects.toThrow(/preceding load.*unconditional PUT/i);
 
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { headers: Record<string, string> },
-    ];
-    expect(init.headers).not.toHaveProperty("If-Match");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not send If-Match after loading a missing resource", async () => {
+  it("sends If-None-Match after loading a missing resource", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response("", { status: 404 }))
       .mockResolvedValueOnce(new Response("", { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url);
-    await backend.load();
-    await backend.save([new Todo("task")]);
+    await backend.withLock(async () => {
+      await backend.load();
+      await backend.save([new Todo("task")]);
+    });
 
     const [, init] = fetchMock.mock.calls[1] as unknown as [
       string,
       { headers: Record<string, string> },
     ];
+    expect(init.headers).toHaveProperty("If-None-Match", "*");
     expect(init.headers).not.toHaveProperty("If-Match");
   });
 
@@ -226,10 +244,12 @@ describe("WebDavBackend", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url);
-    await backend.load();
 
     await expect(
-      backend.save([new Todo("task")]),
+      backend.withLock(async () => {
+        await backend.load();
+        await backend.save([new Todo("task")]);
+      }),
     ).rejects.toThrow(/conflict.*412/i);
   });
 });

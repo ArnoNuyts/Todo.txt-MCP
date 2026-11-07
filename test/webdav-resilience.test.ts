@@ -40,14 +40,18 @@ describe("WebDavBackend retry policy", () => {
 
   it("retries a PUT after a transient 500 and then succeeds", async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse("task\n", 200, { ETag: '"v1"' }))
       .mockResolvedValueOnce(jsonResponse("", 500))
       .mockResolvedValueOnce(jsonResponse("", 201));
     vi.stubGlobal("fetch", fetchMock);
 
-    await new WebDavBackend(url, undefined, undefined, fastRetry)
-      .save([new Todo("task")]);
+    const backend = new WebDavBackend(url, undefined, undefined, fastRetry);
+    await backend.withLock(async () => {
+      await backend.load();
+      await backend.save([new Todo("task")]);
+    });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("stops after three attempts when a status stays transient", async () => {
@@ -100,11 +104,12 @@ describe("WebDavBackend retry policy", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url, undefined, undefined, fastRetry);
-    await backend.load();
-
-    await expect(backend.save([new Todo("new")])).rejects.toThrow(
-      /conflict.*412/i,
-    );
+    await expect(
+      backend.withLock(async () => {
+        await backend.load();
+        await backend.save([new Todo("new")]);
+      }),
+    ).rejects.toThrow(/conflict.*412/i);
     // Only the GET and the single conflicting PUT were issued.
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
