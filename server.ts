@@ -152,14 +152,15 @@ export function createTodoMcpServer(
     "todo://active",
     {
       title: "Active todos",
-      description: "Open todos only, one per line.",
+      description:
+        "Visible open todos only; hidden and future-threshold todos omitted.",
       mimeType: "text/plain",
     },
     async (uri) => {
       const todos = await backend.load();
       return textResource(
         uri,
-        serializeTodoContent(todos.filter((todo) => !todo.isDone())),
+        serializeTodoContent(filterTodos(todos, { status: "todo" })),
       );
     },
   );

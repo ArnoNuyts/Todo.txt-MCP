@@ -232,8 +232,9 @@ guidance.
 - `list_todos` — list todos by `search`, `status` (`todo` default, `done`,
   `all`), `context`, `limit` (default 20, max 100), and `offset`. Returns
   `hash text` lines and a `MORE <count> (offset=<next>)` line when a page is
-  truncated. Todos marked `h:` and todos whose `t:` threshold has not passed
-  yet are omitted unless `status` is `all`.
+  truncated. Todos marked `h:` (other than `h:0`) and todos whose `t:`
+  threshold has not passed yet are omitted unless `status` is `all`.
+  Threshold days are compared in UTC.
 - `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
   `rec:` tags. Returns one `hash text` line per item.
 - `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`
@@ -263,8 +264,9 @@ Failures return `isError: true` with a stable machine-readable code in
 Read-only resources are always available, including in read-only mode:
 
 - `todo://file` — the complete todo.txt content.
-- `todo://active` — open todos only.
-- `todo://context/{name}` — open todos in one `@context`.
+- `todo://active` — visible open todos only (hidden and future-threshold
+  omitted).
+- `todo://context/{name}` — visible open todos in one `@context`.
 
 ### Concurrency
 
