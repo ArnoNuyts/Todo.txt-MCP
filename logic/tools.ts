@@ -40,6 +40,47 @@ export const CompactDeleteTodosSchema = z.object({
   ),
 });
 
+/**
+ * Characters that a todo line must never contain: they would persist as
+ * multiple physical todo.txt lines (or as line breaks for consumers that
+ * treat U+2028/U+2029 as line terminators).
+ */
+const LINE_SEPARATOR_PATTERN = /[\n\r\u2028\u2029]/;
+
+function describeSeparator(separator: string): string {
+  switch (separator) {
+    case "\n":
+      return "line feed (U+000A)";
+    case "\r":
+      return "carriage return (U+000D)";
+    case "\u2028":
+      return "line separator (U+2028)";
+    case "\u2029":
+      return "paragraph separator (U+2029)";
+    default:
+      return "line separator";
+  }
+}
+
+/**
+ * Rejects embedded line separators before a {@link Todo} is constructed. The
+ * error deliberately reports only the separator class and offset, never the
+ * input itself, so a large invalid payload is not echoed back.
+ */
+function assertSingleLine(text: string, field: string): void {
+  const match = LINE_SEPARATOR_PATTERN.exec(text);
+  if (match === null) {
+    return;
+  }
+  const separator = describeSeparator(match[0]);
+  throw new ToolFailure(
+    "INVALID_ARGUMENT",
+    `${field} must be a single line; found an embedded ${separator}. ` +
+      "Remove the line separator and retry. Nothing was saved.",
+    { separator, index: match.index },
+  );
+}
+
 async function todoLine(todo: Todo): Promise<string> {
   return `${await todo.getHash()} ${todo.toDisplayString()}`;
 }
@@ -142,10 +183,15 @@ async function addTodosOperation(
   rawArgs: unknown,
 ) {
   const { todos: texts } = CompactAddTodosSchema.parse(rawArgs);
+  for (const text of texts) {
+    assertSingleLine(text, "Todo text");
+  }
 
   return await withBackendLock(backend, async () => {
     const todos = await backend.load();
     const maxTodos = resolveMaxTodos();
+    // Every input element is exactly one persisted line: `assertSingleLine`
+    // rejected embedded separators above.
     if (todos.length + texts.length > maxTodos) {
       throw new ToolFailure(
         "LIMIT_EXCEEDED",
@@ -184,6 +230,9 @@ interface TextUpdate {
 }
 
 function parseTextUpdate(line: string): TextUpdate {
+  // Defense in depth: the regexp below also rejects line terminators, but an
+  // explicit guard gives a clear error and never lets one reach `new Todo`.
+  assertSingleLine(line, "Update text");
   const match = /^([A-Za-z0-9_-]{8,64})\s+(.+)$/.exec(line.trim());
   if (match === null) {
     throw new ToolFailure(
