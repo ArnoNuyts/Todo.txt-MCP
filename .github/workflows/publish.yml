@@ -28,8 +28,8 @@ jobs:
       - name: Publish to npm
         run: |
           version="$(node -p "require('./package.json').version")"
-          if npm view "todo.txt-mcp@${version}" version >/dev/null 2>&1; then
-            echo "todo.txt-mcp@${version} is already published; skipping."
+          if npm view "@arnoarnoarno/todo.txt-mcp@${version}" version >/dev/null 2>&1; then
+            echo "@arnoarnoarno/todo.txt-mcp@${version} is already published; skipping."
             exit 0
           fi
           npm publish --provenance --access public

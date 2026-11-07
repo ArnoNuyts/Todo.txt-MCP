@@ -67,13 +67,13 @@ step.
 
 ```bash
 export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
-npx -y todo.txt-mcp
+npx -y @arnoarnoarno/todo.txt-mcp
 ```
 
 Or install it globally:
 
 ```bash
-npm install -g todo.txt-mcp
+npm install -g @arnoarnoarno/todo.txt-mcp
 todo.txt-mcp
 ```
 
