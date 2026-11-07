@@ -94,6 +94,7 @@ npm test              # run once
 npm run test:watch    # watch mode
 npm run test:coverage # coverage report
 npm run typecheck     # TypeScript type checking
+npm run knip          # unused files, exports, types, and dependencies
 npm run bench:actions # token cost of add/edit/status/pagination workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```

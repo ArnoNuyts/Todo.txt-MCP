@@ -12,6 +12,7 @@
     "dev": "node --watch server.ts",
     "start": "node server.ts",
     "typecheck": "tsc -p tsconfig.json",
+    "knip": "knip",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -29,6 +30,7 @@
     "@types/express": "5.0.6",
     "@types/node": "26.6.5",
     "@vitest/coverage-v8": "5.0.5",
+    "knip": "6.44.2",
     "typescript": "7.0.2",
     "vitest": "5.0.5"
   }
