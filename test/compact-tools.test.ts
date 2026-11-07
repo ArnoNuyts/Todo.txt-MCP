@@ -125,6 +125,36 @@ describe("tool surface", () => {
     expect(textOf(offset)).toContain("Write report");
   });
 
+  it("omits hidden and future-threshold todos from list_todos", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-07T12:00:00.000Z"));
+    try {
+      await backend.save([
+        new Todo("Visible task @home"),
+        new Todo("Hidden task @home h:1"),
+        new Todo("Future task @home t:2027-05-01"),
+      ]);
+
+      const active = await client.callTool({
+        name: "list_todos",
+        arguments: {},
+      });
+      expect(textOf(active)).toContain("Visible task");
+      expect(textOf(active)).not.toContain("Hidden task");
+      expect(textOf(active)).not.toContain("Future task");
+
+      const all = await client.callTool({
+        name: "list_todos",
+        arguments: { status: "all" },
+      });
+      expect(textOf(all)).toContain("Visible task");
+      expect(textOf(all)).toContain("Hidden task");
+      expect(textOf(all)).toContain("Future task");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("updates priority and contexts for multiple todos in one save", async () => {
     const todos = [
       new Todo("(C) 2025-01-02 Report @work +finance due:2026-12-15"),

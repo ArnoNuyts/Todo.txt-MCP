@@ -30,7 +30,7 @@ function matchesContext(todo: Todo, context: string): boolean {
   return contextTokenPattern(normalized).test(todo.text);
 }
 
-/** Filters todos by status, text, and context. */
+/** Filters todos by status, text, context, and visibility. */
 export function filterTodos(
   todos: readonly Todo[],
   filters: TodoFilterOptions = {},
@@ -43,6 +43,15 @@ export function filterTodos(
       if (todo.state !== targetState) {
         return false;
       }
+    }
+
+    // Hidden todos and todos whose t: threshold has not passed yet are omitted
+    // from every view except the explicit "all" escape hatch.
+    if (
+      filters.status !== "all" &&
+      (todo.isHidden() || !todo.isPassedThreshold())
+    ) {
+      return false;
     }
 
     if (filters.search) {
