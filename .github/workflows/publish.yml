@@ -1,0 +1,35 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Publish to npm
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "todo.txt-mcp@${version}" version >/dev/null 2>&1; then
+            echo "todo.txt-mcp@${version} is already published; skipping."
+            exit 0
+          fi
+          npm publish --provenance --access public
