@@ -15,6 +15,50 @@ The server runs on **Node.js 26 LTS** and executes TypeScript directly using
 Node's built-in type stripping, so there is no build step. The minimum supported
 runtime is Node.js 24.15.
 
+## 🗺️ How it works
+
+Claude Code (or any MCP client) talks to a self-hosted Todo.txt-MCP server over
+HTTP. The server owns the todo file; the only difference between the two setups
+is where that file lives.
+
+### WebDAV backend: sync with Nextcloud or Seafile
+
+The container keeps the todo file on your existing WebDAV storage, so the same
+list is available to Claude Code, the Nextcloud/Seafile web UI, and mobile apps.
+
+```mermaid
+flowchart LR
+    CC["Claude Code"]
+    PROXY["Reverse proxy<br/>TLS"]
+    MCP["Todo.txt-MCP<br/>(self-hosted)"]
+    DAV[("WebDAV<br/>Nextcloud / Seafile")]
+    FILE["todo.txt"]
+    APPS["Web & mobile apps"]
+
+    CC -- "MCP over HTTPS<br/>Bearer token" --> PROXY
+    PROXY -- "http://todo-txt-mcp:3000/mcp" --> MCP
+    MCP -- "GET / PUT<br/>If-Match (ETag)" --> DAV
+    DAV --- FILE
+    APPS -.-> DAV
+```
+
+### Local file backend: keep everything on one host
+
+With `TODOTXT_MCP_BACKEND=local` the file never leaves the machine or Docker
+volume. Claude Code still connects over HTTP; only the storage is local.
+
+```mermaid
+flowchart LR
+    CC["Claude Code"]
+    MCP["Todo.txt-MCP<br/>(local backend)"]
+    VOL[("Docker volume<br/>or host directory")]
+    FILE["todo.txt"]
+
+    CC -- "MCP over HTTP<br/>http://localhost:3000/mcp" --> MCP
+    MCP -- "atomic read / write<br/>+ advisory lock" --> FILE
+    VOL --- FILE
+```
+
 ## 📦 Quick Start with npm
 
 Requires Node.js **26 LTS** (minimum 24.15). The package ships the TypeScript
