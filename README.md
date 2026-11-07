@@ -236,13 +236,15 @@ guidance.
   threshold has not passed yet are omitted unless `status` is `all`.
   Threshold days are compared in UTC.
 - `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
-  `rec:` tags. Returns one `hash text` line per item. `onDuplicate` accepts
-  `allow` (default), `skip`, or `error` (fails the whole call without saving).
+  `rec:` tags. Returns one `hash text` line per item. An exact line that
+  already exists is skipped and returned as `SKIPPED <hash> <text>`, making
+  retries idempotent.
 - `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`
   lines. Copy the listed line, edit it, and include the fields to keep; fields
   omitted from the new line are removed. The creation date is preserved when
   omitted. To complete, use `x ` with no date unless the user gave one.
-  Returns `hash text` lines. `onDuplicate` behaves as in `add_todos`.
+  Returns `hash text` lines. An update that would duplicate another line
+  fails with `CONFLICT` and saves nothing.
 - `delete_todos` — delete the first todo matching each hash in one batch.
 
 `due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
@@ -253,18 +255,17 @@ a `t:` threshold keeps its offset from the due date.
 All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
 changes and starts with
-`PARTIAL <n> updated[, <k> skipped][, <m> not found]`, followed by
-`SKIPPED <hash> <text>` and `ERROR <hash> not found` lines. A batch where
-every add is skipped returns only its `SKIPPED` lines. A hash shared by
-identical todo lines addresses the first one in file order: each update or
-delete changes one line, and repeating the call peels the remaining
-duplicates.
+`PARTIAL <n> updated, <m> not found`, followed by `ERROR <hash> not found`
+lines. A batch where every add is skipped returns only its `SKIPPED` lines.
+A hash shared by identical todo lines addresses the first one in file order:
+each update or delete changes one line, and repeating the call peels the
+remaining duplicates.
 
 Duplicate detection compares the exact line that would be stored, so
 formatting differences keep separate hashes and separate rows. An existing
 undated line is therefore not a duplicate of a new add, because the add gets
-today's creation date. `onDuplicate` governs the line you submit; a recurrence
-spawned by completing a todo is always added.
+today's creation date. Additions never create duplicates; a recurrence spawned
+by completing a todo is always added.
 
 Todo text must be valid Unicode without line separators or control characters
 (tab is allowed). Unchanged lines are written back byte-for-byte, so saving

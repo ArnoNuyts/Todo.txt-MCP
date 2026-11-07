@@ -22,24 +22,16 @@ export const CompactListTodosSchema = z.object({
   ),
 });
 
-const DuplicatePolicySchema = z.enum(["allow", "skip", "error"]).optional()
-  .describe(
-    "allow (default) stores the duplicate, skip leaves it out, error fails " +
-      "the whole call without saving",
-  );
-
 export const CompactAddTodosSchema = z.object({
   todos: z.array(z.string().min(1).max(2000)).min(1).max(100).describe(
     "Todo texts",
   ),
-  onDuplicate: DuplicatePolicySchema,
 });
 
 export const CompactUpdateTodosSchema = z.object({
   updates: z.array(z.string().min(3).max(2100)).min(1).max(100).describe(
     "'<hash> <new todo.txt line>' lines; updates the first matching line",
   ),
-  onDuplicate: DuplicatePolicySchema,
 });
 
 export const CompactDeleteTodosSchema = z.object({
@@ -172,41 +164,18 @@ function compactLines(lines: readonly string[]) {
   };
 }
 
-function deleteBatchLines(
+function batchLines(
   applied: readonly string[],
   missing: readonly string[],
+  verb: "updated" | "deleted",
 ) {
   if (missing.length === 0) {
     return compactLines(applied);
   }
   return compactLines([
-    `PARTIAL ${applied.length} deleted, ${missing.length} not found; ` +
+    `PARTIAL ${applied.length} ${verb}, ${missing.length} not found; ` +
     "call list_todos to refresh hashes.",
     ...applied,
-    ...missing.map((hash) => `ERROR ${hash} not found`),
-  ]);
-}
-
-function updateBatchLines(
-  applied: readonly string[],
-  skipped: readonly TextUpdate[],
-  missing: readonly string[],
-) {
-  if (skipped.length === 0 && missing.length === 0) {
-    return compactLines(applied);
-  }
-  const summary = [
-    `${applied.length} updated`,
-    ...(skipped.length > 0 ? [`${skipped.length} skipped`] : []),
-    ...(missing.length > 0 ? [`${missing.length} not found`] : []),
-  ].join(", ");
-  const tail = applied.length > 0 || missing.length > 0
-    ? "call list_todos to refresh hashes."
-    : "Nothing was changed.";
-  return compactLines([
-    `PARTIAL ${summary}; ${tail}`,
-    ...applied,
-    ...skipped.map(({ hash, text }) => `SKIPPED ${hash} ${text}`),
     ...missing.map((hash) => `ERROR ${hash} not found`),
   ]);
 }
@@ -250,8 +219,7 @@ async function addTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { todos: texts, onDuplicate = "allow" } =
-    CompactAddTodosSchema.parse(rawArgs);
+  const { todos: texts } = CompactAddTodosSchema.parse(rawArgs);
   for (const text of texts) {
     assertSingleLine(text, "Todo text");
   }
@@ -275,21 +243,12 @@ async function addTodosOperation(
       const key = todo.toString();
       const duplicate = existing.get(key);
       if (duplicate !== undefined) {
-        if (onDuplicate === "error") {
-          throw new ToolFailure(
-            "CONFLICT",
-            "Cannot add a duplicate todo line with onDuplicate=error. " +
-              "Nothing was saved.",
-            { duplicates: [key] },
-          );
-        }
-        if (onDuplicate === "skip") {
-          skipped.push({ hash: await duplicate.getHash(), text });
-          continue;
-        }
-      } else {
-        existing.set(key, todo);
+        // Adding an existing line is an idempotent no-op. Returning the
+        // existing hash makes retries safe without creating a duplicate.
+        skipped.push({ hash: await duplicate.getHash(), text });
+        continue;
       }
+      existing.set(key, todo);
       added.push(todo);
     }
 
@@ -387,8 +346,7 @@ async function updateTodosOperation(
   backend: TodoBackend,
   rawArgs: unknown,
 ) {
-  const { updates, onDuplicate = "allow" } =
-    CompactUpdateTodosSchema.parse(rawArgs);
+  const { updates } = CompactUpdateTodosSchema.parse(rawArgs);
   const parsed = updates.map(parseTextUpdate);
   const hashes = parsed.map((update) => update.hash);
   if (new Set(hashes).size !== hashes.length) {
@@ -420,28 +378,21 @@ async function updateTodosOperation(
     }
 
     const updated: Todo[] = [];
-    const skipped: TextUpdate[] = [];
     let changed = false;
     for (const { update, target } of resolved) {
       const { next, recurrence } = buildReplacement(target, update.text);
       const targetKey = target.toString();
       const nextKey = next.toString();
-      const createsDuplicate = nextKey !== targetKey &&
-        (lineCounts.get(nextKey) ?? 0) > 0;
-
-      if (createsDuplicate) {
-        if (onDuplicate === "error") {
-          throw new ToolFailure(
-            "CONFLICT",
-            `Cannot update ${update.hash}: the new line duplicates another ` +
-              "todo. Nothing was saved.",
-            { hash: update.hash },
-          );
-        }
-        if (onDuplicate === "skip") {
-          skipped.push(update);
-          continue;
-        }
+      if (
+        nextKey !== targetKey &&
+        (lineCounts.get(nextKey) ?? 0) > 0
+      ) {
+        throw new ToolFailure(
+          "CONFLICT",
+          `Cannot update ${update.hash}: the new line duplicates another ` +
+            "todo. Nothing was saved.",
+          { hash: update.hash },
+        );
       }
 
       const before = target.toString();
@@ -469,14 +420,14 @@ async function updateTodosOperation(
     if (changed) {
       await backend.save(todos);
     }
-    if (updated.length === 0 && skipped.length === 0) {
+    if (updated.length === 0) {
       return notFoundError(missing[0]);
     }
 
-    return updateBatchLines(
+    return batchLines(
       await Promise.all(updated.map(todoLine)),
-      skipped,
       missing,
+      "updated",
     );
   });
 }
@@ -521,9 +472,10 @@ async function deleteTodosOperation(
       return notFoundError(missing[0]);
     }
 
-    return deleteBatchLines(
+    return batchLines(
       await Promise.all(deleted.map(todoLine)),
       missing,
+      "deleted",
     );
   });
 }

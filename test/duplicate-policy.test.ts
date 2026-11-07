@@ -25,7 +25,11 @@ function errorCodeOf(result: unknown): string | undefined {
   return (result as ToolTextResult).structuredContent?.error?.code;
 }
 
-describe("duplicate policy", () => {
+function hashOfLine(line: string): string {
+  return line.split(" ")[0];
+}
+
+describe("duplicate handling", () => {
   let backend: MockBackend;
   let client: Client;
   let server: ReturnType<typeof createTodoMcpServer>;
@@ -50,13 +54,10 @@ describe("duplicate policy", () => {
     await Promise.allSettled([client.close(), server.close()]);
   });
 
-  async function add(
-    todos: string[],
-    onDuplicate?: "allow" | "skip" | "error",
-  ) {
+  async function add(todos: string[]) {
     return await client.callTool({
       name: "add_todos",
-      arguments: onDuplicate === undefined ? { todos } : { todos, onDuplicate },
+      arguments: { todos },
     });
   }
 
@@ -65,67 +66,54 @@ describe("duplicate policy", () => {
   }
 
   describe("add_todos", () => {
-    it("allows duplicates by default", async () => {
-      await add(["Dup"]);
-      const result = await add(["Dup"]);
-
-      expect(result.isError).toBeFalsy();
-      expect(linesOf(result)).toHaveLength(1);
-      expect(backend.getTodos()).toHaveLength(2);
-    });
-
-    it("skips a duplicate that already exists", async () => {
-      await add(["Dup"]);
+    it("skips an existing duplicate and returns its hash", async () => {
+      const first = await add(["Dup"]);
+      const hash = hashOfLine(linesOf(first)[0]);
       backend.saveCalls = 0;
 
-      const result = await add(["Dup"], "skip");
+      const second = await add(["Dup"]);
 
-      expect(result.isError).toBeFalsy();
-      expect(linesOf(result)).toHaveLength(1);
-      expect(linesOf(result)[0]).toMatch(/^SKIPPED [A-Za-z0-9_-]{11} Dup$/);
+      expect(second.isError).toBeFalsy();
+      expect(linesOf(second)).toEqual([`SKIPPED ${hash} Dup`]);
       expect(backend.getTodos()).toHaveLength(1);
-      expect(backend.saveCalls).toBe(0);
-    });
-
-    it("fails the whole batch when a duplicate exists and policy is error", async () => {
-      await add(["Dup"]);
-      backend.saveCalls = 0;
-
-      const result = await add(["New", "Dup"], "error");
-
-      expect(result.isError).toBe(true);
-      expect(errorCodeOf(result)).toBe("CONFLICT");
-      expect(backend.getTodos()).toHaveLength(1);
-      expect(backend.getTodos()[0].text).toBe("Dup");
       expect(backend.saveCalls).toBe(0);
     });
 
     it("skips only the duplicate within one batch", async () => {
-      const result = await add(["New", "Dup", "Dup"], "skip");
+      const result = await add(["New", "Dup", "Dup"]);
+      const lines = linesOf(result);
+      const added = lines.find((line) => line.endsWith(" Dup") &&
+        !line.startsWith("SKIPPED"));
+      const skipped = lines.find((line) => line.startsWith("SKIPPED"));
 
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toMatch(/SKIPPED [A-Za-z0-9_-]{11} Dup/);
+      expect(lines).toHaveLength(3);
+      expect(added).toBeDefined();
+      expect(skipped).toBe(`SKIPPED ${hashOfLine(added!)} Dup`);
       expect(backend.getTodos()).toHaveLength(2);
       expect(backend.getTodos().filter((todo) => todo.text === "Dup"))
         .toHaveLength(1);
-    });
-
-    it("fails a batch with an internal duplicate when policy is error", async () => {
-      backend.saveCalls = 0;
-
-      const result = await add(["Dup", "Dup"], "error");
-
-      expect(result.isError).toBe(true);
-      expect(errorCodeOf(result)).toBe("CONFLICT");
-      expect(backend.saveCalls).toBe(0);
-      expect(backend.getTodos()).toHaveLength(0);
     });
 
     it("does not treat an undated existing line as a duplicate of a dated add", async () => {
       await backend.save([new Todo("Dup")]);
       backend.saveCalls = 0;
 
-      const result = await add(["Dup"], "skip");
+      const result = await add(["Dup"]);
+
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).not.toContain("SKIPPED");
+      expect(backend.getTodos()).toHaveLength(2);
+      expect(backend.saveCalls).toBe(1);
+    });
+
+    it("keeps raw-distinct lines separate instead of calling them duplicates", async () => {
+      await backend.save([
+        new Todo("2026-11-07 Dup due:2024-06-30 tail"),
+      ]);
+      backend.saveCalls = 0;
+
+      const result = await add(["2026-11-07 Dup tail due:2024-06-30"]);
 
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).not.toContain("SKIPPED");
@@ -138,87 +126,24 @@ describe("duplicate policy", () => {
       await backend.save([new Todo("2026-11-07 Dup")]);
       backend.saveCalls = 0;
 
-      const result = await add(["2026-11-07 Dup"], "skip");
+      const result = await add(["2026-11-07 Dup"]);
 
       expect(result.isError).toBeFalsy();
       expect(backend.getTodos()).toHaveLength(1);
       expect(backend.saveCalls).toBe(0);
     });
-
-    it("rejects an unknown onDuplicate value", async () => {
-      backend.saveCalls = 0;
-
-      const result = await client.callTool({
-        name: "add_todos",
-        arguments: { todos: ["New"], onDuplicate: "bogus" },
-      });
-
-      expect(result.isError).toBe(true);
-      expect(textOf(result)).toMatch(/onDuplicate|Invalid/i);
-      expect(backend.saveCalls).toBe(0);
-    });
-
-    it("keeps raw-distinct lines separate instead of calling them duplicates", async () => {
-      await backend.save([
-        new Todo("2026-11-07 Dup due:2024-06-30 tail"),
-      ]);
-      backend.saveCalls = 0;
-
-      const result = await add(["2026-11-07 Dup tail due:2024-06-30"], "skip");
-
-      expect(result.isError).toBeFalsy();
-      expect(textOf(result)).not.toContain("SKIPPED");
-      expect(backend.getTodos()).toHaveLength(2);
-      expect(backend.saveCalls).toBe(1);
-    });
   });
 
   describe("update_todos", () => {
-    it("allows an update that creates a duplicate by default", async () => {
+    it("rejects an update that would create a duplicate", async () => {
       const other = new Todo("Other");
       await backend.save([other, new Todo("Dup")]);
       const hash = await hashOf(other);
+      backend.saveCalls = 0;
 
       const result = await client.callTool({
         name: "update_todos",
         arguments: { updates: [`${hash} Dup`] },
-      });
-
-      expect(result.isError).toBeFalsy();
-      expect(backend.getTodos().filter((todo) => todo.text === "Dup"))
-        .toHaveLength(2);
-    });
-
-    it("skips an update that would create a duplicate", async () => {
-      const other = new Todo("Other");
-      await backend.save([other, new Todo("Dup")]);
-      const hash = await hashOf(other);
-      backend.saveCalls = 0;
-
-      const result = await client.callTool({
-        name: "update_todos",
-        arguments: { updates: [`${hash} Dup`], onDuplicate: "skip" },
-      });
-
-      expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain(`SKIPPED ${hash} Dup`);
-      expect(textOf(result)).toContain("0 updated, 1 skipped");
-      expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
-        "Other",
-        "Dup",
-      ]);
-      expect(backend.saveCalls).toBe(0);
-    });
-
-    it("fails the whole batch when an update would create a duplicate", async () => {
-      const other = new Todo("Other");
-      await backend.save([other, new Todo("Dup")]);
-      const hash = await hashOf(other);
-      backend.saveCalls = 0;
-
-      const result = await client.callTool({
-        name: "update_todos",
-        arguments: { updates: [`${hash} Dup`], onDuplicate: "error" },
       });
 
       expect(result.isError).toBe(true);
@@ -230,7 +155,7 @@ describe("duplicate policy", () => {
       expect(backend.saveCalls).toBe(0);
     });
 
-    it("saves nothing when a later update in the batch fails the policy", async () => {
+    it("saves nothing when a later update in the batch would duplicate", async () => {
       const first = new Todo("First");
       const second = new Todo("Second");
       await backend.save([first, second]);
@@ -242,7 +167,6 @@ describe("duplicate policy", () => {
         name: "update_todos",
         arguments: {
           updates: [`${firstHash} Shared`, `${secondHash} Shared`],
-          onDuplicate: "error",
         },
       });
 
@@ -255,31 +179,6 @@ describe("duplicate policy", () => {
       ]);
     });
 
-    it("skips an update that would duplicate an earlier update in the batch", async () => {
-      const first = new Todo("First");
-      const second = new Todo("Second");
-      await backend.save([first, second]);
-      const firstHash = await hashOf(first);
-      const secondHash = await hashOf(second);
-      backend.saveCalls = 0;
-
-      const result = await client.callTool({
-        name: "update_todos",
-        arguments: {
-          updates: [`${firstHash} Shared`, `${secondHash} Shared`],
-          onDuplicate: "skip",
-        },
-      });
-
-      expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain("1 updated, 1 skipped");
-      expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
-        "Shared",
-        "Second",
-      ]);
-      expect(backend.saveCalls).toBe(1);
-    });
-
     it("does not treat a no-op update as a duplicate", async () => {
       const todos = [new Todo("Dup"), new Todo("Dup")];
       await backend.save(todos);
@@ -288,7 +187,7 @@ describe("duplicate policy", () => {
 
       const result = await client.callTool({
         name: "update_todos",
-        arguments: { updates: [`${hash} Dup`], onDuplicate: "error" },
+        arguments: { updates: [`${hash} Dup`] },
       });
 
       expect(result.isError).toBeFalsy();

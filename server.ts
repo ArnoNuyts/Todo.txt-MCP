@@ -212,7 +212,7 @@ export function createTodoMcpServer(
     {
       description:
         "Add todo.txt lines (supports due:, t:, rec:); returns " +
-        "'hash text' lines. onDuplicate: allow|skip|error.",
+        "'hash text' lines. Existing lines are skipped.",
       inputSchema: CompactAddTodosSchema.shape,
       annotations: { destructiveHint: false },
     },
@@ -226,8 +226,8 @@ export function createTodoMcpServer(
         "Update the first line matching each hash with '<hash> <new " +
         "todo.txt line>' lines. Copy the listed line and edit it; include " +
         "fields to keep. To complete, start with 'x ' and no date unless " +
-        "the user gave one. onDuplicate: allow|skip|error. Repeat with the " +
-        "same hash for the next duplicate.",
+        "the user gave one. A duplicate result returns CONFLICT. Repeat " +
+        "with the same hash for the next duplicate.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
