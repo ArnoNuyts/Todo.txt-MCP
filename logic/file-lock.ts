@@ -33,9 +33,9 @@ export class FileLockTimeoutError extends Error {
  * Runs `work` while holding an advisory lock file next to `target`.
  *
  * The lock is created with O_EXCL, so exactly one process on the same
- * filesystem can hold it. It is released in a `finally`, and a lock older than
- * `staleMs` is treated as abandoned so a crashed process cannot block writers
- * forever.
+ * filesystem can hold it. It is released in a `finally`. A lock whose recorded
+ * PID is no longer alive, or that is older than `staleMs`, is treated as
+ * abandoned so a crashed process cannot block writers forever.
  *
  * Advisory only: writers that do not use this helper (external editors,
  * WebDAV clients) are not blocked. The point is to serialize cooperating
@@ -54,7 +54,13 @@ export async function withFileLock<T>(
   const token = randomUUID();
   const deadline = now() + timeoutMs;
 
-  await acquire(lockPath, token, { deadline, staleMs, retryMs, now });
+  await acquire(lockPath, token, {
+    timeoutMs,
+    deadline,
+    staleMs,
+    retryMs,
+    now,
+  });
 
   try {
     return await work();
@@ -64,6 +70,7 @@ export async function withFileLock<T>(
 }
 
 interface AcquireOptions {
+  timeoutMs: number;
   deadline: number;
   staleMs: number;
   retryMs: number;
@@ -94,6 +101,17 @@ async function acquire(
       }
     }
 
+    // A lock left by a process that no longer exists (for example after
+    // `kill -9`) can be reclaimed immediately instead of waiting for staleMs.
+    const lockContent = await readFile(lockPath, "utf8").catch(() => undefined);
+    const ownerPid = lockContent === undefined
+      ? undefined
+      : parseLockPid(lockContent);
+    if (ownerPid !== undefined && !isProcessAlive(ownerPid)) {
+      await rm(lockPath, { force: true }).catch(() => undefined);
+      continue;
+    }
+
     const info = await stat(lockPath).catch(() => undefined);
     if (info !== undefined && options.now() - info.mtimeMs > options.staleMs) {
       // Take over an abandoned lock. Two contenders may both try; O_EXCL above
@@ -103,9 +121,33 @@ async function acquire(
     }
 
     if (options.now() >= options.deadline) {
-      throw new FileLockTimeoutError(lockPath, options.deadline);
+      throw new FileLockTimeoutError(lockPath, options.timeoutMs);
     }
     await sleep(options.retryMs);
+  }
+}
+
+/** Extracts the `pid:<n>` line written into a lock file. */
+function parseLockPid(content: string): number | undefined {
+  const match = /^pid:(\d+)$/m.exec(content);
+  if (match === null) {
+    return undefined;
+  }
+
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
+ * Checks whether `pid` is still running. `EPERM` means the process exists but
+ * belongs to another user, so it counts as alive.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
