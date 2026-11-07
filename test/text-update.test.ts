@@ -201,7 +201,7 @@ describe("text-only update_todos", () => {
     expect(textOf(result)).toContain("<hash> <text>");
   });
 
-  it("updates every identical line when they share a hash", async () => {
+  it("updates only the first line when identical lines share a hash", async () => {
     const todos = [new Todo("Dup"), new Todo("Dup")];
     await backend.save(todos);
     const hash = await hashOf(todos[0]);
@@ -214,7 +214,7 @@ describe("text-only update_todos", () => {
     expect(result.isError).toBeFalsy();
     expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
       "(A) Dup",
-      "(A) Dup",
+      "Dup",
     ]);
   });
 });

@@ -338,7 +338,7 @@ describe("tool surface", () => {
     expect(backend.getTodos()[0].isDone()).toBe(true);
   });
 
-  it("updates every identical todo line when they share a hash", async () => {
+  it("updates only the first identical todo line per call", async () => {
     const todos = [new Todo("Dup"), new Todo("Dup"), new Todo("Other")];
     await backend.save(todos);
     const hash = await todos[0].getHash();
@@ -350,16 +350,16 @@ describe("tool surface", () => {
     });
 
     expect(update.isError).toBeFalsy();
-    expect(linesOf(update)).toHaveLength(2);
+    expect(linesOf(update)).toHaveLength(1);
     expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
       "(A) Dup",
-      "(A) Dup",
+      "Dup",
       "Other",
     ]);
     expect(backend.saveCalls).toBe(1);
   });
 
-  it("deletes every identical todo line when they share a hash", async () => {
+  it("deletes only the first identical todo line per call", async () => {
     const todos = [new Todo("Dup"), new Todo("Dup"), new Todo("Other")];
     await backend.save(todos);
     const hash = await todos[0].getHash();
@@ -371,8 +371,9 @@ describe("tool surface", () => {
     });
 
     expect(deletion.isError).toBeFalsy();
-    expect(linesOf(deletion)).toHaveLength(2);
+    expect(linesOf(deletion)).toHaveLength(1);
     expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
+      "Dup",
       "Other",
     ]);
     expect(backend.saveCalls).toBe(1);

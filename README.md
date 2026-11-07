@@ -236,13 +236,14 @@ guidance.
   threshold has not passed yet are omitted unless `status` is `all`.
   Threshold days are compared in UTC.
 - `add_todos` — add a batch of todo.txt lines, including `due:`, `t:`, and
-  `rec:` tags. Returns one `hash text` line per item.
+  `rec:` tags. Returns one `hash text` line per item. `onDuplicate` accepts
+  `allow` (default), `skip`, or `error` (fails the whole call without saving).
 - `update_todos` — replace todos by hash using `<hash> <new todo.txt line>`
   lines. Copy the listed line, edit it, and include the fields to keep; fields
   omitted from the new line are removed. The creation date is preserved when
   omitted. To complete, use `x ` with no date unless the user gave one.
-  Returns `hash text` lines.
-- `delete_todos` — delete multiple todos by hash in one batch.
+  Returns `hash text` lines. `onDuplicate` behaves as in `add_todos`.
+- `delete_todos` — delete the first todo matching each hash in one batch.
 
 `due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
 Completing a recurring todo follows the usual todo.txt convention:
@@ -252,9 +253,12 @@ a `t:` threshold keeps its offset from the due date.
 All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
 changes and starts with `PARTIAL <n> updated, <m> not found`, followed by
-`ERROR <hash> not found` lines. A hash shared by identical todo lines applies
-the update or deletion to every one of those lines, so duplicates can always
-be cleaned up.
+`ERROR <hash> not found` lines. A hash shared by identical todo lines
+addresses the first one in file order: each update or delete changes one
+line, and repeating the call peels the remaining duplicates. Skipped items
+are reported as `SKIPPED ...` lines. Duplicate detection compares the exact
+line that would be stored, so formatting differences keep separate hashes
+and separate rows.
 
 Todo text must be valid Unicode without line separators or control characters
 (tab is allowed). Unchanged lines are written back byte-for-byte, so saving
