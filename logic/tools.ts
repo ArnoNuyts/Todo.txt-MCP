@@ -30,13 +30,13 @@ export const CompactAddTodosSchema = z.object({
 
 export const CompactUpdateTodosSchema = z.object({
   updates: z.array(z.string().min(3).max(2100)).min(1).max(100).describe(
-    "'<hash> <new todo.txt line>' lines",
+    "'<hash> <new todo.txt line>' lines; updates the first matching line",
   ),
 });
 
 export const CompactDeleteTodosSchema = z.object({
   hashes: z.array(z.string().min(8).max(64)).min(1).max(100).describe(
-    "Todo hashes",
+    "Todo hashes; deletes the first matching line",
   ),
 });
 
@@ -46,6 +46,19 @@ export const CompactDeleteTodosSchema = z.object({
  * treat U+2028/U+2029 as line terminators).
  */
 const LINE_SEPARATOR_PATTERN = /[\n\r\u2028\u2029]/;
+
+/**
+ * C0 controls, DEL, and C1 controls would be persisted into the todo file.
+ * Tab is the only control character a todo line may contain; NUL in particular
+ * makes many consumers treat the rest of the file as binary.
+ */
+const CONTROL_CHARACTER_PATTERN =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+
+function describeControl(character: string): string {
+  const code = character.codePointAt(0) ?? 0;
+  return `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+}
 
 function describeSeparator(separator: string): string {
   switch (separator) {
@@ -63,22 +76,41 @@ function describeSeparator(separator: string): string {
 }
 
 /**
- * Rejects embedded line separators before a {@link Todo} is constructed. The
- * error deliberately reports only the separator class and offset, never the
- * input itself, so a large invalid payload is not echoed back.
+ * Rejects text that cannot be stored safely as one todo line before a
+ * {@link Todo} is constructed. The error deliberately reports only the
+ * character class and offset, never the input itself, so a large invalid
+ * payload is not echoed back.
  */
 function assertSingleLine(text: string, field: string): void {
-  const match = LINE_SEPARATOR_PATTERN.exec(text);
-  if (match === null) {
-    return;
+  const separatorMatch = LINE_SEPARATOR_PATTERN.exec(text);
+  if (separatorMatch !== null) {
+    const separator = describeSeparator(separatorMatch[0]);
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} must be a single line; found an embedded ${separator}. ` +
+        "Remove the line separator and retry. Nothing was saved.",
+      { separator, index: separatorMatch.index },
+    );
   }
-  const separator = describeSeparator(match[0]);
-  throw new ToolFailure(
-    "INVALID_ARGUMENT",
-    `${field} must be a single line; found an embedded ${separator}. ` +
-      "Remove the line separator and retry. Nothing was saved.",
-    { separator, index: match.index },
-  );
+
+  const controlMatch = CONTROL_CHARACTER_PATTERN.exec(text);
+  if (controlMatch !== null) {
+    const control = describeControl(controlMatch[0]);
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} must not contain control characters; found ${control}. ` +
+        "Remove the control character and retry. Nothing was saved.",
+      { control, index: controlMatch.index },
+    );
+  }
+
+  if (!text.isWellFormed()) {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} must be valid Unicode; found an unpaired surrogate. ` +
+        "Replace it with a complete character and retry. Nothing was saved.",
+    );
+  }
 }
 
 async function todoLine(todo: Todo): Promise<string> {
@@ -101,24 +133,29 @@ async function todoIndex(
   return index;
 }
 
-/** Resolves a hash to exactly one todo, rejecting ambiguous duplicates. */
-function uniqueTodo(
+/**
+ * Resolves a hash to its first matching todo in file order. Identical lines
+ * share a hash, so each call changes one of them; repeating the call peels
+ * the group one line at a time.
+ */
+function firstMatchingTodo(
   index: Map<string, Todo[]>,
   hash: string,
 ): Todo | undefined {
   const matches = index.get(hash);
-  if (matches === undefined) {
+  if (matches === undefined || matches.length === 0) {
     return undefined;
   }
-  if (matches.length > 1) {
+  const first = matches[0];
+  if (matches.some((todo) => todo.toString() !== first.toString())) {
     throw new ToolFailure(
       "CONFLICT",
-      `Hash ${hash} matches ${matches.length} identical todos. ` +
-        "Remove or differentiate the duplicate lines, then retry.",
+      `Hash ${hash} matches different todo lines (hash collision). ` +
+        "Nothing was changed; refresh with list_todos and retry.",
       { hash, count: matches.length },
     );
   }
-  return matches[0];
+  return first;
 }
 
 function compactLines(lines: readonly string[]) {
@@ -188,34 +225,61 @@ async function addTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
+    const todos = [...await backend.load()];
+    const existing = new Map<string, Todo>();
+    for (const todo of todos) {
+      const key = todo.toString();
+      if (!existing.has(key)) {
+        existing.set(key, todo);
+      }
+    }
+    const added: Todo[] = [];
+    const skipped: Array<{ hash: string; text: string }> = [];
+    for (const text of texts) {
+      const todo = new Todo(text);
+      if (!todo.creationDate) {
+        todo.creationDate = new Date();
+      }
+      const key = todo.toString();
+      const duplicate = existing.get(key);
+      if (duplicate !== undefined) {
+        // Adding an existing line is an idempotent no-op. Returning the
+        // existing hash makes retries safe without creating a duplicate.
+        skipped.push({ hash: await duplicate.getHash(), text });
+        continue;
+      }
+      existing.set(key, todo);
+      added.push(todo);
+    }
+
     const maxTodos = resolveMaxTodos();
-    // Every input element is exactly one persisted line: `assertSingleLine`
-    // rejected embedded separators above.
-    if (todos.length + texts.length > maxTodos) {
+    // Every accepted input element is exactly one persisted line:
+    // `assertSingleLine` rejected embedded separators above.
+    if (todos.length + added.length > maxTodos) {
       throw new ToolFailure(
         "LIMIT_EXCEEDED",
-        `Cannot add ${texts.length} todo(s): the file already contains ` +
+        `Cannot add ${added.length} todo(s): the file already contains ` +
           `${todos.length} and the limit is ${maxTodos} todos ` +
           `(TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
         {
           maxTodos,
           currentCount: todos.length,
-          requestedCount: texts.length,
+          requestedCount: added.length,
         },
       );
     }
 
-    const added = texts.map((text) => {
-      const todo = new Todo(text);
-      if (!todo.creationDate) {
-        todo.creationDate = new Date();
-      }
-      return todo;
-    });
     todos.push(...added);
-    await backend.save(todos);
-    return compactLines(await Promise.all(added.map(todoLine)));
+    if (added.length > 0) {
+      await backend.save(todos);
+    }
+    const lines = await Promise.all(added.map(todoLine));
+    lines.push(
+      ...await Promise.all(
+        skipped.map(async ({ hash, text }) => `SKIPPED ${hash} ${text}`),
+      ),
+    );
+    return compactLines(lines);
   });
 }
 
@@ -243,7 +307,7 @@ function parseTextUpdate(line: string): TextUpdate {
   return { hash: match[1], text: match[2] };
 }
 
-function replaceTodo(todos: Todo[], target: Todo, text: string): {
+function buildReplacement(target: Todo, text: string): {
   next: Todo;
   recurrence?: Todo;
 } {
@@ -268,11 +332,14 @@ function replaceTodo(todos: Todo[], target: Todo, text: string): {
     next.completionDate = undefined;
   }
 
+  return { next, recurrence };
+}
+
+function applyReplacement(todos: Todo[], target: Todo, next: Todo): void {
   const index = todos.indexOf(target);
   if (index >= 0) {
     todos[index] = next;
   }
-  return { next, recurrence };
 }
 
 async function updateTodosOperation(
@@ -290,13 +357,13 @@ async function updateTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
+    const todos = [...await backend.load()];
     const index = await todoIndex(todos);
 
     const resolved: Array<{ update: TextUpdate; target: Todo }> = [];
     const missing: string[] = [];
     for (const update of parsed) {
-      const target = uniqueTodo(index, update.hash);
+      const target = firstMatchingTodo(index, update.hash);
       if (target === undefined) {
         missing.push(update.hash);
       } else {
@@ -304,18 +371,50 @@ async function updateTodosOperation(
       }
     }
 
+    const lineCounts = new Map<string, number>();
+    for (const todo of todos) {
+      const key = todo.toString();
+      lineCounts.set(key, (lineCounts.get(key) ?? 0) + 1);
+    }
+
     const updated: Todo[] = [];
     let changed = false;
     for (const { update, target } of resolved) {
+      const { next, recurrence } = buildReplacement(target, update.text);
+      const targetKey = target.toString();
+      const nextKey = next.toString();
+      if (
+        nextKey !== targetKey &&
+        (lineCounts.get(nextKey) ?? 0) > 0
+      ) {
+        throw new ToolFailure(
+          "CONFLICT",
+          `Cannot update ${update.hash}: the new line duplicates another ` +
+            "todo. Nothing was saved.",
+          { hash: update.hash },
+        );
+      }
+
       const before = target.toString();
-      const { next, recurrence } = replaceTodo(todos, target, update.text);
+      applyReplacement(todos, target, next);
+      if (nextKey !== targetKey) {
+        lineCounts.set(targetKey, (lineCounts.get(targetKey) ?? 1) - 1);
+        lineCounts.set(nextKey, (lineCounts.get(nextKey) ?? 0) + 1);
+      }
       if (recurrence || next.toString() !== before) {
         changed = true;
       }
+      updated.push(next);
       if (recurrence) {
         todos.push(recurrence);
+        const recurrenceKey = recurrence.toString();
+        lineCounts.set(
+          recurrenceKey,
+          (lineCounts.get(recurrenceKey) ?? 0) + 1,
+        );
+        // The caller needs the new hash to complete the follow-up task.
+        updated.push(recurrence);
       }
-      updated.push(next);
     }
 
     if (changed) {
@@ -351,13 +450,13 @@ async function deleteTodosOperation(
   }
 
   return await withBackendLock(backend, async () => {
-    const todos = await backend.load();
+    const todos = [...await backend.load()];
     const index = await todoIndex(todos);
 
     const deleted: Todo[] = [];
     const missing: string[] = [];
     for (const hash of hashes) {
-      const target = uniqueTodo(index, hash);
+      const target = firstMatchingTodo(index, hash);
       if (target === undefined) {
         missing.push(hash);
       } else {

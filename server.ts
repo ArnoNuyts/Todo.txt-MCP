@@ -212,7 +212,7 @@ export function createTodoMcpServer(
     {
       description:
         "Add todo.txt lines (supports due:, t:, rec:); returns " +
-        "'hash text' lines.",
+        "'hash text' lines. Existing lines are skipped.",
       inputSchema: CompactAddTodosSchema.shape,
       annotations: { destructiveHint: false },
     },
@@ -223,10 +223,11 @@ export function createTodoMcpServer(
     "update_todos",
     {
       description:
-        "Update by hash with '<hash> <new todo.txt line>' lines. Copy the " +
-        "listed line and edit it; include fields to keep. To complete, start " +
-        "with 'x ' and no date unless the user gave one. Missing hashes " +
-        "return ERROR lines.",
+        "Update the first line matching each hash with '<hash> <new " +
+        "todo.txt line>' lines. Copy the listed line and edit it; include " +
+        "fields to keep. To complete, start with 'x ' and no date unless " +
+        "the user gave one. A duplicate result returns CONFLICT. Repeat " +
+        "with the same hash for the next duplicate.",
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
@@ -237,10 +238,11 @@ export function createTodoMcpServer(
     "delete_todos",
     {
       description:
-        "Delete todos by hash; returns 'hash text' lines. Missing hashes " +
-        "return ERROR lines; refresh with list_todos.",
+        "Delete the first line matching each hash; returns 'hash text' " +
+        "lines. Missing hashes return ERROR lines; refresh with list_todos. " +
+        "Repeat with the same hash for the next duplicate.",
       inputSchema: CompactDeleteTodosSchema.shape,
-      annotations: { destructiveHint: true, idempotentHint: true },
+      annotations: { destructiveHint: true },
     },
     (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
   );

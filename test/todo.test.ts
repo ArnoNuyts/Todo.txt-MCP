@@ -352,6 +352,15 @@ describe("Todo", () => {
       return second;
     };
 
+    it("re-serializes dates after the todo is modified", () => {
+      const todo = new Todo("x 2024-06-02 2024-06-01 Buy groceries");
+      todo.setText("Buy groceries @home");
+
+      expect(todo.toString()).toBe(
+        "x 2024-06-02 2024-06-01 Buy groceries @home",
+      );
+    });
+
     it("preserves completion and creation dates of a done todo", async () => {
       const todo = expectStableRoundTrip(
         "x 2024-06-02 2024-06-01 Buy groceries",

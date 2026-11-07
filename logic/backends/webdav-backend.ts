@@ -13,7 +13,7 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 100;
 const DEFAULT_MAX_DELAY_MS = 5_000;
 /** Upper bound for a server-provided Retry-After, to avoid indefinite waits. */
-const MAX_RETRY_AFTER_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 5_000;
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /** Status codes worth retrying. Auth, missing and conflict responses are not. */
@@ -115,6 +115,42 @@ export function computeRetryDelayMs(
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * A todo file must be plain text. A proxy or login page can answer 200 with
+ * HTML while echoing the origin's validators; parsing that as todos would
+ * overwrite the real file on the next save.
+ */
+function mediaTypeOf(value: string | null): string | null {
+  return value === null ? null : value.split(";")[0].trim().toLowerCase();
+}
+
+function isTodoContentType(value: string | null): boolean {
+  const mediaType = mediaTypeOf(value);
+  return mediaType === null ||
+    mediaType === "" ||
+    mediaType === "text/plain" ||
+    mediaType === "application/octet-stream" ||
+    mediaType === "binary/octet-stream";
+}
+
+/** An error page is not a todo file, even when the proxy omits Content-Type. */
+function looksLikeHtml(text: string): boolean {
+  return /<!doctype\s+html|<html\b|<head\b|<body\b|<meta\b|<title\b|<script\b|<!--|<\?xml/i
+    .test(text.slice(0, 1024));
+}
+
+/** Servers may normalise EOLs or the trailing newline of the stored body. */
+function hasSameTodoContent(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    value.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+  return normalize(left) === normalize(right);
+}
+
+type WriteProbe =
+  | { state: "applied"; revision: WebDavRevision }
+  | { state: "not-applied" }
+  | { state: "unknown" };
 
 async function discardBody(response: Response): Promise<void> {
   if (response.body) {
@@ -281,6 +317,15 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
+    const contentType = response.headers.get("Content-Type");
+    if (!isTodoContentType(contentType)) {
+      await discardBody(response);
+      throw new Error(
+        "Failed to load todos from WebDAV: expected a plain-text body but " +
+          `received "${contentType}". The stored file was not modified.`,
+      );
+    }
+
     const etag = response.headers.get("ETag")?.trim() || undefined;
     const lastModified =
       response.headers.get("Last-Modified")?.trim() || undefined;
@@ -311,6 +356,13 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
+    if (mediaTypeOf(contentType) !== "text/plain" && looksLikeHtml(text)) {
+      throw new Error(
+        "Failed to load todos from WebDAV: the response looks like an HTML " +
+          "error page, not a todo file. The stored file was not modified.",
+      );
+    }
+
     // Only record the revision after the body was read successfully, so a
     // failed load can never be turned into a write in the same transaction.
     this.recordRevision({ exists: true, etag, lastModified });
@@ -319,6 +371,82 @@ export class WebDavBackend implements TodoBackend {
       .split("\n")
       .filter((x) => x.trim())
       .map((x) => new Todo(x));
+  }
+
+  /**
+   * Reads the stored body to decide whether a PUT whose response was lost was
+   * applied. A server can commit the write and then fail, time out, or answer
+   * 500; reporting that as a plain failure invites a duplicate retry.
+   */
+  private async probeWrite(content: string): Promise<WriteProbe> {
+    let response: Response;
+    try {
+      response = await fetch(this.url, {
+        method: "GET",
+        headers: this.getHeaders(),
+        // The probe must describe the stored resource, never a cache or a
+        // redirect target.
+        cache: "no-store",
+        redirect: "manual",
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch {
+      return { state: "unknown" };
+    }
+
+    if (response.status === 404) {
+      await discardBody(response);
+      return { state: "not-applied" };
+    }
+    if (
+      !response.ok ||
+      !isTodoContentType(response.headers.get("Content-Type"))
+    ) {
+      await discardBody(response);
+      return { state: "unknown" };
+    }
+
+    try {
+      const contentLength = response.headers.get("Content-Length");
+      if (
+        contentLength !== null &&
+        /^\d+$/.test(contentLength.trim()) &&
+        Number(contentLength.trim()) > this.maxFileBytes
+      ) {
+        await discardBody(response);
+        return { state: "unknown" };
+      }
+
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > this.maxFileBytes) {
+        return { state: "unknown" };
+      }
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (!hasSameTodoContent(text, content)) {
+        return { state: "not-applied" };
+      }
+      return {
+        state: "applied",
+        revision: {
+          exists: true,
+          etag: response.headers.get("ETag")?.trim() || undefined,
+          lastModified: response.headers.get("Last-Modified")?.trim() ||
+            undefined,
+        },
+      };
+    } catch {
+      return { state: "unknown" };
+    }
+  }
+
+  private uncertainWriteError(): BackendConflictError {
+    return new BackendConflictError(
+      "WebDAV write outcome could not be confirmed: the server did not " +
+        "acknowledge the PUT and the stored file could not be read back. " +
+        "Reload with list_todos before retrying; the write may already have " +
+        "been applied.",
+      { backend: "webdav", reason: "outcome-unknown" },
+    );
   }
 
   async save(todos: Todo[]): Promise<void> {
@@ -366,13 +494,34 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    const response = await this.fetchWithRetry({
-      method: "PUT",
-      headers,
-      body: content,
-      // A redirected PUT must never be silently converted into a GET.
-      redirect: "manual",
-    });
+    /** Returns true when the PUT is confirmed to be applied. */
+    const confirmApplied = async (): Promise<boolean> => {
+      const probe = await this.probeWrite(content);
+      if (probe.state === "applied") {
+        context.revision = probe.revision;
+        return true;
+      }
+      if (probe.state === "unknown") {
+        throw this.uncertainWriteError();
+      }
+      return false;
+    };
+
+    let response: Response;
+    try {
+      response = await this.fetchWithRetry({
+        method: "PUT",
+        headers,
+        body: content,
+        // A redirected PUT must never be silently converted into a GET.
+        redirect: "manual",
+      });
+    } catch (error) {
+      if (await confirmApplied()) {
+        return;
+      }
+      throw error;
+    }
 
     if (response.status >= 300 && response.status < 400) {
       await discardBody(response);
@@ -383,6 +532,12 @@ export class WebDavBackend implements TodoBackend {
     }
 
     if (response.status === 412) {
+      await discardBody(response);
+      // The retries may have applied an earlier attempt, so a 412 is not
+      // proof that nothing changed.
+      if (await confirmApplied()) {
+        return;
+      }
       throw new BackendConflictError(
         "WebDAV conflict: the todo file was modified remotely " +
           "(412 Precondition Failed). Reload the todos and try again.",
@@ -391,8 +546,14 @@ export class WebDavBackend implements TodoBackend {
     }
 
     if (!response.ok) {
+      const status = response.status;
+      const statusText = response.statusText;
+      await discardBody(response);
+      if (RETRYABLE_STATUSES.has(status) && await confirmApplied()) {
+        return;
+      }
       throw new Error(
-        `Failed to save todos to WebDAV: ${response.status} ${response.statusText}`,
+        `Failed to save todos to WebDAV: ${status} ${statusText}`,
       );
     }
 
