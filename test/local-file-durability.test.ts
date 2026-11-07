@@ -9,6 +9,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -157,11 +158,62 @@ describe("local file durability", () => {
       return pid;
     }
 
-    it("takes over a fresh lock whose process is dead", async () => {
+    /** Captures a real lock file so host/namespace markers stay accurate. */
+    async function lockTemplate(filename: string): Promise<string> {
+      const lockPath = `${filename}.lock`;
+      let template = "";
+      await withFileLock(filename, async () => {
+        template = await readFile(lockPath, "utf8");
+      });
+      return template;
+    }
+
+    function replaceField(
+      content: string,
+      key: string,
+      value: string | undefined,
+    ): string {
+      const lines = content.split("\n").filter((line) =>
+        !line.startsWith(`${key}:`)
+      );
+      if (value !== undefined) {
+        const createdIndex = lines.findIndex((line) =>
+          line.startsWith("created:")
+        );
+        lines.splice(
+          createdIndex === -1 ? lines.length - 1 : createdIndex,
+          0,
+          `${key}:${value}`,
+        );
+      }
+      return lines.join("\n");
+    }
+
+    function withToken(content: string, token: string): string {
+      return content.replace(/^[^\n]*/, token);
+    }
+
+    async function expectLockTimeout(
+      filename: string,
+      timeoutMs: number,
+    ): Promise<void> {
+      await expect(
+        withFileLock(filename, async () => undefined, {
+          timeoutMs,
+          retryMs: 5,
+        }),
+      ).rejects.toBeInstanceOf(FileLockTimeoutError);
+    }
+
+    it("takes over a fresh same-host lock whose process is dead", async () => {
       const filename = join(tempDir, "todo.txt");
       const lockPath = `${filename}.lock`;
+      const template = await lockTemplate(filename);
       const deadPid = await exitedProcessPid();
-      await writeFile(lockPath, `stale-token\npid:${deadPid}\n`);
+      await writeFile(
+        lockPath,
+        withToken(replaceField(template, "pid", String(deadPid)), "stale-token"),
+      );
 
       let ran = false;
       await withFileLock(filename, async () => {
@@ -172,17 +224,81 @@ describe("local file durability", () => {
       await expect(stat(lockPath)).rejects.toThrow();
     });
 
-    it("waits for a lock whose process is alive", async () => {
+    it("never fast-paths a lock from another host and falls back to mtime", async () => {
       const filename = join(tempDir, "todo.txt");
       const lockPath = `${filename}.lock`;
-      await writeFile(lockPath, `live-token\npid:${process.pid}\n`);
+      const template = await lockTemplate(filename);
+      const deadPid = await exitedProcessPid();
+      const foreignHost = replaceField(
+        replaceField(template, "pid", String(deadPid)),
+        "host",
+        "another-host.invalid",
+      );
+      await writeFile(lockPath, withToken(foreignHost, "foreign-token"));
 
-      await expect(
-        withFileLock(filename, async () => undefined, {
-          timeoutMs: 40,
-          retryMs: 5,
-        }),
-      ).rejects.toBeInstanceOf(FileLockTimeoutError);
+      // A dead PID from another host must not trigger immediate reclaim.
+      await expectLockTimeout(filename, 80);
+      expect((await stat(lockPath)).isFile()).toBe(true);
+
+      // The mtime fallback still reclaims it once it is old enough.
+      const old = new Date(Date.now() - 60_000);
+      await utimes(lockPath, old, old);
+
+      let ran = false;
+      await withFileLock(filename, async () => {
+        ran = true;
+      }, { timeoutMs: 500, retryMs: 5, staleMs: 1_000 });
+
+      expect(ran).toBe(true);
+    });
+
+    const invalidPids: Array<[string, string | undefined]> = [
+      ["missing", undefined],
+      ["malformed", "not-a-number"],
+      ["zero", "0"],
+      ["negative", "-7"],
+      ["out-of-range", "9007199254740991"],
+    ];
+
+    it.each(invalidPids)(
+      "does not fast-path a %s PID",
+      async (_label, pid) => {
+        const filename = join(tempDir, "todo.txt");
+        const lockPath = `${filename}.lock`;
+        const template = await lockTemplate(filename);
+        await writeFile(
+          lockPath,
+          withToken(replaceField(template, "pid", pid), "corrupt-token"),
+        );
+
+        await expectLockTimeout(filename, 60);
+        expect((await stat(lockPath)).isFile()).toBe(true);
+      },
+    );
+
+    it("waits for a live same-host lock", async () => {
+      const filename = join(tempDir, "todo.txt");
+      const lockPath = `${filename}.lock`;
+      const template = await lockTemplate(filename);
+      await writeFile(lockPath, withToken(template, "live-token"));
+
+      await expectLockTimeout(filename, 40);
+      expect((await stat(lockPath)).isFile()).toBe(true);
+    });
+
+    it("uses one lock for symlink aliases of the same file", async () => {
+      const realDir = join(tempDir, "real");
+      await mkdir(realDir);
+      const target = join(realDir, "todo.txt");
+      const link = join(tempDir, "link.txt");
+      await writeFile(target, "x\n");
+      await symlink(target, link);
+
+      await withFileLock(link, async () => {
+        expect((await stat(`${target}.lock`)).isFile()).toBe(true);
+        await expect(stat(`${link}.lock`)).rejects.toThrow();
+        await expectLockTimeout(target, 40);
+      });
     });
 
     it("reports the configured timeout, not the epoch deadline", async () => {
@@ -200,6 +316,101 @@ describe("local file durability", () => {
           "Timed out after 40 ms",
         );
       });
+    });
+
+    async function runContention(
+      iterations: number,
+      seed: (lockPath: string) => Promise<void>,
+    ): Promise<number> {
+      const filename = join(tempDir, "contention.txt");
+      const lockPath = `${filename}.lock`;
+      let maxActive = 0;
+
+      for (let iteration = 0; iteration < iterations; iteration += 1) {
+        await seed(lockPath);
+        let active = 0;
+        await Promise.all(
+          Array.from({ length: 6 }, () =>
+            withFileLock(filename, async () => {
+              active += 1;
+              maxActive = Math.max(maxActive, active);
+              await new Promise((resolve) => setTimeout(resolve, 1));
+              active -= 1;
+            }, { timeoutMs: 5_000, retryMs: 1, staleMs: 5_000 })
+          ),
+        );
+      }
+
+      await expect(stat(lockPath)).rejects.toThrow();
+      return maxActive;
+    }
+
+    it("serializes concurrent reclaimers of a dead-PID lock", async () => {
+      const filename = join(tempDir, "seed.txt");
+      const template = await lockTemplate(filename);
+      const deadPid = await exitedProcessPid();
+      const deadLock = withToken(
+        replaceField(template, "pid", String(deadPid)),
+        "dead-token",
+      );
+
+      const maxActive = await runContention(150, async (lockPath) => {
+        await writeFile(lockPath, deadLock);
+      });
+
+      expect(maxActive).toBe(1);
+    }, 30_000);
+
+    it("serializes concurrent reclaimers of an mtime-stale lock", async () => {
+      const maxActive = await runContention(150, async (lockPath) => {
+        await writeFile(lockPath, "stale-token\n");
+        const old = new Date(Date.now() - 60_000);
+        await utimes(lockPath, old, old);
+      });
+
+      expect(maxActive).toBe(1);
+    }, 30_000);
+
+    it("takes over a stale reclaim sidecar", async () => {
+      const filename = join(tempDir, "todo.txt");
+      const lockPath = `${filename}.lock`;
+      const reclaimPath = `${lockPath}.reclaim`;
+      const old = new Date(Date.now() - 60_000);
+      await writeFile(lockPath, "stale-token\n");
+      await utimes(lockPath, old, old);
+      await writeFile(reclaimPath, "wedged-token\npid:1\n");
+      await utimes(reclaimPath, old, old);
+
+      let ran = false;
+      await withFileLock(filename, async () => {
+        ran = true;
+      }, { timeoutMs: 2_000, retryMs: 5, staleMs: 1_000 });
+
+      expect(ran).toBe(true);
+      await expect(stat(lockPath)).rejects.toThrow();
+      await expect(stat(reclaimPath)).rejects.toThrow();
+    });
+
+    it("respects a fresh reclaim sidecar instead of deleting a live lock", async () => {
+      const filename = join(tempDir, "todo.txt");
+      const lockPath = `${filename}.lock`;
+      const reclaimPath = `${lockPath}.reclaim`;
+      const old = new Date(Date.now() - 60_000);
+      await writeFile(lockPath, "stale-token\n");
+      await utimes(lockPath, old, old);
+      await writeFile(reclaimPath, "active-token\npid:1\n");
+
+      await expect(
+        withFileLock(filename, async () => undefined, {
+          timeoutMs: 120,
+          retryMs: 5,
+          staleMs: 1_000,
+        }),
+      ).rejects.toBeInstanceOf(FileLockTimeoutError);
+
+      // Both the abandoned main lock and the fresh sidecar are still there.
+      expect((await stat(lockPath)).isFile()).toBe(true);
+      expect((await stat(reclaimPath)).isFile()).toBe(true);
     });
   });
 });

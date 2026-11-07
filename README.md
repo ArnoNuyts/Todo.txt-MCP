@@ -270,8 +270,30 @@ Read-only resources are always available, including in read-only mode:
 Every mutating tool performs `load -> mutate -> save` inside an in-process
 queue. The local-file backend additionally takes an advisory `<file>.lock`
 around that cycle, so two processes sharing the same file cannot silently
-overwrite each other. The lock is released in a `finally`; a lock older than
-30 seconds is treated as abandoned.
+overwrite each other. The lock is released in a `finally`.
+
+Lock paths are resolved with `realpath`, so two symlink aliases of the same
+todo file share one lock. Writes also follow the symlink and update the real
+target, leaving the link itself in place.
+
+Lock takeover is conservative:
+
+- A lock written by the same host and PID namespace (and boot, when the
+  platform exposes it) whose PID is no longer running is reclaimed
+  immediately.
+- Locks from another host, container/PID namespace, or shared volume (for
+  example NFS) are **never** reclaimed by PID, because those PIDs are not
+  comparable. They only expire through the 30-second mtime fallback.
+- A zombie process still looks alive until its parent reaps it, so immediate
+  reclaim can be delayed by that window.
+- Reclaim attempts are serialized through a short-lived `<file>.lock.reclaim`
+  sidecar, and the observed lock inode/token is verified again before removal,
+  so a contender cannot unlink a lock that was replaced in the meantime.
+
+Local writes are atomic (temp file plus rename), preserve the existing file
+mode, and reject any write that would exceed `TODOTXT_MCP_MAX_FILE_BYTES`
+before creating a temp file. Reads use strict UTF-8 decoding and refuse invalid
+bytes instead of silently rewriting them with replacement characters.
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
