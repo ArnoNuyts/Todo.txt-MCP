@@ -284,6 +284,10 @@ Lock takeover is conservative:
 - Locks from another host, container/PID namespace, or shared volume (for
   example NFS) are **never** reclaimed by PID, because those PIDs are not
   comparable. They only expire through the 30-second mtime fallback.
+- A same-host owner that is still alive is never evicted by the mtime fallback,
+  even when the lock is older than 30 seconds: a slow but healthy write keeps
+  ownership. The mtime path is only for owners that cannot be checked or are
+  known to be dead.
 - A zombie process still looks alive until its parent reaps it, so immediate
   reclaim can be delayed by that window.
 - Reclaim attempts are serialized through a short-lived `<file>.lock.reclaim`

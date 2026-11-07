@@ -413,11 +413,18 @@ async function acquire(
     // after `kill -9`, once the process has been reaped) can be reclaimed
     // immediately. PIDs from another host/namespace are never trusted.
     const ownerPid = observed.owner.pid;
-    const ownerIsDead = ownerPid !== undefined &&
-      canUsePidFastPath(observed.owner) &&
-      !isProcessAlive(ownerPid);
+    let ownerIsAlive = false;
+    let ownerIsDead = false;
+    if (ownerPid !== undefined && canUsePidFastPath(observed.owner)) {
+      ownerIsAlive = isProcessAlive(ownerPid);
+      ownerIsDead = !ownerIsAlive;
+    }
     const isStale = options.now() - observed.info.mtimeMs > options.staleMs;
-    if (ownerIsDead || isStale) {
+    // A known-live owner on this host/namespace must never be evicted by the
+    // mtime fallback: a slow but healthy write can legitimately exceed staleMs.
+    // The mtime path is only for locks whose owner cannot be checked (another
+    // host, another namespace, NFS) or whose owner is known to be dead.
+    if (ownerIsDead || (isStale && !ownerIsAlive)) {
       if (await reclaimLock(lockPath, observed, options)) {
         continue;
       }

@@ -286,6 +286,20 @@ describe("local file durability", () => {
       expect((await stat(lockPath)).isFile()).toBe(true);
     });
 
+    it("does not evict a live same-host owner whose lock mtime is stale", async () => {
+      const filename = join(tempDir, "todo.txt");
+      const lockPath = `${filename}.lock`;
+      const template = await lockTemplate(filename);
+      await writeFile(lockPath, withToken(template, "slow-live-token"));
+      const old = new Date(Date.now() - 60_000);
+      await utimes(lockPath, old, old);
+
+      // A slow but healthy same-host writer can legitimately exceed staleMs;
+      // only a known-dead owner or an unverifiable owner may be reclaimed.
+      await expectLockTimeout(filename, 80);
+      expect(await readFile(lockPath, "utf8")).toContain("slow-live-token");
+    });
+
     it("uses one lock for symlink aliases of the same file", async () => {
       const realDir = join(tempDir, "real");
       await mkdir(realDir);
