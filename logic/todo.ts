@@ -17,6 +17,21 @@ const TODO_REGEX =
 
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
 
+/**
+ * Serializes tags, emitting a repeated `key:value` token for every value of a
+ * multi-valued tag. `Array.toString()` would join them with a comma, which is
+ * not a valid todo.txt tag separator and silently loses values.
+ */
+function serializeTags(tags: { [key: string]: string | string[] }): string {
+  return Object.entries(tags)
+    .flatMap(([key, value]) =>
+      Array.isArray(value)
+        ? value.map((item) => `${key}:${item}`)
+        : [`${key}:${value}`]
+    )
+    .join(" ");
+}
+
 export class Todo {
   text: string = "";
   state: TodoStateEnum = TodoStateEnum.todo;
@@ -113,7 +128,7 @@ export class Todo {
       dates.map((date) => date + " ").join("") +
       this.text +
       (Object.keys(this.tags).length > 0 ? " " : "") +
-      (Object.keys(this.tags).map((k) => k + ":" + this.tags[k]).join(" "));
+      serializeTags(this.tags);
   }
 
   toDisplayString() {
@@ -126,7 +141,7 @@ export class Todo {
         : "") +
       this.text +
       (Object.keys(this.tags).length > 0 ? " " : "") +
-      (Object.keys(this.tags).map((k) => k + ":" + this.tags[k]).join(" "));
+      serializeTags(this.tags);
   }
 
   isDone() {
