@@ -17,47 +17,31 @@ runtime is Node.js 24.15.
 
 ## 🗺️ How it works
 
-Claude Code (or any MCP client) talks to a self-hosted Todo.txt-MCP server over
-HTTP. The server owns the todo file; the only difference between the two setups
-is where that file lives.
+Claude Code (or any MCP client) connects to a self-hosted Todo.txt-MCP server.
+The only difference between the two setups is where the todo file lives.
 
-### WebDAV backend: sync with Nextcloud or Seafile
-
-The container keeps the todo file on your existing WebDAV storage, so the same
-list is available to Claude Code, the Nextcloud/Seafile web UI, and mobile apps.
+### WebDAV: sync with Nextcloud or Seafile
 
 ```mermaid
 flowchart LR
-    CC["Claude Code"]
-    PROXY["Reverse proxy<br/>TLS"]
-    MCP["Todo.txt-MCP<br/>(self-hosted)"]
-    DAV[("WebDAV<br/>Nextcloud / Seafile")]
-    FILE["todo.txt"]
-    APPS["Web & mobile apps"]
-
-    CC -- "MCP over HTTPS<br/>Bearer token" --> PROXY
-    PROXY -- "http://todo-txt-mcp:3000/mcp" --> MCP
-    MCP -- "GET / PUT<br/>If-Match (ETag)" --> DAV
-    DAV --- FILE
-    APPS -.-> DAV
+    CC["Claude Code"] -->|"MCP over HTTPS"| MCP["Todo.txt-MCP"]
+    MCP -->|"WebDAV"| DAV[("Nextcloud / Seafile")]
 ```
 
-### Local file backend: keep everything on one host
+Put the server behind a TLS reverse proxy and authenticate with a bearer token.
+The same list is then available to Claude Code, the web UI, and mobile apps.
 
-With `TODOTXT_MCP_BACKEND=local` the file never leaves the machine or Docker
-volume. Claude Code still connects over HTTP; only the storage is local.
+### Local file: keep everything on one host
 
 ```mermaid
 flowchart LR
-    CC["Claude Code"]
-    MCP["Todo.txt-MCP<br/>(local backend)"]
-    VOL[("Docker volume<br/>or host directory")]
-    FILE["todo.txt"]
-
-    CC -- "MCP over HTTP<br/>http://localhost:3000/mcp" --> MCP
-    MCP -- "atomic read / write<br/>+ advisory lock" --> FILE
-    VOL --- FILE
+    CC["Claude Code"] -->|"MCP over HTTP"| MCP["Todo.txt-MCP"]
+    MCP -->|"read / write"| FILE[("todo.txt")]
 ```
+
+With `TODOTXT_MCP_BACKEND=local` the file stays on that host. Claude Code still
+talks to the MCP server over HTTP; the server currently has no stdio transport,
+so it cannot be launched directly as a local subprocess.
 
 ## 📦 Quick Start with npm
 
