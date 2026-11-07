@@ -41,8 +41,16 @@ export class Todo {
   projects: Set<string> = new Set();
   contexts: Set<string> = new Set();
   tags: { [key: string]: string | string[] } = {};
+  /**
+   * The exact line this todo was parsed from. It is kept so a save can write
+   * untouched todos back byte-for-byte instead of re-canonicalising tag order,
+   * whitespace, or CRLF endings.
+   */
+  private originalLine: string | undefined;
+  private originalSerialized: string | undefined;
 
   constructor(text: string) {
+    const originalLine = text;
     const match = text.match(TODO_REGEX);
     if (match?.groups) {
       const { done, completionDate, creationDate } = match.groups;
@@ -66,6 +74,14 @@ export class Todo {
       this.state = match.groups.done ? TodoStateEnum.done : TodoStateEnum.todo;
     }
     this.setText(text);
+    this.originalLine = originalLine;
+    try {
+      this.originalSerialized = this.serialize();
+    } catch {
+      // Keep construction permissive for malformed dates; serialization will
+      // fail with the original error when the line is actually written.
+      this.originalSerialized = undefined;
+    }
   }
   /** Toggles completion and returns a recurrence todo when one is spawned. */
   toggleState(completedAt: Date = new Date()): { recurrence?: Todo } {
@@ -110,7 +126,23 @@ export class Todo {
     // An invalid t: tag cannot be shifted; the clone keeps it so no data is lost.
     return { recurrence: newTodo };
   }
+  /**
+   * Returns the original line while the todo is unchanged, so saving a loaded
+   * file cannot silently reorder tags or rewrite line endings. Once a field
+   * changes, the canonical form is used.
+   */
   toString() {
+    const serialized = this.serialize();
+    if (
+      this.originalLine !== undefined &&
+      serialized === this.originalSerialized
+    ) {
+      return this.originalLine;
+    }
+    return serialized;
+  }
+
+  private serialize() {
     // Completed todos must be serialized as
     // "x [priority] <completionDate> <creationDate> <text> [tags]" so that
     // TODO_REGEX parses the dates back into the same fields. Open todos only

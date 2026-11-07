@@ -338,7 +338,7 @@ describe("tool surface", () => {
     expect(backend.getTodos()[0].isDone()).toBe(true);
   });
 
-  it("rejects ambiguous hashes shared by identical todo lines", async () => {
+  it("updates every identical todo line when they share a hash", async () => {
     const todos = [new Todo("Dup"), new Todo("Dup"), new Todo("Other")];
     await backend.save(todos);
     const hash = await todos[0].getHash();
@@ -348,18 +348,34 @@ describe("tool surface", () => {
       name: "update_todos",
       arguments: { updates: [`${hash} (A) Dup`] },
     });
-    expect(update.isError).toBe(true);
-    expect(errorCodeOf(update)).toBe("CONFLICT");
-    expect(textOf(update)).toContain("identical todos");
+
+    expect(update.isError).toBeFalsy();
+    expect(linesOf(update)).toHaveLength(2);
+    expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
+      "(A) Dup",
+      "(A) Dup",
+      "Other",
+    ]);
+    expect(backend.saveCalls).toBe(1);
+  });
+
+  it("deletes every identical todo line when they share a hash", async () => {
+    const todos = [new Todo("Dup"), new Todo("Dup"), new Todo("Other")];
+    await backend.save(todos);
+    const hash = await todos[0].getHash();
+    backend.saveCalls = 0;
 
     const deletion = await client.callTool({
       name: "delete_todos",
       arguments: { hashes: [hash] },
     });
-    expect(deletion.isError).toBe(true);
-    expect(errorCodeOf(deletion)).toBe("CONFLICT");
-    expect(backend.getTodos()).toHaveLength(3);
-    expect(backend.saveCalls).toBe(0);
+
+    expect(deletion.isError).toBeFalsy();
+    expect(linesOf(deletion)).toHaveLength(2);
+    expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
+      "Other",
+    ]);
+    expect(backend.saveCalls).toBe(1);
   });
 
   it("reopens completed todos in one batch", async () => {

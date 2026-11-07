@@ -252,8 +252,13 @@ a `t:` threshold keeps its offset from the due date.
 All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
 changes and starts with `PARTIAL <n> updated, <m> not found`, followed by
-`ERROR <hash> not found` lines. A hash shared by identical todo lines is
-rejected as `CONFLICT` instead of silently updating one of them.
+`ERROR <hash> not found` lines. A hash shared by identical todo lines applies
+the update or deletion to every one of those lines, so duplicates can always
+be cleaned up.
+
+Todo text must be valid Unicode without line separators or control characters
+(tab is allowed). Unchanged lines are written back byte-for-byte, so saving
+does not reorder tags or rewrite CRLF endings.
 
 Failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
@@ -298,19 +303,28 @@ Lock takeover is conservative:
   so a contender cannot unlink a lock that was replaced in the meantime.
 
 Local writes are atomic (temp file plus rename), preserve the existing file
-mode, and reject any write that would exceed `TODOTXT_MCP_MAX_FILE_BYTES`
-before creating a temp file. Reads use strict UTF-8 decoding and refuse invalid
-bytes instead of silently rewriting them with replacement characters.
+mode, refuse to replace a read-only file, and reject any write that would
+exceed `TODOTXT_MCP_MAX_FILE_BYTES` before creating a temp file. Reads use
+strict UTF-8 decoding and refuse invalid bytes instead of silently rewriting
+them with replacement characters.
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
-reload with `list_todos` before retrying. Tools address an item by the hash
-from a recent read and return the new hash in their text result.
+reload with `list_todos` before retrying. A `200` body with an HTML content
+type is rejected, and HTML/XML error pages are rejected even when a proxy
+omits or mislabels `Content-Type`, before any of them can be parsed as todos.
+When a PUT fails after it may have reached storage, the
+backend reads the file back: it reports success if the new content is already
+there, and an unconfirmed-outcome `CONFLICT` when that cannot be determined.
+Server-provided `Retry-After` delays are capped at five seconds. Tools address
+an item by the hash from a recent read and return the new hash in their text
+result.
 
 ### Hash stability
 
-A todo hash is a 64-bit prefix of the SHA-256 of the serialized todo line,
-encoded as 11 base64url characters. It changes on every mutation. Mutations
+A todo hash is a 64-bit prefix of the SHA-256 of the stored todo line, encoded
+as 11 base64url characters. It changes on every mutation; an external editor
+that reformats a line also changes its hash. Mutations
 return the new hash in their text result, so you can chain calls without a
 `list_todos` in between. If you cache hashes across calls, refresh them with
 `list_todos`.

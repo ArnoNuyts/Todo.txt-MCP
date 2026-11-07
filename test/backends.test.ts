@@ -144,18 +144,22 @@ describe("WebDavBackend", () => {
   });
 
   it("throws when saving fails", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(
-        new Response("task\n", { status: 200, headers: { ETag: '"v1"' } }),
-      )
-      .mockResolvedValue(new Response("", { status: 500, statusText: "Oops" }));
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return new Response("task\n", {
+          status: 200,
+          headers: { ETag: '"v1"' },
+        });
+      }
+      return new Response("", { status: 500, statusText: "Oops" });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url);
     await expect(
       backend.withLock(async () => {
         await backend.load();
-        await backend.save([new Todo("task")]);
+        await backend.save([new Todo("new")]);
       }),
     ).rejects.toThrow("Failed to save todos to WebDAV: 500 Oops");
   });
@@ -234,13 +238,18 @@ describe("WebDavBackend", () => {
   });
 
   it("reports a conflict when save fails with 412", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(
-        new Response("task\n", { status: 200, headers: { ETag: '"v1"' } }),
-      )
-      .mockResolvedValueOnce(
-        new Response("", { status: 412, statusText: "Precondition Failed" }),
-      );
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return new Response("task\n", {
+          status: 200,
+          headers: { ETag: '"v1"' },
+        });
+      }
+      return new Response("", {
+        status: 412,
+        statusText: "Precondition Failed",
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url);
@@ -248,7 +257,7 @@ describe("WebDavBackend", () => {
     await expect(
       backend.withLock(async () => {
         await backend.load();
-        await backend.save([new Todo("task")]);
+        await backend.save([new Todo("new")]);
       }),
     ).rejects.toThrow(/conflict.*412/i);
   });

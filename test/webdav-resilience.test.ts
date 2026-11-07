@@ -98,9 +98,12 @@ describe("WebDavBackend retry policy", () => {
   );
 
   it("keeps a 412 save conflict clear and does not overwrite", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse("old\n", 200, { ETag: '"v1"' }))
-      .mockResolvedValueOnce(jsonResponse("", 412));
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return jsonResponse("old\n", 200, { ETag: '"v1"' });
+      }
+      return jsonResponse("", 412);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const backend = new WebDavBackend(url, undefined, undefined, fastRetry);
@@ -110,8 +113,9 @@ describe("WebDavBackend retry policy", () => {
         await backend.save([new Todo("new")]);
       }),
     ).rejects.toThrow(/conflict.*412/i);
-    // Only the GET and the single conflicting PUT were issued.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The load GET, the conflicting PUT, and the read-back that confirms the
+    // PUT did not apply.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("honors Retry-After instead of exponential backoff", async () => {
@@ -200,6 +204,6 @@ describe("retry helpers", () => {
       maxDelayMs: 5_000,
       random: () => 1,
     })).toBe(5_000);
-    expect(computeRetryDelayMs(1, 120_000, { baseDelayMs: 100 })).toBe(60_000);
+    expect(computeRetryDelayMs(1, 120_000, { baseDelayMs: 100 })).toBe(5_000);
   });
 });

@@ -127,8 +127,8 @@ describe("todo line invariants", () => {
     expect(seeded.tags).toEqual({ k: ["1", "2"] });
   });
 
-  it("still accepts single-line Unicode, tabs, and NUL", async () => {
-    const text = "🚀 café e\u0301 مرحبا\twith\ttabs\u0000end";
+  it("still accepts single-line Unicode and tabs", async () => {
+    const text = "🚀 café e\u0301 مرحبا\twith\ttabs end";
 
     const result = await addTodosHandler(backend, { todos: [text] });
 

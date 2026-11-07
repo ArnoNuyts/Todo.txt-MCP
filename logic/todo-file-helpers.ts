@@ -138,6 +138,15 @@ export const writeTodosToFile = async (
     }
   }
 
+  // Atomic replacement only needs a writable directory, so honour an explicit
+  // read-only mode instead of silently replacing the file anyway.
+  if (targetInfo !== undefined && (targetInfo.mode & 0o222) === 0) {
+    throw new Error(
+      `Todo file "${filename}" is read-only; refusing to replace it. ` +
+        "Clear the read-only bit and retry.",
+    );
+  }
+
   // writeOptions may be a bare encoding string, in which case it cannot
   // override the mode. writeFile's mode is filtered through the umask, so
   // chmod afterwards to keep the exact bits of the replaced file.
