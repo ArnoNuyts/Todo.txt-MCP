@@ -17,9 +17,10 @@ runtime is Node.js 24.15.
 
 ## 🗺️ How it works
 
-Claude Code (or any MCP client) talks to a self-hosted Todo.txt-MCP server over
-HTTP. The server owns the todo file; the only difference between the two setups
-is where that file lives.
+Claude Code (or any MCP client) either launches Todo.txt-MCP as a local
+subprocess over stdio, or connects to a self-hosted instance over HTTP. The
+server owns the todo file; the only difference between the setups is where that
+file lives.
 
 ### WebDAV backend: sync with Nextcloud or Seafile
 
@@ -45,7 +46,9 @@ flowchart LR
 ### Local file backend: keep everything on one host
 
 With `TODOTXT_MCP_BACKEND=local` the file never leaves the machine or Docker
-volume. Claude Code still connects over HTTP; only the storage is local.
+volume. The client can launch the server directly as a subprocess over stdio
+(the simplest option for local use), or connect over HTTP when the server is
+shared.
 
 ```mermaid
 flowchart LR
@@ -54,7 +57,7 @@ flowchart LR
     VOL[("Docker volume<br/>or host directory")]
     FILE["todo.txt"]
 
-    CC -- "MCP over HTTP<br/>http://localhost:3000/mcp" --> MCP
+    CC -- "MCP over stdio<br/>npx @arnoarnoarno/todo.txt-mcp --stdio" --> MCP
     MCP -- "atomic read / write<br/>+ advisory lock" --> FILE
     VOL --- FILE
 ```
@@ -80,6 +83,39 @@ todo.txt-mcp
 The server listens on `http://localhost:3000` and the MCP endpoint is
 `http://localhost:3000/mcp`. It reads the same environment variables as the
 Docker setup below.
+
+### Run as a local subprocess (stdio)
+
+Clients that can launch a command can run the server directly. No HTTP listener,
+port, TLS, or bearer token is involved:
+
+```json
+{
+  "mcpServers": {
+    "todo.txt": {
+      "command": "npx",
+      "args": ["-y", "@arnoarnoarno/todo.txt-mcp", "--stdio"],
+      "env": {
+        "TODOTXT_MCP_BACKEND": "local",
+        "TODOTXT_MCP_LOCAL_FILENAME": "/home/me/todo.txt"
+      }
+    }
+  }
+}
+```
+
+`MCP_TRANSPORT=stdio` is equivalent to passing `--stdio`. The WebDAV backend
+works the same way; set `TODOTXT_MCP_BACKEND=webdav` and the WebDAV variables.
+HTTP remains the default, so `npm start`, Docker, and existing client URLs are
+unchanged.
+
+In stdio mode:
+
+- stdout carries MCP protocol messages only; all logs go to stderr.
+- `MCP_AUTH_TOKEN`, Host/Origin allowlists, TLS, and metrics do not apply.
+- stdin EOF, `SIGINT`, and `SIGTERM` stop the server cleanly. In-flight tool
+  calls are allowed to finish so the advisory lock is released, then the process
+  exits.
 
 ## 🚀 Quick Start with Docker
 
@@ -147,6 +183,12 @@ The default port is `3000`. Override it with the `PORT` environment variable:
 PORT=8080 npm start
 ```
 
+To serve stdio instead of HTTP from a checkout:
+
+```bash
+npm start -- --stdio
+```
+
 If you change the port, update `MCP_ALLOWED_ORIGINS` and the MCP client URL
 (for example `http://localhost:3330/mcp`) to match. The examples in this repo
 assume `3000`.
@@ -170,6 +212,9 @@ npm run knip          # unused files, exports, types, and dependencies
 npm run bench:actions # token cost of add/edit/status/pagination workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```
+
+See [docs/release-flow.md](docs/release-flow.md) for the branch and release
+process.
 
 ## 🤖 LLM usability evaluation
 
@@ -229,6 +274,11 @@ to confirm that a counting request did not modify the file.
 Configuration is read from `todo.txt-mcp-config.json` in the working directory
 (optional), then overridden by environment variables. See
 `todo.txt-mcp-config.example.json`.
+
+### Transport
+
+- `MCP_TRANSPORT`: `http` (default) or `stdio`. The `--stdio` CLI flag takes
+  precedence. Invalid values fail startup instead of silently falling back.
 
 ### Local File Backend (Default)
 
@@ -290,7 +340,8 @@ exhaust the process memory:
   Environment/file tokens must be at least 32 characters unless
   `MCP_ALLOW_WEAK_TOKEN=1`.
 - **Logs:** structured JSON to stdout/stderr; set `MCP_LOG_LEVEL` to `debug`,
-  `info` (default), `warn`, or `error`. Tokens, request bodies, and todo content
+  `info` (default), `warn`, or `error`. In stdio mode every record goes to
+  stderr so stdout stays protocol-only. Tokens, request bodies, and todo content
   are never logged.
 - **Metrics:** `GET /metrics` serves in-memory Prometheus counters
   (`todo_mcp_requests_total`, auth failures, and response classes). It requires
