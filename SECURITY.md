@@ -82,6 +82,14 @@ set `MCP_ALLOWED_HOSTS=todo.example.com` (and keep `localhost,127.0.0.1` if you
 still connect locally), and add `https://todo.example.com` to
 `MCP_ALLOWED_ORIGINS` if a browser client is used.
 
+## stdio mode
+
+`--stdio` (or `MCP_TRANSPORT=stdio`) runs the server as a child process of the
+MCP client. It does not open a port, so Host/Origin validation, bearer tokens,
+TLS, rate limits, and metrics do not apply: the client's OS user and the process
+boundary are the security boundary. stdout is reserved for protocol frames and
+all logs go to stderr.
+
 ## Authentication (required)
 
 Authentication is **mandatory**. The server refuses to start when none of

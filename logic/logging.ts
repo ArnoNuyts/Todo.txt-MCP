@@ -4,11 +4,11 @@ import type { Request, RequestHandler, Response } from "express";
 /**
  * Minimal structured logging.
  *
- * Every record is a single JSON line. `debug`/`info` go to stdout and
- * `warn`/`error` to stderr so container and log collectors can separate
- * operational warnings from normal traffic. Request logging deliberately
- * records only metadata: never Authorization headers, tokens, bodies, or todo
- * content.
+ * Every record is a single JSON line. `debug`/`info` go to stdout (unless
+ * `stderrOnly` is set) and `warn`/`error` always go to stderr, so container and
+ * log collectors can separate operational warnings from normal traffic.
+ * Request logging deliberately records only metadata: never Authorization
+ * headers, tokens, bodies, or todo content.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -39,6 +39,11 @@ export interface LoggerOptions {
   stdout?: (line: string) => void;
   /** Sink for warn/error lines. Defaults to stderr. */
   stderr?: (line: string) => void;
+  /**
+   * Route every record to stderr. Required for the stdio transport, where
+   * stdout carries protocol messages only.
+   */
+  stderrOnly?: boolean;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
 }
@@ -74,7 +79,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       msg,
     };
     const line = JSON.stringify(record);
-    if (entryLevel === "warn" || entryLevel === "error") {
+    if (
+      options.stderrOnly === true || entryLevel === "warn" ||
+      entryLevel === "error"
+    ) {
       stderr(line);
     } else {
       stdout(line);

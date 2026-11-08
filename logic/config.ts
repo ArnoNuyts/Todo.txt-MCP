@@ -50,7 +50,8 @@ export async function loadConfig(
     if (!isNotFoundError(error)) {
       throw error;
     }
-    console.log(
+    // Keep stdout clean: stdio mode reserves it for MCP protocol messages.
+    console.error(
       "Config file not found, using defaults and environment variables.",
     );
   }
