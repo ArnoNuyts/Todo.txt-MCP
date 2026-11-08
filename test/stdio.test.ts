@@ -89,10 +89,9 @@ class StdioClient {
   private nextId = 1;
   private readonly pending = new Map<
     number,
-    { resolve: (value: JsonRpcMessage) => void; reject: (error: Error) => void }
+    (value: JsonRpcMessage) => void
   >();
   private readonly stdoutLines: string[] = [];
-  private readonly stderrChunks: string[] = [];
   readonly child: ChildProcessWithoutNullStreams;
 
   constructor(cwd: string, args: string[], env: NodeJS.ProcessEnv) {
@@ -118,24 +117,19 @@ class StdioClient {
       if (typeof message.id !== "number") {
         return;
       }
-      const pending = this.pending.get(message.id);
-      if (!pending) {
+      const resolve = this.pending.get(message.id);
+      if (!resolve) {
         return;
       }
       this.pending.delete(message.id);
-      pending.resolve(message);
+      resolve(message);
     });
-    this.child.stderr.on("data", (chunk: Buffer) => {
-      this.stderrChunks.push(chunk.toString("utf8"));
-    });
+    // Drain stderr so a chatty child cannot fill the pipe and block.
+    this.child.stderr.resume();
   }
 
   get stdout(): string[] {
     return this.stdoutLines;
-  }
-
-  get stderr(): string {
-    return this.stderrChunks.join("");
   }
 
   async request(
@@ -150,12 +144,9 @@ class StdioClient {
         this.pending.delete(id);
         reject(new Error(`timed out waiting for ${method}`));
       }, timeoutMs);
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject,
+      this.pending.set(id, (value) => {
+        clearTimeout(timer);
+        resolve(value);
       });
     });
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
@@ -193,6 +184,8 @@ async function startStdio(
     directory,
     options.args ?? ["--stdio"],
     {
+      MCP_TRANSPORT: "",
+      MCP_READ_ONLY: "",
       TODOTXT_MCP_BACKEND: "local",
       TODOTXT_MCP_LOCAL_FILENAME: filename,
       MCP_AUTH_TOKEN: "",
@@ -209,7 +202,7 @@ async function startStdio(
   });
   expect(init.error).toBeUndefined();
   client.notify("notifications/initialized");
-  return { client, directory, filename, init };
+  return { client, filename, init };
 }
 
 describe("stdio transport", () => {

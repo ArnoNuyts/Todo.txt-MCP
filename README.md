@@ -62,6 +62,9 @@ flowchart LR
     VOL --- FILE
 ```
 
+The same server still runs over HTTP for shared or containerized deployments;
+stdio is simply the shortest path when the client and file are on one host.
+
 ## 📦 Quick Start with npm
 
 Requires Node.js **26 LTS** (minimum 24.15). The package ships the TypeScript

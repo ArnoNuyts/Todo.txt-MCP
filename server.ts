@@ -9,6 +9,7 @@ import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middlewar
 import express from "express";
 import type { Request, Response } from "express";
 import cors from "cors";
+import type { Readable, Writable } from "node:stream";
 
 import {
   buildCorsOptions,
@@ -45,6 +46,9 @@ import {
   type OperationTracker,
 } from "./logic/operation-tracker.ts";
 import { resolveTransportMode, type TransportMode } from "./logic/transport.ts";
+
+/** Upper bound on draining in-flight stdio handlers during shutdown. */
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 import { filterTodos } from "./logic/Todos.ts";
 import type { TodoBackend } from "./logic/backend.ts";
@@ -109,9 +113,8 @@ export function createTodoMcpServer(
   options: CreateTodoMcpServerOptions = {},
 ) {
   const readOnly = resolveReadOnlyMode(options, process.env);
-  const activity = options.activity ?? createOperationTracker();
-  const tracked = <T>(work: () => T | Promise<T>): Promise<T> =>
-    activity.run(work);
+  const tracked = <T>(work: () => T | Promise<T>): T | Promise<T> =>
+    options.activity === undefined ? work() : options.activity.run(work);
   const server = new McpServer({
     name: "todo.txt-mcp",
     version: "3.2.0",
@@ -265,13 +268,12 @@ export function createTodoMcpServer(
   return server;
 }
 
-export interface RunStdioServerOptions extends CreateTodoMcpServerOptions {
-  /** Injectable logger; defaults to a stderr-only JSON logger. */
-  logger?: Logger;
-  /** Overrides `MCP_LOG_LEVEL` for the default logger. */
-  logLevel?: LogLevel;
-  /** Maximum time to wait for in-flight tool calls during shutdown. */
-  shutdownTimeoutMs?: number;
+export interface RunStdioServerOptions
+  extends Omit<CreateTodoMcpServerOptions, "activity"> {
+  /** Protocol input. Defaults to `process.stdin`; injectable for tests. */
+  stdin?: Readable;
+  /** Protocol output. Defaults to `process.stdout`; injectable for tests. */
+  stdout?: Writable;
 }
 
 /**
@@ -280,28 +282,38 @@ export interface RunStdioServerOptions extends CreateTodoMcpServerOptions {
  * stdout is reserved for protocol frames; every log record goes to stderr.
  * Authentication, Host/Origin validation, and metrics are HTTP concerns and
  * are intentionally not applied here.
+ *
+ * Resolves after a clean shutdown (stdin EOF, `SIGINT`, or `SIGTERM`).
  */
-export interface RunStdioServerHandle {
-  close(): Promise<void>;
-}
-
 export async function runStdioServer(
   backend: TodoBackend,
   options: RunStdioServerOptions = {},
-): Promise<RunStdioServerHandle> {
+): Promise<void> {
   const activity = createOperationTracker();
-  const logger = options.logger ??
-    createLogger({
-      level: options.logLevel ?? resolveLogLevel(process.env),
-      stderrOnly: true,
-    });
+  const logger = createLogger({
+    level: resolveLogLevel(process.env),
+    stderrOnly: true,
+  });
   const server = createTodoMcpServer(backend, {
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     activity,
   });
-  const transport = new StdioServerTransport();
+  const stdin = options.stdin ?? process.stdin;
+  const stdout = options.stdout ?? process.stdout;
+  const transport = new StdioServerTransport(stdin, stdout);
 
-  let finished: Promise<void> | undefined;
+  let shutdownPromise: Promise<void> | undefined;
+  let resolveFinished!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    resolveFinished = resolve;
+  });
+
+  const removeListeners = () => {
+    stdin.off("end", onEnd);
+    stdin.off("close", onEnd);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
 
   const onEnd = () => {
     void shutdown("stdin_end");
@@ -313,22 +325,35 @@ export async function runStdioServer(
     void shutdown("SIGTERM");
   };
 
-  const removeListeners = () => {
-    process.stdin.off("end", onEnd);
-    process.stdin.off("close", onEnd);
-    process.off("SIGINT", onSigint);
-    process.off("SIGTERM", onSigterm);
-  };
-
   const shutdown = (reason: string): Promise<void> => {
-    if (finished !== undefined) {
-      return finished;
+    if (shutdownPromise !== undefined) {
+      return shutdownPromise;
     }
     removeListeners();
-    finished = (async () => {
+    shutdownPromise = (async () => {
       logger.info("stdio_shutdown", { reason });
-      // Stop reading new frames first, then let an in-flight load -> mutate ->
-      // save cycle finish so the advisory lock is released by its `finally`.
+
+      // Pause the reader first so no new frames start, but leave the MCP
+      // server open: closing it aborts in-flight handlers. Drain them so a
+      // load -> mutate -> save cycle releases the advisory lock in `finally`.
+      stdin.pause();
+      const timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(true), SHUTDOWN_TIMEOUT_MS);
+        timer.unref();
+        void activity.idle().then(() => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      });
+
+      if (timedOut) {
+        logger.error("stdio_shutdown_timeout", {
+          pendingOperations: activity.active(),
+        });
+        // A stuck backend must not keep the client's subprocess alive.
+        process.exit(1);
+      }
+
       try {
         await server.close();
       } catch (error) {
@@ -337,26 +362,14 @@ export async function runStdioServer(
         });
       }
 
-      const timeoutMs = options.shutdownTimeoutMs ?? 10_000;
-      const timedOut = await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(true), timeoutMs);
-        timer.unref();
-        void activity.idle().then(() => {
-          clearTimeout(timer);
-          resolve(false);
-        });
-      });
-
-      logger.info("stdio_stopped", {
-        pendingOperations: activity.active(),
-        timedOut,
-      });
+      logger.info("stdio_stopped", { reason });
+      resolveFinished();
     })();
-    return finished;
+    return shutdownPromise;
   };
 
-  process.stdin.once("end", onEnd);
-  process.stdin.once("close", onEnd);
+  stdin.once("end", onEnd);
+  stdin.once("close", onEnd);
   process.once("SIGINT", onSigint);
   process.once("SIGTERM", onSigterm);
 
@@ -368,10 +381,7 @@ export async function runStdioServer(
   }
 
   logger.info("stdio_ready");
-
-  return {
-    close: () => shutdown("closed"),
-  };
+  await finished;
 }
 
 export type CreateAppOptions = HttpSecurityOptions & {

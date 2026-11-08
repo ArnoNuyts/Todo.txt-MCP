@@ -4,11 +4,11 @@ import type { Request, RequestHandler, Response } from "express";
 /**
  * Minimal structured logging.
  *
- * Every record is a single JSON line. `debug`/`info` go to stdout and
- * `warn`/`error` to stderr so container and log collectors can separate
- * operational warnings from normal traffic. Request logging deliberately
- * records only metadata: never Authorization headers, tokens, bodies, or todo
- * content.
+ * Every record is a single JSON line. `debug`/`info` go to stdout (unless
+ * `stderrOnly` is set) and `warn`/`error` always go to stderr, so container and
+ * log collectors can separate operational warnings from normal traffic.
+ * Request logging deliberately records only metadata: never Authorization
+ * headers, tokens, bodies, or todo content.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
