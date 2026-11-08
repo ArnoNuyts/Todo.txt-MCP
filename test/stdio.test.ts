@@ -259,6 +259,49 @@ describe("stdio transport", () => {
     }
   }, 20_000);
 
+  it("serves the add -> update -> delete workflow", async () => {
+    const { client, filename } = await startStdio({
+      todoContent: "first task\n",
+    });
+
+    const added = await client.request("tools/call", {
+      name: "add_todos",
+      arguments: { todos: ["second task +proj"] },
+    });
+    const addedLine = added.result?.content?.[0]?.text ?? "";
+    const [, secondHash, secondText] = /^(\S+) (.+)$/m.exec(addedLine) ?? [];
+    expect(secondHash).toBeTruthy();
+    expect(secondText).toBe("second task +proj");
+
+    const updated = await client.request("tools/call", {
+      name: "update_todos",
+      arguments: {
+        updates: [`${secondHash} second task +proj due:2030-01-01`],
+      },
+    });
+    const updatedLine = updated.result?.content?.[0]?.text ?? "";
+    const [, updatedHash] = /^(\S+) (.+)$/m.exec(updatedLine) ?? [];
+    expect(updatedHash).toBeTruthy();
+    expect(updatedHash).not.toBe(secondHash);
+
+    const deleted = await client.request("tools/call", {
+      name: "delete_todos",
+      arguments: { hashes: [updatedHash] },
+    });
+    expect(deleted.error).toBeUndefined();
+
+    const listed = await client.request("tools/call", {
+      name: "list_todos",
+      arguments: { status: "all" },
+    });
+    const listedText = listed.result?.content?.[0]?.text ?? "";
+    expect(listedText).toContain("first task");
+    expect(listedText).not.toContain("second task");
+
+    expect(await client.close()).toBe(0);
+    expect(await readFile(filename, "utf8")).toBe("first task\n");
+  }, 20_000);
+
   it("honours read-only mode", async () => {
     const { client } = await startStdio({ env: { MCP_READ_ONLY: "1" } });
 
