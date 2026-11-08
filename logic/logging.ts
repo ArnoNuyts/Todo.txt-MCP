@@ -39,6 +39,11 @@ export interface LoggerOptions {
   stdout?: (line: string) => void;
   /** Sink for warn/error lines. Defaults to stderr. */
   stderr?: (line: string) => void;
+  /**
+   * Route every record to stderr. Required for the stdio transport, where
+   * stdout carries protocol messages only.
+   */
+  stderrOnly?: boolean;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
 }
@@ -74,7 +79,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       msg,
     };
     const line = JSON.stringify(record);
-    if (entryLevel === "warn" || entryLevel === "error") {
+    if (
+      options.stderrOnly === true || entryLevel === "warn" ||
+      entryLevel === "error"
+    ) {
       stderr(line);
     } else {
       stdout(line);

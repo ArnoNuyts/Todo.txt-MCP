@@ -4,6 +4,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
 import type { Request, Response } from "express";
@@ -39,6 +40,11 @@ import {
   resolveLogLevel,
 } from "./logic/logging.ts";
 import { createMetrics } from "./logic/metrics.ts";
+import {
+  createOperationTracker,
+  type OperationTracker,
+} from "./logic/operation-tracker.ts";
+import { resolveTransportMode, type TransportMode } from "./logic/transport.ts";
 
 import { filterTodos } from "./logic/Todos.ts";
 import type { TodoBackend } from "./logic/backend.ts";
@@ -79,6 +85,8 @@ export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
 export interface CreateTodoMcpServerOptions {
   /** When true only `list_todos` is registered; mutating tools are absent. */
   readOnly?: boolean;
+  /** Tracks in-flight handlers so a transport can drain before shutdown. */
+  activity?: OperationTracker;
 }
 
 /**
@@ -101,6 +109,9 @@ export function createTodoMcpServer(
   options: CreateTodoMcpServerOptions = {},
 ) {
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const activity = options.activity ?? createOperationTracker();
+  const tracked = <T>(work: () => T | Promise<T>): Promise<T> =>
+    activity.run(work);
   const server = new McpServer({
     name: "todo.txt-mcp",
     version: "3.2.0",
@@ -141,10 +152,11 @@ export function createTodoMcpServer(
       description: "The complete todo.txt file.",
       mimeType: "text/plain",
     },
-    async (uri) => {
-      const todos = await backend.load();
-      return textResource(uri, serializeTodoContent(todos));
-    },
+    (uri) =>
+      tracked(async () => {
+        const todos = await backend.load();
+        return textResource(uri, serializeTodoContent(todos));
+      }),
   );
 
   server.registerResource(
@@ -156,13 +168,14 @@ export function createTodoMcpServer(
         "Visible open todos only; hidden and future-threshold todos omitted.",
       mimeType: "text/plain",
     },
-    async (uri) => {
-      const todos = await backend.load();
-      return textResource(
-        uri,
-        serializeTodoContent(filterTodos(todos, { status: "todo" })),
-      );
-    },
+    (uri) =>
+      tracked(async () => {
+        const todos = await backend.load();
+        return textResource(
+          uri,
+          serializeTodoContent(filterTodos(todos, { status: "todo" })),
+        );
+      }),
   );
 
   server.registerResource(
@@ -181,12 +194,14 @@ export function createTodoMcpServer(
       } catch {
         // Keep the raw value when it is not valid percent-encoding.
       }
-      const todos = await backend.load();
-      const matching = filterTodos(todos, {
-        status: "todo",
-        context,
+      return await tracked(async () => {
+        const todos = await backend.load();
+        const matching = filterTodos(todos, {
+          status: "todo",
+          context,
+        });
+        return textResource(uri, serializeTodoContent(matching));
       });
-      return textResource(uri, serializeTodoContent(matching));
     },
   );
 
@@ -198,7 +213,7 @@ export function createTodoMcpServer(
       inputSchema: CompactListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => listTodosHandler(backend, rawArgs)),
   );
 
   // Read-only mode keeps mutating tools out of tools/list and the callable
@@ -216,7 +231,7 @@ export function createTodoMcpServer(
       inputSchema: CompactAddTodosSchema.shape,
       annotations: { destructiveHint: false },
     },
-    (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => addTodosHandler(backend, rawArgs)),
   );
 
   server.registerTool(
@@ -231,7 +246,7 @@ export function createTodoMcpServer(
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
-    (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => updateTodosHandler(backend, rawArgs)),
   );
 
   server.registerTool(
@@ -244,10 +259,119 @@ export function createTodoMcpServer(
       inputSchema: CompactDeleteTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
-    (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => deleteTodosHandler(backend, rawArgs)),
   );
 
   return server;
+}
+
+export interface RunStdioServerOptions extends CreateTodoMcpServerOptions {
+  /** Injectable logger; defaults to a stderr-only JSON logger. */
+  logger?: Logger;
+  /** Overrides `MCP_LOG_LEVEL` for the default logger. */
+  logLevel?: LogLevel;
+  /** Maximum time to wait for in-flight tool calls during shutdown. */
+  shutdownTimeoutMs?: number;
+}
+
+/**
+ * Serves MCP over stdin/stdout for clients that launch the process directly.
+ *
+ * stdout is reserved for protocol frames; every log record goes to stderr.
+ * Authentication, Host/Origin validation, and metrics are HTTP concerns and
+ * are intentionally not applied here.
+ */
+export interface RunStdioServerHandle {
+  close(): Promise<void>;
+}
+
+export async function runStdioServer(
+  backend: TodoBackend,
+  options: RunStdioServerOptions = {},
+): Promise<RunStdioServerHandle> {
+  const activity = createOperationTracker();
+  const logger = options.logger ??
+    createLogger({
+      level: options.logLevel ?? resolveLogLevel(process.env),
+      stderrOnly: true,
+    });
+  const server = createTodoMcpServer(backend, {
+    ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+    activity,
+  });
+  const transport = new StdioServerTransport();
+
+  let finished: Promise<void> | undefined;
+
+  const onEnd = () => {
+    void shutdown("stdin_end");
+  };
+  const onSigint = () => {
+    void shutdown("SIGINT");
+  };
+  const onSigterm = () => {
+    void shutdown("SIGTERM");
+  };
+
+  const removeListeners = () => {
+    process.stdin.off("end", onEnd);
+    process.stdin.off("close", onEnd);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+
+  const shutdown = (reason: string): Promise<void> => {
+    if (finished !== undefined) {
+      return finished;
+    }
+    removeListeners();
+    finished = (async () => {
+      logger.info("stdio_shutdown", { reason });
+      // Stop reading new frames first, then let an in-flight load -> mutate ->
+      // save cycle finish so the advisory lock is released by its `finally`.
+      try {
+        await server.close();
+      } catch (error) {
+        logger.error("stdio_close_error", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const timeoutMs = options.shutdownTimeoutMs ?? 10_000;
+      const timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(true), timeoutMs);
+        timer.unref();
+        void activity.idle().then(() => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      });
+
+      logger.info("stdio_stopped", {
+        pendingOperations: activity.active(),
+        timedOut,
+      });
+    })();
+    return finished;
+  };
+
+  process.stdin.once("end", onEnd);
+  process.stdin.once("close", onEnd);
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    await shutdown("connect_error");
+    throw error;
+  }
+
+  logger.info("stdio_ready");
+
+  return {
+    close: () => shutdown("closed"),
+  };
 }
 
 export type CreateAppOptions = HttpSecurityOptions & {
@@ -573,6 +697,17 @@ export function createApp(
 }
 
 export async function main() {
+  let transportMode: TransportMode;
+  try {
+    transportMode = resolveTransportMode();
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   let config: TodoTxtMcpConfig;
   try {
     config = await loadConfig();
@@ -597,6 +732,13 @@ export async function main() {
   }
 
   const backend = createBackend(config);
+
+  if (transportMode === "stdio") {
+    // stdio mode skips HTTP-only concerns: bearer tokens, host/origin
+    // allowlists, TLS, and metrics. stdout carries protocol frames only.
+    await runStdioServer(backend);
+    return;
+  }
 
   let trustProxy: ReturnType<typeof parseTrustProxy>;
   try {
