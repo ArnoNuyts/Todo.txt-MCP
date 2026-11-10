@@ -384,6 +384,14 @@ describe("review follow-ups", () => {
     expect(todo.toString()).toBe("2024-01-01 2024-02-02 task");
   });
 
+  it("refuses to serialize a mutated two-date line", () => {
+    const todo = new Todo("2024-01-01 2024-02-02 task");
+    todo.setText("changed");
+
+    expect(() => todo.toString()).toThrow(AmbiguousTodoError);
+    expect(() => todo.toDisplayString()).toThrow(AmbiguousTodoError);
+  });
+
   it("round-trips an impossible-date line through the local file backend", async () => {
     const directory = await mkdtemp(join(tmpdir(), "todo-secfix-"));
     const filename = join(directory, "todo.txt");

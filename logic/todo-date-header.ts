@@ -10,7 +10,7 @@ import { parseDateTag } from "./recurrence.ts";
 const TODO_REGEX =
   /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
 
-interface TodoDateIssues {
+export interface TodoDateIssues {
   /** Tokens that looked like dates but are not real calendar dates. */
   readonly invalidTokens: readonly string[];
   /** True for an open todo with two leading date tokens. */

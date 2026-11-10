@@ -112,6 +112,33 @@ describe("readiness probe", () => {
     expect(loads).toBe(1);
   });
 
+  it("reuses a timed-out load until the backend settles", async () => {
+    let loads = 0;
+    let release!: () => void;
+    const backend: TodoBackend = {
+      load: () => {
+        loads += 1;
+        if (loads > 1) {
+          return Promise.resolve([]);
+        }
+        return new Promise<Todo[]>((resolve) => {
+          release = () => resolve([]);
+        });
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 10);
+
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    expect(loads).toBe(1);
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(probe()).resolves.toEqual({ ready: true });
+    expect(loads).toBe(2);
+  });
+
   it("returns a server-side reason when the backend fails", async () => {
     const backend: TodoBackend = {
       load: async () => {

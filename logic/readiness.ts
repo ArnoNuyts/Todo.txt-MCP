@@ -7,9 +7,16 @@ export interface ReadinessResult {
   reason?: string;
 }
 
+interface ProbeRun {
+  result: Promise<ReadinessResult>;
+  /** Settles only when the backend work finishes, not when the timeout wins. */
+  backendSettled: Promise<void>;
+}
+
 /**
  * Builds a single-flight readiness probe. Timed-out probes keep the underlying
- * load running once; later probes reuse it instead of starting another load.
+ * load running once; later probes reuse the same result until that load
+ * settles instead of starting another one.
  */
 export function createReadinessProbe(
   backend: TodoBackend,
@@ -17,14 +24,14 @@ export function createReadinessProbe(
 ): () => Promise<ReadinessResult> {
   let inFlight: Promise<ReadinessResult> | undefined;
 
-  const run = async (): Promise<ReadinessResult> => {
+  const run = (): ProbeRun => {
     let timer: NodeJS.Timeout | undefined;
-    const work = (async () => {
+    const work = (async (): Promise<ReadinessResult> => {
       const todos = await backend.load();
       serializeTodoContent(todos);
-      return { ready: true } as const;
+      return { ready: true };
     })().catch((error: unknown) => ({
-      ready: false as const,
+      ready: false,
       reason: error instanceof Error ? error.message : String(error),
     }));
 
@@ -35,19 +42,26 @@ export function createReadinessProbe(
       timer.unref();
     });
 
-    try {
-      return await Promise.race([work, timeout]);
-    } finally {
+    const result = Promise.race([work, timeout]).finally(() => {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
-    }
+    });
+    const backendSettled = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    return { result, backendSettled };
   };
 
   return () => {
     if (inFlight === undefined) {
-      inFlight = run().finally(() => {
-        inFlight = undefined;
+      const current = run();
+      inFlight = current.result;
+      void current.backendSettled.then(() => {
+        if (inFlight === current.result) {
+          inFlight = undefined;
+        }
       });
     }
     return inFlight;

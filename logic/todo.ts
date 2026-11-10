@@ -6,7 +6,10 @@ import {
   parseRecurrence,
   startOfUtcDay,
 } from "./recurrence.ts";
-import { parseTodoHeader } from "./todo-date-header.ts";
+import {
+  parseTodoHeader,
+  type TodoDateIssues,
+} from "./todo-date-header.ts";
 import {
   CONTEXT_REGEX,
   PROJECT_REGEX,
@@ -61,13 +64,13 @@ export class Todo {
    */
   private originalLine: string | undefined;
   private originalSerialized: string | undefined;
-  private dateIssues: {
-    invalidTokens: string[];
-    ambiguous: boolean;
-  } = { invalidTokens: [], ambiguous: false };
+  private dateIssues: TodoDateIssues = {
+    invalidTokens: [],
+    ambiguous: false,
+  };
 
   /**
-   * Leading date tokens that matched {@link TODO_REGEX} but are not real
+   * Leading date tokens that matched {@link parseTodoHeader} but are not real
    * calendar dates. Kept read-only for callers so parser bookkeeping cannot be
    * mutated from outside the class.
    */
@@ -94,10 +97,7 @@ export class Todo {
         : TodoStateEnum.todo;
       this.completionDate = parsed.header.completionDate;
       this.creationDate = parsed.header.creationDate;
-      this.dateIssues = {
-        invalidTokens: [...parsed.header.issues.invalidTokens],
-        ambiguous: parsed.header.issues.ambiguous,
-      };
+      this.dateIssues = parsed.header.issues;
       text = parsed.header.literalPrefix + parsed.rest;
     }
     this.setText(text);
@@ -163,13 +163,19 @@ export class Todo {
    */
   toString() {
     const serialized = this.serialize();
-    if (
-      this.originalLine !== undefined &&
-      // A two-date line cannot be canonicalised without dropping a token, so
-      // keep the raw line until the caller deletes or explicitly rewrites it.
-      (this.hasTwoLeadingDates || serialized === this.originalSerialized)
-    ) {
-      return this.originalLine;
+    if (this.originalLine !== undefined) {
+      if (this.hasTwoLeadingDates) {
+        // A two-date line cannot be canonicalised without dropping a token.
+        // Keep the raw line while unchanged; refuse to serialize a mutation
+        // that would silently lose it.
+        if (serialized === this.originalSerialized) {
+          return this.originalLine;
+        }
+        throw new AmbiguousTodoError();
+      }
+      if (serialized === this.originalSerialized) {
+        return this.originalLine;
+      }
     }
     return serialized;
   }
@@ -200,6 +206,9 @@ export class Todo {
       // Show both dates so the user can see why an update is rejected. This
       // deliberately differs from canonical rows, which hide the creation
       // date, so `search` can match these literal tokens.
+      if (this.serialize() !== this.originalSerialized) {
+        throw new AmbiguousTodoError();
+      }
       return this.originalLine;
     }
     return (this.isDone() ? "x " : "") +
