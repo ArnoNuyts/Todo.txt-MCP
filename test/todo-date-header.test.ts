@@ -52,6 +52,28 @@ describe("todo date header", () => {
     ).toBe(false);
   });
 
+  it("keeps a valid date when the other leading token is impossible", () => {
+    const parsed = parseTodoHeader("2024-13-01 2024-01-01 task");
+
+    expect(parsed?.header.completionDate).toBeUndefined();
+    expect(parsed?.header.creationDate?.toISOString()).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect(parsed?.header.literalPrefix).toBe("2024-13-01 2024-01-01 ");
+    expect(parsed?.header.issues.invalidTokens).toEqual(["2024-13-01"]);
+    expect(parsed?.rest).toBe("task");
+  });
+
+  it("keeps a valid creation date on a done line with an impossible completion date", () => {
+    const parsed = parseTodoHeader("x 2024-13-01 2024-01-01 task");
+
+    expect(parsed?.header.completionDate).toBeUndefined();
+    expect(parsed?.header.creationDate?.toISOString()).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect(parsed?.header.literalPrefix).toBe("2024-13-01 2024-01-01 ");
+  });
+
   it("parses done and priority prefixes", () => {
     const parsed = parseTodoHeader("x (A) 2024-02-01 task");
 

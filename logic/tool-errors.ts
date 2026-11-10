@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { BackendConflictError } from "./backend-errors.ts";
 import { FileLockTimeoutError } from "./file-lock.ts";
+import { LimitExceededError } from "./limits.ts";
 
 /**
  * Stable error codes returned in `structuredContent.error.code`. Clients can
@@ -87,6 +88,13 @@ export function notFoundError(hash: string): ToolErrorResult {
 function mapError(error: unknown): ToolErrorResult {
   if (error instanceof ToolFailure) {
     return toolError(error.code, error.message, error.details);
+  }
+
+  if (error instanceof LimitExceededError) {
+    return toolError("LIMIT_EXCEEDED", error.message, {
+      byteLength: error.byteLength,
+      maxFileBytes: error.maxFileBytes,
+    });
   }
 
   if (error instanceof BackendConflictError) {

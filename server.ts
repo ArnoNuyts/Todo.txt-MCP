@@ -7,7 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
-import type { NextFunction, Request, Response } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 import cors from "cors";
 import type { Readable, Writable } from "node:stream";
 
@@ -17,12 +17,15 @@ import {
   DEFAULT_HOST,
   isLoopbackHost,
   parseTrustProxy,
+  type BearerAuthHooks,
   type HttpSecurityOptions,
   resolveHttpSecurityOptions,
   warnOnProxyPosture,
 } from "./logic/http-security.ts";
 import {
+  type AbuseConfig,
   type AbuseControlOverrides,
+  type AbuseControls,
   createAbuseControls,
   resolveAbuseConfig,
   SlidingWindowLimiter,
@@ -31,6 +34,7 @@ import {
   assertAuthTokensConfigured,
   assertStrongAuthTokens,
   type AuthTokenOrigin,
+  type AuthTokenSource,
   createAuthTokenStore,
   isWeakTokenOverrideEnabled,
   type MutableAuthTokenStore,
@@ -54,7 +58,7 @@ import {
   type LogLevel,
   resolveLogLevel,
 } from "./logic/logging.ts";
-import { createMetrics } from "./logic/metrics.ts";
+import { createMetrics, type Metrics } from "./logic/metrics.ts";
 import {
   createOperationTracker,
   type OperationTracker,
@@ -475,6 +479,167 @@ function createRateLimitMiddleware(
   };
 }
 
+/**
+ * Builds the `/mcp` auth hooks. The failure hook records metrics, applies the
+ * per-key lockout and the global breaker, and writes the 429/503 response when
+ * either limit is reached. It returns the hooks unchanged in shape from the
+ * former inline implementation.
+ */
+function createMcpAuthHooks(options: {
+  abuse: AbuseControls;
+  metrics: Metrics;
+  logger: Logger;
+}): BearerAuthHooks {
+  const { abuse, metrics, logger } = options;
+  return {
+    onFailure: (req, res) => {
+      metrics.recordAuthFailure();
+      logger.warn("auth_failure", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        path: getRequestPath(req),
+      });
+
+      const key = abuse.clientKey(req);
+      const breaker = abuse.breaker.recordFailure();
+      if (breaker.openedNow) {
+        logger.warn("auth_failure_circuit_breaker", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: breaker.retryAfterSec,
+        });
+      }
+
+      const failure = abuse.authFailures.recordFailure(key);
+      if (failure.banned) {
+        logger.warn("auth_banned", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: failure.retryAfterSec,
+        });
+        res.setHeader("Retry-After", String(failure.retryAfterSec));
+        res.status(429).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Too many failed authentication attempts.",
+          },
+          id: null,
+        });
+        return true;
+      }
+
+      // Invalid traffic is shed while the breaker is open, but a valid token
+      // never reaches this hook and therefore always proceeds.
+      if (breaker.open) {
+        logger.warn("auth_failure_circuit_open", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: breaker.retryAfterSec,
+        });
+        res.setHeader("Retry-After", String(breaker.retryAfterSec));
+        res.status(503).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message:
+              "Service temporarily unavailable due to authentication failures.",
+          },
+          id: null,
+        });
+        return true;
+      }
+      return false;
+    },
+    onSuccess: (req) => {
+      abuse.authFailures.recordSuccess(abuse.clientKey(req));
+    },
+  };
+}
+
+interface MetricsMountOptions {
+  app: Express;
+  metricsConfig: ResolvedMetricsConfig;
+  metrics: Metrics;
+  tokenSource: AuthTokenSource;
+  /** True when `/mcp` has a bearer token source to reuse for `/metrics`. */
+  authConfigured: boolean;
+  abuse: AbuseControls;
+  abuseConfig: AbuseConfig;
+  abuseOverrides: AbuseControlOverrides;
+  logger: Logger;
+}
+
+/**
+ * Mounts the optional `/metrics` endpoint with its own limiter and bucket so
+ * scrapes can neither exhaust the `/mcp` budget nor trigger its auth ban or
+ * global breaker.
+ */
+function mountMetrics(options: MetricsMountOptions): void {
+  const {
+    app,
+    metricsConfig,
+    metrics,
+    tokenSource,
+    authConfigured,
+    abuse,
+    abuseConfig,
+    abuseOverrides,
+    logger,
+  } = options;
+  if (!metricsConfig.enabled) {
+    return;
+  }
+
+  const metricsLimiter = new SlidingWindowLimiter({
+    limit: metricsConfig.rateLimitPerMin,
+    windowMs: 60_000,
+    maxEntries: abuseConfig.maxTrackedKeys,
+    ...(abuseOverrides.now === undefined ? {} : { now: abuseOverrides.now }),
+  });
+
+  app.use(
+    "/metrics",
+    createRateLimitMiddleware({
+      limiter: metricsLimiter,
+      clientKey: abuse.clientKey,
+      logger,
+      event: "metrics_rate_limited",
+      message: "Too many metrics requests.",
+    }),
+  );
+
+  // When a separate metrics token is configured it is the only credential
+  // accepted here. Otherwise reuse the /mcp token but bypass its lockout.
+  const separateMetricsToken = metricsConfig.token;
+  const metricsAuthConfigured = separateMetricsToken !== undefined ||
+    authConfigured;
+  if (metricsAuthConfigured) {
+    const metricsTokenSource = separateMetricsToken ?? tokenSource;
+    app.use(
+      "/metrics",
+      createBearerAuthMiddleware(metricsTokenSource, {
+        onFailure: (req) => {
+          metrics.recordAuthFailure();
+          logger.warn("auth_failure", {
+            requestId: getRequestId(req),
+            ip: req.ip ?? "unknown",
+            path: getRequestPath(req),
+          });
+        },
+      }),
+    );
+  }
+
+  app.get("/metrics", (_req: Request, res: Response) => {
+    res.setHeader(
+      "Content-Type",
+      "text/plain; version=0.0.4; charset=utf-8",
+    );
+    res.status(200).send(metrics.render());
+  });
+}
+
 /** Flat security fields override the grouped form only when actually set. */
 function resolveSecurityOptions(
   options: CreateAppOptions,
@@ -502,6 +667,8 @@ export function createApp(
   const { allowedHosts, allowedOrigins, authTokens, authTokenProvider } =
     resolveHttpSecurityOptions(resolveSecurityOptions(options));
   const tokenSource = authTokenProvider ?? authTokens;
+  const authConfigured = authTokenProvider !== undefined ||
+    authTokens.length > 0;
   const abuseOverrides = options.limits?.abuse ?? options.abuse ?? {};
   const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
   const abuse = createAbuseControls(abuseConfig, abuseOverrides.now);
@@ -634,127 +801,27 @@ export function createApp(
     mcpRateLimit(req, res, next);
   });
 
-  if (authTokenProvider !== undefined || authTokens.length > 0) {
+  if (authConfigured) {
     app.use(
       "/mcp",
-      createBearerAuthMiddleware(tokenSource, {
-        onFailure: (req, res) => {
-          metrics.recordAuthFailure();
-          logger.warn("auth_failure", {
-            requestId: getRequestId(req),
-            ip: req.ip ?? "unknown",
-            path: getRequestPath(req),
-          });
-
-          const key = abuse.clientKey(req);
-          const breaker = abuse.breaker.recordFailure();
-          if (breaker.openedNow) {
-            logger.warn("auth_failure_circuit_breaker", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              retryAfterSec: breaker.retryAfterSec,
-            });
-          }
-
-          const failure = abuse.authFailures.recordFailure(key);
-          if (failure.banned) {
-            logger.warn("auth_banned", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              retryAfterSec: failure.retryAfterSec,
-            });
-            res.setHeader("Retry-After", String(failure.retryAfterSec));
-            res.status(429).json({
-              jsonrpc: "2.0",
-              error: {
-                code: -32000,
-                message: "Too many failed authentication attempts.",
-              },
-              id: null,
-            });
-            return true;
-          }
-
-          // Invalid traffic is shed while the breaker is open, but a valid
-          // token never reaches this hook and therefore always proceeds.
-          if (breaker.open) {
-            logger.warn("auth_failure_circuit_open", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              retryAfterSec: breaker.retryAfterSec,
-            });
-            res.setHeader("Retry-After", String(breaker.retryAfterSec));
-            res.status(503).json({
-              jsonrpc: "2.0",
-              error: {
-                code: -32000,
-                message:
-                  "Service temporarily unavailable due to authentication failures.",
-              },
-              id: null,
-            });
-            return true;
-          }
-          return false;
-        },
-        onSuccess: (req) => {
-          abuse.authFailures.recordSuccess(abuse.clientKey(req));
-        },
-      }),
+      createBearerAuthMiddleware(
+        tokenSource,
+        createMcpAuthHooks({ abuse, metrics, logger }),
+      ),
     );
   }
 
-  if (metricsConfig.enabled) {
-    // A separate limiter and bucket so scrapes can neither exhaust the /mcp
-    // budget nor trigger the /mcp auth ban or global breaker.
-    const metricsLimiter = new SlidingWindowLimiter({
-      limit: metricsConfig.rateLimitPerMin,
-      windowMs: 60_000,
-      maxEntries: abuseConfig.maxTrackedKeys,
-      ...(abuseOverrides.now === undefined ? {} : { now: abuseOverrides.now }),
-    });
-
-    app.use(
-      "/metrics",
-      createRateLimitMiddleware({
-        limiter: metricsLimiter,
-        clientKey: abuse.clientKey,
-        logger,
-        event: "metrics_rate_limited",
-        message: "Too many metrics requests.",
-      }),
-    );
-
-    // When a separate metrics token is configured it is the only credential
-    // accepted here. Otherwise reuse the /mcp token but bypass its lockout.
-    const separateMetricsToken = metricsConfig.token;
-    const metricsAuthConfigured = separateMetricsToken !== undefined ||
-      authTokenProvider !== undefined || authTokens.length > 0;
-    if (metricsAuthConfigured) {
-      const metricsTokenSource = separateMetricsToken ?? tokenSource;
-      app.use(
-        "/metrics",
-        createBearerAuthMiddleware(metricsTokenSource, {
-          onFailure: (req) => {
-            metrics.recordAuthFailure();
-            logger.warn("auth_failure", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              path: getRequestPath(req),
-            });
-          },
-        }),
-      );
-    }
-
-    app.get("/metrics", (_req: Request, res: Response) => {
-      res.setHeader(
-        "Content-Type",
-        "text/plain; version=0.0.4; charset=utf-8",
-      );
-      res.status(200).send(metrics.render());
-    });
-  }
+  mountMetrics({
+    app,
+    metricsConfig,
+    metrics,
+    tokenSource,
+    authConfigured,
+    abuse,
+    abuseConfig,
+    abuseOverrides,
+    logger,
+  });
 
   let inFlightMcpRequests = 0;
 

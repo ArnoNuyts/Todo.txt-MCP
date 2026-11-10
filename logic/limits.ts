@@ -1,7 +1,29 @@
-import { ToolFailure } from "./tool-errors.ts";
-
 export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_TODOS = 10_000;
+
+/**
+ * Domain error for an exceeded file-size limit. It deliberately lives here
+ * instead of the tool layer so storage backends and file helpers do not import
+ * the MCP error envelope. `tool-errors.ts` maps it to `LIMIT_EXCEEDED`.
+ */
+export class LimitExceededError extends Error {
+  readonly source: string;
+  readonly byteLength: number;
+  readonly maxFileBytes: number;
+
+  constructor(
+    source: string,
+    byteLength: number,
+    maxFileBytes: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "LimitExceededError";
+    this.source = source;
+    this.byteLength = byteLength;
+    this.maxFileBytes = maxFileBytes;
+  }
+}
 
 /**
  * Parses a positive integer from an environment variable, falling back to the
@@ -57,11 +79,12 @@ export function assertFileSizeWithinLimit(
   maxFileBytes: number,
 ): void {
   if (byteLength > maxFileBytes) {
-    throw new ToolFailure(
-      "LIMIT_EXCEEDED",
+    throw new LimitExceededError(
+      source,
+      byteLength,
+      maxFileBytes,
       `${source} is too large: ${byteLength} bytes exceeds the ` +
         `${maxFileBytes}-byte limit set by TODOTXT_MCP_MAX_FILE_BYTES.`,
-      { byteLength, maxFileBytes },
     );
   }
 }

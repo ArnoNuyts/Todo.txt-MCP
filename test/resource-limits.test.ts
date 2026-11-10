@@ -4,14 +4,17 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
 import {
+  assertFileSizeWithinLimit,
   DEFAULT_MAX_FILE_BYTES,
   DEFAULT_MAX_TODOS,
+  LimitExceededError,
   parsePositiveIntegerEnv,
   resolveMaxFileBytes,
   resolveMaxTodos,
 } from "../logic/limits.ts";
 import { readTodosFromFile } from "../logic/todo-file-helpers.ts";
 import { Todo } from "../logic/todo.ts";
+import { guardTool } from "../logic/tool-errors.ts";
 import { addTodosHandler } from "../logic/tools.ts";
 import { MockBackend } from "./helpers/mock-backend.ts";
 
@@ -29,6 +32,27 @@ describe("resource limit configuration", () => {
     expect(resolveMaxFileBytes({ TODOTXT_MCP_MAX_FILE_BYTES: "2048" }))
       .toBe(2048);
     expect(resolveMaxTodos({ TODOTXT_MCP_MAX_TODOS: "42" })).toBe(42);
+  });
+
+  it("throws a domain error and maps it to LIMIT_EXCEEDED", async () => {
+    expect(() => assertFileSizeWithinLimit("Todo file", 10, 5)).toThrow(
+      LimitExceededError,
+    );
+
+    const result = await guardTool(async () => {
+      assertFileSizeWithinLimit("Todo file", 10, 5);
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "LIMIT_EXCEEDED",
+          message: expect.stringContaining("too large"),
+          details: { byteLength: 10, maxFileBytes: 5 },
+        },
+      },
+    });
   });
 
   it.each(["0", "-1", "1.5", "abc", "Infinity"])(
