@@ -33,6 +33,7 @@ import {
   type AuthTokenOrigin,
   createAuthTokenStore,
   isWeakTokenOverrideEnabled,
+  type MutableAuthTokenStore,
   readAuthTokenFile,
   resolveAuthTokens,
   warnOnInsecureTokenFile,
@@ -74,7 +75,7 @@ import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 import { serializeTodoContent } from "./logic/content.ts";
-import { probeReadiness } from "./logic/readiness.ts";
+import { createReadinessProbe } from "./logic/readiness.ts";
 import { resolveReadOnlyMode } from "./logic/read-only.ts";
 import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
 import {
@@ -391,7 +392,21 @@ export async function runStdioServer(
 
 export { resolveReadOnlyMode };
 
-export type CreateAppOptions = HttpSecurityOptions & {
+export interface CreateAppOptions extends HttpSecurityOptions {
+  /** Grouped security options; flat fields above remain supported. */
+  security?: HttpSecurityOptions;
+  /** Grouped logging/metrics options; flat fields below remain supported. */
+  observability?: {
+    logger?: Logger;
+    logLevel?: LogLevel;
+    metrics?: MetricsOverrides;
+    resolvedMetrics?: ResolvedMetricsConfig;
+  };
+  /** Grouped runtime limits; flat fields below remain supported. */
+  limits?: {
+    abuse?: AbuseControlOverrides;
+    readinessTimeoutMs?: number;
+  };
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
   /** When true only `list_todos` is registered on the MCP endpoint. */
@@ -406,7 +421,7 @@ export type CreateAppOptions = HttpSecurityOptions & {
   resolvedMetrics?: ResolvedMetricsConfig;
   /** Readiness probe timeout in milliseconds. Default: 2000. */
   readinessTimeoutMs?: number;
-};
+}
 
 /** Describes which credential `/metrics` uses, for the posture record only. */
 function describeMetricsTokenSource(
@@ -465,17 +480,29 @@ export function createApp(
   options: CreateAppOptions = {},
 ) {
   const { allowedHosts, allowedOrigins, authTokens, authTokenProvider } =
-    resolveHttpSecurityOptions(options);
+    resolveHttpSecurityOptions({ ...options.security, ...options });
   const tokenSource = authTokenProvider ?? authTokens;
-  const abuseOverrides = options.abuse ?? {};
+  const abuseOverrides = options.limits?.abuse ?? options.abuse ?? {};
   const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
   const abuse = createAbuseControls(abuseConfig, abuseOverrides.now);
-  const logger = options.logger ??
-    createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
+  const logger = options.observability?.logger ?? options.logger ??
+    createLogger({
+      level: options.observability?.logLevel ?? options.logLevel ??
+        resolveLogLevel(process.env),
+    });
   const metrics = createMetrics();
-  const metricsConfig = options.resolvedMetrics ??
-    resolveMetricsConfig(options.metrics, process.env);
+  const metricsConfig = options.observability?.resolvedMetrics ??
+    options.resolvedMetrics ??
+    resolveMetricsConfig(
+      options.observability?.metrics ?? options.metrics,
+      process.env,
+    );
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const readiness = createReadinessProbe(
+    backend,
+    options.limits?.readinessTimeoutMs ?? options.readinessTimeoutMs ??
+      READINESS_TIMEOUT_MS,
+  );
   const mcpRateLimit = createRateLimitMiddleware({
     limiter: abuse.limiter,
     clientKey: abuse.clientKey,
@@ -545,14 +572,12 @@ export function createApp(
   // list so a bricked backend is visible. It is unauthenticated but still
   // Host-validated by the middleware above, and never returns the error.
   app.get("/readyz", async (req: Request, res: Response) => {
-    const ready = await probeReadiness(
-      backend,
-      options.readinessTimeoutMs ?? READINESS_TIMEOUT_MS,
-    );
-    if (!ready) {
+    const result = await readiness();
+    if (!result.ready) {
       logger.warn("readiness_failed", {
         requestId: getRequestId(req),
         ip: req.ip ?? "unknown",
+        reason: result.reason ?? "unknown",
       });
       res.status(503).json({ status: "unavailable" });
       return;
@@ -813,6 +838,42 @@ export function createApp(
   return app;
 }
 
+interface TokenReloadOptions {
+  tokenFile: string | undefined;
+  allowWeakTokens: boolean;
+  store: MutableAuthTokenStore;
+  logger: Logger;
+}
+
+/**
+ * Re-reads and re-validates `MCP_AUTH_TOKEN_FILE` on SIGHUP. A failed reload
+ * keeps the previous tokens active; logs only counts or reasons, never values.
+ */
+function installTokenReload(options: TokenReloadOptions): void {
+  const { tokenFile, allowWeakTokens, store, logger } = options;
+  if (tokenFile === undefined || tokenFile === "") {
+    return;
+  }
+  process.on("SIGHUP", () => {
+    try {
+      const nextTokens = readAuthTokenFile(tokenFile);
+      assertStrongAuthTokens(
+        nextTokens,
+        allowWeakTokens,
+        "file",
+        (message) => logger.warn("auth_token_entropy_warning", { message }),
+      );
+      assertAuthTokensConfigured(nextTokens);
+      store.set(nextTokens);
+      logger.info("auth_tokens_reloaded", { count: nextTokens.length });
+    } catch (error) {
+      logger.warn("auth_tokens_reload_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+}
+
 export async function main() {
   let transportMode: TransportMode;
   try {
@@ -968,28 +1029,12 @@ export async function main() {
     authTokens.length > 0,
   );
 
-  // Re-read and re-validate the token file on SIGHUP. A failed reload keeps the
-  // previous tokens active; log only the count or the reason, never contents.
-  if (tokenFile !== undefined && tokenFile !== "") {
-    process.on("SIGHUP", () => {
-      try {
-        const nextTokens = readAuthTokenFile(tokenFile);
-        assertStrongAuthTokens(
-          nextTokens,
-          allowWeakTokens,
-          "file",
-          (message) => logger.warn("auth_token_entropy_warning", { message }),
-        );
-        assertAuthTokensConfigured(nextTokens);
-        tokenStore.set(nextTokens);
-        logger.info("auth_tokens_reloaded", { count: nextTokens.length });
-      } catch (error) {
-        logger.warn("auth_tokens_reload_failed", {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    });
-  }
+  installTokenReload({
+    tokenFile,
+    allowWeakTokens,
+    store: tokenStore,
+    logger,
+  });
 
   const app = createApp(backend, {
     logger,

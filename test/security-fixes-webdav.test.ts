@@ -147,7 +147,9 @@ describe("F9: full error pages mislabeled text/plain", () => {
     ).resolves.toHaveLength(1);
   });
 
-  it("only inspects the first 1024 characters for document markers", async () => {
+  // Known limitation: widening the scan window is an improvement, not a
+  // regression. This test pins the current bound so the cost stays explicit.
+  it("documents the 1024-character detection bound", async () => {
     const body = `${"x".repeat(1024)}\n` +
       "<!doctype html><html><body>late error</body></html>\n";
     vi.stubGlobal(
