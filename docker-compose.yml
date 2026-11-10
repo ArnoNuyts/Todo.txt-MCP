@@ -1,3 +1,9 @@
+# Quick start / local use only.
+#
+# MCP_AUTH_TOKEN is passed in the environment, where it is visible to
+# `docker inspect` and /proc/<pid>/environ. For a public host use
+# docker-compose.deploy.yml, which reads MCP_AUTH_TOKEN_FILE from a 0600 Docker
+# secret and adds the same log rotation.
 services:
   todo-txt-mcp:
     build: .
@@ -26,6 +32,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       # Mount a directory, not a single file: atomic writes replace the file
       # with a rename inside this directory.
@@ -37,7 +48,13 @@ services:
       - MCP_ALLOWED_ORIGINS=http://localhost:3000
       # Required unless you replace this line with MCP_AUTH_TOKENS or
       # MCP_AUTH_TOKEN_FILE. Compose refuses to start without it.
+      # Local convenience only: the value is visible via `docker inspect`.
+      # For a public host, switch to MCP_AUTH_TOKEN_FILE (see
+      # docker-compose.deploy.yml) and generate a 256-bit token.
       - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required}
+      # Metrics are disabled by default when HOST is non-loopback. Enable only
+      # with a separate MCP_METRICS_TOKEN and a proxy rule that permits it.
+      # - MCP_METRICS_ENABLED=0
       # Example overrides (uncomment to use)
       - TODOTXT_MCP_BACKEND=local
       - TODOTXT_MCP_LOCAL_FILENAME=/data/todo.txt

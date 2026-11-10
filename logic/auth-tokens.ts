@@ -10,19 +10,52 @@ import { readFileSync, statSync } from "node:fs";
  */
 
 export const MIN_TOKEN_LENGTH = 32;
+/** Recommended minimum for an `openssl rand -hex 32` token. */
+const RECOMMENDED_HEX_TOKEN_LENGTH = 64;
+/** Recommended minimum for a base64url-encoded random token. */
+const RECOMMENDED_BASE64URL_TOKEN_LENGTH = 43;
+
+const MIN_DISTINCT_TOKEN_CHARACTERS = 10;
+const WEAK_TOKEN_SUBSTRINGS = [
+  "password",
+  "secret",
+  "changeme",
+  "letmein",
+  "qwerty",
+  "admin",
+  "123456",
+];
 
 export interface AuthTokenSourceOptions {
   authToken?: string;
   authTokens?: string[];
 }
 
-type AuthTokenSource = "options" | "file" | "env" | "none";
+type AuthTokenOrigin = "options" | "file" | "env" | "none";
 
 export interface ResolvedAuthTokens {
   tokens: string[];
-  source: AuthTokenSource;
+  source: AuthTokenOrigin;
   filePath?: string;
 }
+
+/** Returns the current token list. Called per request so reloads take effect. */
+export type AuthTokenProvider = () => string[];
+
+/** Small object form of a token provider, suitable for a mutable store. */
+export interface AuthTokenStore {
+  get(): string[];
+}
+
+export interface MutableAuthTokenStore extends AuthTokenStore {
+  set(tokens: string[]): void;
+}
+
+export type AuthTokenSource =
+  | string
+  | string[]
+  | AuthTokenProvider
+  | AuthTokenStore;
 
 const warnedTokenFiles = new Set<string>();
 
@@ -51,6 +84,56 @@ export function parseAuthTokenList(
 
 function dedupe(tokens: string[]): string[] {
   return [...new Set(tokens)];
+}
+
+function isDynamicTokenSource(
+  source: AuthTokenSource | undefined,
+): source is AuthTokenProvider | AuthTokenStore {
+  return typeof source === "function" ||
+    (typeof source === "object" && source !== null && !Array.isArray(source) &&
+      typeof (source as AuthTokenStore).get === "function");
+}
+
+/**
+ * Normalizes a token source into a provider that is safe to call per request.
+ * Static strings and arrays are wrapped; dynamic sources are used as-is.
+ */
+export function toAuthTokenProvider(
+  source: AuthTokenSource | undefined,
+): AuthTokenProvider | undefined {
+  if (source === undefined) {
+    return undefined;
+  }
+  if (typeof source === "string") {
+    return () => [source];
+  }
+  if (Array.isArray(source)) {
+    return () => source;
+  }
+  if (typeof source === "function") {
+    return source;
+  }
+  return () => source.get();
+}
+
+/** True when a source can change between requests (provider or store). */
+export function isDynamicAuthTokenSource(
+  source: AuthTokenSource | undefined,
+): boolean {
+  return isDynamicTokenSource(source);
+}
+
+/** Creates a token store that `SIGHUP` reloads can atomically swap. */
+export function createAuthTokenStore(
+  initialTokens: string[],
+): MutableAuthTokenStore {
+  let tokens = dedupe(initialTokens);
+  return {
+    get: () => tokens,
+    set: (nextTokens: string[]) => {
+      tokens = dedupe(nextTokens);
+    },
+  };
 }
 
 /**
@@ -120,9 +203,18 @@ export function resolveAuthTokens(
     return { tokens: listTokens, source: "env" };
   }
 
-  const singleTokens = parseAuthTokenList(env.MCP_AUTH_TOKEN);
-  if (singleTokens.length > 0) {
-    return { tokens: singleTokens, source: "env" };
+  // A single-token variable must not silently split a passphrase into several
+  // weak tokens. Trim the edges, then reject internal whitespace or commas.
+  const single = env.MCP_AUTH_TOKEN?.trim();
+  if (single !== undefined && single !== "") {
+    if (/[\s,]/.test(single)) {
+      throw new Error(
+        "Invalid MCP_AUTH_TOKEN: it must contain exactly one token with no " +
+          "whitespace or commas. Use MCP_AUTH_TOKENS for a list or " +
+          "MCP_AUTH_TOKEN_FILE for a token file.",
+      );
+    }
+    return { tokens: [single], source: "env" };
   }
 
   return { tokens: [], source: "none" };
@@ -154,29 +246,90 @@ export function isWeakTokenOverrideEnabled(
 }
 
 /**
- * Rejects environment/file tokens shorter than {@link MIN_TOKEN_LENGTH}.
- * Explicit options are intentionally exempt so tests and embedders can use
- * short fixtures. Error messages never echo a token.
+ * True when a token is obviously guessable: a single repeated character, too
+ * few distinct characters, or a common weak substring. Length is checked
+ * separately so a long passphrase is still rejected.
+ */
+function isWeakAuthToken(token: string): boolean {
+  if (new Set(token).size < MIN_DISTINCT_TOKEN_CHARACTERS) {
+    return true;
+  }
+  const lower = token.toLowerCase();
+  return WEAK_TOKEN_SUBSTRINGS.some((needle) => lower.includes(needle));
+}
+
+function isHexToken(token: string): boolean {
+  return /^[0-9a-fA-F]+$/.test(token);
+}
+
+/**
+ * Warns when a token is long enough to start but shorter than the recommended
+ * CSPRNG shapes. A 32-42 character non-hex value may look strong but is easy to
+ * produce by hand; 64 hex or 43+ base64url characters are the safe targets.
+ * Returns the number of tokens that triggered a warning.
+ */
+function warnOnShortAuthTokens(
+  tokens: string[],
+  warn: (message: string) => void = console.warn,
+  source: "environment" | "file" | "env" | string = "environment",
+): number {
+  const shortish = tokens.filter((token) =>
+    token.length >= MIN_TOKEN_LENGTH &&
+    token.length < RECOMMENDED_BASE64URL_TOKEN_LENGTH &&
+    !isHexToken(token)
+  );
+  if (shortish.length === 0) {
+    return 0;
+  }
+  warn(
+    `[security] ${shortish.length} ${source} token(s) are ` +
+      `${MIN_TOKEN_LENGTH}-${RECOMMENDED_BASE64URL_TOKEN_LENGTH - 1} ` +
+      `characters and not hex. Prefer a generated token: ` +
+      `"openssl rand -hex 32" (${RECOMMENDED_HEX_TOKEN_LENGTH} hex ` +
+      `characters) or ${RECOMMENDED_BASE64URL_TOKEN_LENGTH}+ base64url ` +
+      `characters.`,
+  );
+  return shortish.length;
+}
+
+/**
+ * Rejects environment/file tokens that are shorter than
+ * {@link MIN_TOKEN_LENGTH} or obviously guessable. Explicit options are
+ * intentionally exempt so tests and embedders can use short fixtures. Error
+ * messages never echo a token.
  */
 export function assertStrongAuthTokens(
   tokens: string[],
   allowWeak: boolean,
   source: "environment" | "file" | "env" | string = "environment",
+  warn?: (message: string) => void,
 ): void {
   if (allowWeak || tokens.length === 0) {
     return;
   }
-  const weakCount = tokens.filter((token) =>
+
+  const shortCount = tokens.filter((token) =>
     token.length < MIN_TOKEN_LENGTH
   ).length;
-  if (weakCount === 0) {
-    return;
+  if (shortCount > 0) {
+    throw new Error(
+      `Refusing to start: ${shortCount} ${source} token(s) are shorter than ` +
+        `${MIN_TOKEN_LENGTH} characters. Generate a token with ` +
+        `"openssl rand -hex 32" or set MCP_ALLOW_WEAK_TOKEN=1 to override.`,
+    );
   }
-  throw new Error(
-    `Refusing to start: ${weakCount} ${source} token(s) are shorter than ` +
-      `${MIN_TOKEN_LENGTH} characters. Generate a token with ` +
-      `"openssl rand -hex 32" or set MCP_ALLOW_WEAK_TOKEN=1 to override.`,
-  );
+
+  const weakCount = tokens.filter(isWeakAuthToken).length;
+  if (weakCount > 0) {
+    throw new Error(
+      `Refusing to start: ${weakCount} ${source} token(s) look weak or ` +
+        `guessable (repeated characters, too few distinct characters, or a ` +
+        `common word). Generate a token with "openssl rand -hex 32" or set ` +
+        `MCP_ALLOW_WEAK_TOKEN=1 to override.`,
+    );
+  }
+
+  warnOnShortAuthTokens(tokens, warn, source);
 }
 
 /**

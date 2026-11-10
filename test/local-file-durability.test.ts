@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -21,9 +22,11 @@ import {
   withFileLock,
 } from "../logic/file-lock.ts";
 import {
+  cleanupStaleTempFiles,
   readTodosFromFile,
   writeTodosToFile,
 } from "../logic/todo-file-helpers.ts";
+import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import { Todo } from "../logic/todo.ts";
 
 describe("local file durability", () => {
@@ -425,6 +428,69 @@ describe("local file durability", () => {
       // Both the abandoned main lock and the fresh sidecar are still there.
       expect((await stat(lockPath)).isFile()).toBe(true);
       expect((await stat(reclaimPath)).isFile()).toBe(true);
+    });
+  });
+
+  describe("stale temp cleanup", () => {
+    async function createTempFile(
+      directory: string,
+      ageMs: number,
+      name = `.${randomUUID()}.tmp`,
+    ): Promise<string> {
+      const path = join(directory, name);
+      await writeFile(path, "partial");
+      const mtime = new Date(Date.now() - ageMs);
+      await utimes(path, mtime, mtime);
+      return path;
+    }
+
+    it("removes only old files that match the app temp pattern", async () => {
+      const filename = join(tempDir, "todo.txt");
+      await writeFile(filename, "task\n");
+      const oldTemp = await createTempFile(tempDir, 2 * 60 * 60 * 1_000);
+      const recentTemp = await createTempFile(tempDir, 5 * 60 * 1_000);
+      const unrelated = await createTempFile(
+        tempDir,
+        2 * 60 * 60 * 1_000,
+        ".not-a-uuid.tmp",
+      );
+
+      expect(cleanupStaleTempFiles(filename)).toBe(1);
+
+      const entries = await readdir(tempDir);
+      expect(entries).not.toContain(oldTemp.split("/").at(-1));
+      expect(entries).toContain(recentTemp.split("/").at(-1));
+      expect(entries).toContain(unrelated.split("/").at(-1));
+    });
+
+    it("tolerates a missing or read-only directory", async () => {
+      expect(
+        cleanupStaleTempFiles(join(tempDir, "missing", "todo.txt")),
+      ).toBe(0);
+
+      const filename = join(tempDir, "todo.txt");
+      await writeFile(filename, "task\n");
+      const oldTemp = await createTempFile(tempDir, 2 * 60 * 60 * 1_000);
+      await chmod(tempDir, 0o500);
+      try {
+        expect(cleanupStaleTempFiles(filename)).toBe(0);
+        expect((await stat(oldTemp)).isFile()).toBe(true);
+      } finally {
+        await chmod(tempDir, 0o700);
+      }
+    });
+
+    it("cleans up on LocalFileBackend construction without throwing", async () => {
+      const filename = join(tempDir, "todo.txt");
+      await writeFile(filename, "task\n");
+      const oldTemp = await createTempFile(tempDir, 2 * 60 * 60 * 1_000);
+      const recentTemp = await createTempFile(tempDir, 60_000);
+
+      expect(() => new LocalFileBackend(filename)).not.toThrow();
+
+      const entries = await readdir(tempDir);
+      expect(entries).not.toContain(oldTemp.split("/").at(-1));
+      expect(entries).toContain(recentTemp.split("/").at(-1));
     });
   });
 });

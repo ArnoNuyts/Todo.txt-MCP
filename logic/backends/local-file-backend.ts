@@ -1,7 +1,11 @@
 import type { TodoBackend } from "../backend.ts";
 import { Todo } from "../todo.ts";
 import { withFileLock, type FileLockOptions } from "../file-lock.ts";
-import { readTodosFromFile, writeTodosToFile } from "../todo-file-helpers.ts";
+import {
+  cleanupStaleTempFiles,
+  readTodosFromFile,
+  writeTodosToFile,
+} from "../todo-file-helpers.ts";
 
 export class LocalFileBackend implements TodoBackend {
   private readonly filename: string;
@@ -10,6 +14,9 @@ export class LocalFileBackend implements TodoBackend {
   constructor(filename: string, lockOptions: FileLockOptions = {}) {
     this.filename = filename;
     this.lockOptions = lockOptions;
+    // A killed writer can leave an abandoned temp file; clean old ones without
+    // making construction async or letting a read-only directory break startup.
+    cleanupStaleTempFiles(filename);
   }
 
   async load(): Promise<Todo[]> {

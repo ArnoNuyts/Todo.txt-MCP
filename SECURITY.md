@@ -37,8 +37,8 @@ authorization (there is a single shared todo file).
 - **Origin allowlist (`POST /mcp` only).** Cross-origin browser requests are
   only allowed from `http://localhost:3000` by default. The MCP transport
   enforces the allowlist on `POST /mcp`. Other methods on `/mcp` (`OPTIONS`,
-  `GET`, `DELETE`) and the `/healthz` and `/metrics` routes do not reject a
-  disallowed `Origin`; they rely on CORS header omission. They never emit
+  `GET`, `DELETE`) and the `/healthz`, `/readyz`, and `/metrics` routes do not
+  reject a disallowed `Origin`; they rely on CORS header omission. They never emit
   `Access-Control-Allow-Origin: *` and never reflect a disallowed origin, so a
   browser cannot read their responses. Requests without an `Origin` header
   (command-line clients, MCP clients) continue to work. If `MCP_ALLOWED_ORIGINS`
@@ -55,10 +55,19 @@ authorization (there is a single shared todo file).
   `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`; the framework
   name is not advertised. Structured logs never include tokens, bodies, or todo
   content.
-- `GET /healthz` returns `{"status":"ok"}` for health checks and is never
+- `GET /healthz` returns `{"status":"ok"}` for liveness checks and is never
   authenticated, but it is still subject to Host validation: a missing or
-  foreign `Host` header is rejected with `403`. `/mcp` and `/metrics` require a
-  bearer token; the server refuses to start when no token source is configured.
+  foreign `Host` header is rejected with `403`. `GET /readyz` is also
+  unauthenticated and Host-validated; it performs a bounded load/serialize of
+  the todo list and returns `503 {"status":"unavailable"}` when the backend is
+  broken, so use it for readiness probes and keep `/healthz` for liveness.
+  `/mcp` and `/metrics` require a bearer token; the server refuses to start
+  when no token source is configured.
+- **`/metrics` is off by default on a network deployment.** It is enabled when
+  the server binds loopback and disabled when `HOST` is non-loopback, unless
+  `MCP_METRICS_ENABLED` explicitly enables it. Set `MCP_METRICS_TOKEN` to keep
+  the metrics credential separate from the `/mcp` token. The proxy examples deny
+  `/metrics` as well.
 
 ### Configuration
 
@@ -68,11 +77,14 @@ authorization (there is a single shared todo file).
 | `PORT` | `3000` | Listen port (integer 0-65535). |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated hostnames accepted in the `Host` header. Hostnames only, no ports. |
 | `MCP_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed for browser clients. Empty disables CORS entirely. |
-| `MCP_AUTH_TOKEN` | **required** | Single bearer token. `/mcp` and `/metrics` require `Authorization: Bearer <token>`. The server refuses to start without at least one token source. |
+| `MCP_AUTH_TOKEN` | unset | Single bearer token. `/mcp` and `/metrics` require `Authorization: Bearer <token>`. At least one token source (`MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or `MCP_AUTH_TOKEN_FILE`) is required. |
 | `MCP_AUTH_TOKENS` | unset | Comma/whitespace separated list of active tokens for rotation. Takes precedence over `MCP_AUTH_TOKEN`. |
-| `MCP_AUTH_TOKEN_FILE` | unset | File containing one or more tokens. Takes precedence over both environment variables. Keep it mode `0600`. |
-| `MCP_ALLOW_WEAK_TOKEN` | unset | Set to `1` to allow environment/file tokens shorter than 32 characters. |
+| `MCP_AUTH_TOKEN_FILE` | unset | File containing one or more tokens. Takes precedence over both environment variables. Keep it mode `0600`. Reloaded on `SIGHUP`; an unreadable/empty file keeps the previous tokens. |
+| `MCP_ALLOW_WEAK_TOKEN` | unset | Set to `1` to allow env/file tokens shorter than 32 characters. Loopback-only: the server refuses to start with this override on a non-loopback `HOST`, and warns loudly when it is accepted. |
 | `MCP_LOG_LEVEL` | `info` | Structured JSON log level: `debug`, `info`, `warn`, or `error`. |
+| `MCP_METRICS_ENABLED` | loopback: on; non-loopback: off | Set to `1`/`true`/`yes` to enable `GET /metrics` on a non-loopback bind, or `0`/`false`/`no` to disable it anywhere. Disabled means `404`. |
+| `MCP_METRICS_TOKEN` | unset | Optional separate high-entropy token for `/metrics`. When set, only this token is accepted there; the `/mcp` token is rejected. |
+| `MCP_METRICS_RATE_LIMIT_PER_MIN` | `60` | Separate per-client rate limit for `/metrics`. `0` disables the metrics limiter; this limiter never triggers the `/mcp` auth ban. |
 | `MCP_READ_ONLY` | unset | Set to `1`, `true`, or `yes` (case-insensitive) to register only `list_todos`; mutating tools are absent. Any other value, including an unknown string, leaves writes enabled (fails open). |
 | `TRUST_PROXY` | `false` | Express `trust proxy` setting. Accepts `false`, `true`, a hop count, `loopback`, or an IP/CIDR list. Leave unset/false unless a trusted proxy is in front. |
 | `MCP_RATE_LIMIT_PER_MIN` | `60` | Requests per client key per minute. `0` disables the rate limiter. |
@@ -119,12 +131,20 @@ openssl rand -hex 32
 MCP_AUTH_TOKEN="$(openssl rand -hex 32)" npm start
 ```
 
-Or via Docker Compose:
+Or via Docker Compose. The quick-start file passes
+`MCP_AUTH_TOKEN` in the environment, which is convenient locally but visible to
+`docker inspect`. For a public host use the deploy file, which reads a Docker
+secret through `MCP_AUTH_TOKEN_FILE`:
 
-```yaml
-environment:
-  - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?set MCP_AUTH_TOKEN}
+```bash
+install -d -m 700 secrets
+openssl rand -hex 32 > secrets/mcp_auth_token.txt
+chmod 600 secrets/mcp_auth_token.txt
+docker compose -f docker-compose.deploy.yml up -d
 ```
+
+See [`deploy/README.md`](./deploy/README.md) and
+[`docs/single-user-deployment.md`](./docs/single-user-deployment.md).
 
 Clients then send:
 
@@ -143,23 +163,41 @@ to the repository. `.env` files are ignored by git; `.env.example` documents
 the variables without real secrets.
 
 The 32-character minimum is a floor, not an entropy guarantee. For an
-internet-facing deployment use a CSPRNG-generated 256-bit secret (64 hex
-characters from `openssl rand -hex 32`, or at least 43 base64url characters),
-not a passphrase. `MCP_ALLOW_WEAK_TOKEN=1` is a local-experiment escape hatch;
-it can admit very short tokens and should never be set on a public host.
+internet-facing deployment use a CSPRNG-generated 256-bit secret: 64 hex
+characters from `openssl rand -hex 32`, or at least 43 base64url characters.
+Do not use a passphrase, a repeated pattern, or anything that contains commas or
+whitespace. The server rejects values shorter than 32 characters and obviously
+weak patterns (a single repeated character, too few distinct characters, or a
+common word), and warns when a non-hex token is shorter than the recommended
+64-hex/43-base64url shape. A 32-character value can pass the floor; it is not
+the target for a public host.
+
+`MCP_ALLOW_WEAK_TOKEN=1` is a local-experiment escape hatch. It is **loopback
+only**: the server refuses to start with the override when `HOST` is
+non-loopback, and emits a loud startup warning when it is accepted on loopback.
+Never use it on a public host.
 
 ### Authentication model and deployment tiers
 
-This is a **shared static bearer token**, not an identity system. It is not
-OAuth 2.1 and has no per-client identity, scopes, expiry, revocation list, or
-attribution. Every holder of the token can read and modify the whole todo file,
-and every client behind one token is indistinguishable in the logs. Use these
-tiers to decide whether the model fits:
+This is a **shared static bearer token**, not an identity system. It is an
+API-key-grade gate: not OAuth 2.1 and not the MCP authorization profile. There
+is no per-client identity, scopes, expiry, revocation list, or attribution.
+Every holder of the token can read and modify the whole todo file, and every
+client behind one token is indistinguishable in the logs.
+
+Concretely, the server does **not** provide OAuth discovery: there is no
+`.well-known/oauth-protected-resource` document, no authorization-server
+metadata, no client registration, and no `resource_metadata` challenge. A client
+must support a manually configured `Authorization: Bearer <token>` header. If
+your client requires OAuth discovery, this deployment tier does not fit it; use
+an identity-aware proxy or a different client.
+
+Use these tiers to decide whether the model fits:
 
 | Deployment | Verdict |
 | --- | --- |
 | Loopback only, as shipped | Adequate for a local single user |
-| One user behind a TLS proxy | Adequate **only if** the token is 256-bit, `TRUST_PROXY` matches the real proxy, `/metrics` is blocked or proxy-protected, and one replica owns the file |
+| One user behind a TLS proxy | Adequate **only if** the token is 256-bit, `TRUST_PROXY` matches the real proxy, `/metrics` is disabled or separately protected, and one replica owns the file |
 | Small trusted team (shared file) | **Not adequate**: no per-client identity, scopes, revocation, or audit |
 | Public multi-tenant / SaaS | **Not adequate**: no tenant isolation, OAuth 2.1, or MCP resource metadata |
 | Multi-replica deployment | **Not adequate**: abuse state is per process and the file lock is process-local |
@@ -169,16 +207,27 @@ For the exact hardening steps required before public exposure, see
 
 Known limits of this model, even for the single-user tier:
 
-- A leaked token is valid until the operator removes it and restarts; there is
-  no expiry or revocation list and no `SIGHUP` reload.
-- The global auth-failure breaker is checked before authentication, so a
-  distributed burst can briefly return `503` to a client holding a valid token.
-- `/metrics` is an unthrottled token oracle (see below); protect it at the
-  proxy or keep it on loopback.
+- A leaked token remains valid until the operator removes it from the token
+  source and reloads (`SIGHUP`) or restarts. There is no expiry or revocation
+  list; revocation is deletion plus reload.
+- The global auth-failure breaker is designed to shed invalid traffic without
+  blocking a client that holds a valid token (TLS-4). Builds that check the
+  breaker before authentication can briefly return `503` to a valid token
+  during a distributed burst.
+- `/metrics` is disabled by default on a non-loopback bind, but if you enable it
+  it still shares the listener and process. Use a separate
+  `MCP_METRICS_TOKEN`, keep the proxy deny rule, and scrape from a trusted
+  network.
 - `MCP_READ_ONLY` is process-wide. It cannot give one client read-only access
   while another client writes.
-- Four or more active tokens in `MCP_AUTH_TOKENS` are fine for rotation, but
-  they still share one identity and one full-access scope.
+- Several active tokens in `MCP_AUTH_TOKENS` or the token file are fine for
+  rotation, but they still share one identity and one full-access scope.
+- One replica only. Abuse state is per process and the file lock is
+  process-local.
+
+Never put the token in a URL (`?token=…`, `/mcp/<token>`). Proxy access logs,
+browser history, shell history, and monitoring record URLs; the server only
+reads the `Authorization` header.
 
 If you need team or public exposure, put an identity-aware proxy (OIDC/mTLS)
 in front, or plan the move to per-client tokens with scopes and an audit trail;
@@ -187,16 +236,37 @@ the long-term MCP profile is OAuth 2.1 with RFC 9728 resource metadata.
 ### Token rotation
 
 Several tokens can be active at once. A request is authorized when it matches
-**any** configured token, so rotation does not require a flag day:
+**any** configured token, so rotation does not require a flag day. Precedence is
+`MCP_AUTH_TOKEN_FILE` > `MCP_AUTH_TOKENS` > `MCP_AUTH_TOKEN`; a token file wins
+so a stale environment list cannot keep an old secret valid.
+
+For a file-based deployment, rotate without restarting:
 
 ```bash
-# Accept both the old and new token while clients are updated.
-MCP_AUTH_TOKENS="$(cat old-token.txt),$(openssl rand -hex 32)" npm start
+# 1. Add the new token next to the old one (one per line).
+printf '%s\n%s\n' "$(cat secrets/mcp_auth_token.txt)" "$(openssl rand -hex 32)" \
+  > secrets/mcp_auth_token.txt.new
+chmod 600 secrets/mcp_auth_token.txt.new
+mv secrets/mcp_auth_token.txt.new secrets/mcp_auth_token.txt
+
+# 2. Reload the file (Docker example; use `kill -HUP <pid>` for a native app).
+docker kill --signal=HUP \
+  "$(docker compose -f docker-compose.deploy.yml ps -q todo-txt-mcp)"
+
+# 3. Update all clients, verify the new token, then leave only the new token
+#    in the file and send SIGHUP again.
 ```
 
-Once every client uses the new token, remove the old one and restart. Precedence
-is `MCP_AUTH_TOKEN_FILE` > `MCP_AUTH_TOKENS` > `MCP_AUTH_TOKEN`; a token file
-wins so a stale environment list cannot keep an old secret valid.
+`SIGHUP` re-reads `MCP_AUTH_TOKEN_FILE` atomically. If the file is missing,
+empty, unreadable, or contains no valid token, the **previous tokens stay
+active** and a warning is logged. Reload has no effect when the active source is
+`MCP_AUTH_TOKENS`/`MCP_AUTH_TOKEN`; restart for those. Where signals are
+unavailable (for example on Windows), restart and verify that the removed token
+returns `401`.
+
+The same procedure is the revocation path: delete the compromised token, send
+`SIGHUP`, and confirm `401` for the old value. See the runbook in
+[`docs/single-user-deployment.md`](./docs/single-user-deployment.md).
 
 ### File-based secrets
 
@@ -204,17 +274,27 @@ For containers and secret managers, point the server at a file instead of
 passing the secret in the environment:
 
 ```bash
-install -m 600 /dev/null /run/secrets/mcp_auth_tokens
-openssl rand -hex 32 > /run/secrets/mcp_auth_tokens
-MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens npm start
+install -d -m 700 secrets
+openssl rand -hex 32 > secrets/mcp_auth_token.txt
+chmod 600 secrets/mcp_auth_token.txt
+MCP_AUTH_TOKEN_FILE="$PWD/secrets/mcp_auth_token.txt" npm start
 ```
 
 The file may contain one token per line or a comma/whitespace separated list.
 The server warns once at startup if the file is readable by group or other on
 POSIX, and refuses to start if the file is missing, empty, or unreadable.
-Environment/file tokens shorter than 32 characters are rejected unless
-`MCP_ALLOW_WEAK_TOKEN=1` is set explicitly. Explicit programmatic options (used
-by the test suite) are exempt from the length check.
+Environment/file tokens shorter than 32 characters, and obvious weak patterns,
+are rejected. A 32–42 character non-hex token is accepted with a warning but is
+below the recommended 256-bit shape; prefer `openssl rand -hex 32`. The
+loopback-only `MCP_ALLOW_WEAK_TOKEN=1` escape hatch skips the checks. Explicit
+programmatic options (used by the test suite) are exempt.
+
+Docker Compose mounts a `secrets:` file read-only inside the container
+(typically mode `0444`), so the host-side `0600` mode and directory permissions
+are the real control. Keep the host file at `0600` and never mount the whole
+secrets directory. The app may log a one-time warning that the mounted file is
+group/other-readable; that is a Compose mount limitation, not a reason to loosen
+the host mode.
 
 ## Read-only mode
 
@@ -253,44 +333,93 @@ todo_mcp_responses_429_total
 todo_mcp_auth_failures_total
 ```
 
-Counters are per process and reset on restart. `/metrics` requires the same
-bearer token as `/mcp`. It deliberately bypasses the `/mcp` rate limiter,
-authentication-failure lockout, and global circuit breaker, so a metrics scraper
-cannot trip the login lockout. The same exemption makes `/metrics` an
-**unthrottled token oracle** if it is exposed: guesses against it are neither
-rate-limited nor banned. Keep it bound to loopback or protect it at the reverse
-proxy. Because metrics can reveal traffic patterns, place `/metrics` behind the
-same TLS proxy and bearer token you use for `/mcp`. Both `/mcp` and `/metrics`
-send `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
-`Cache-Control: no-store`.
+Counters are per process and reset on restart. `/metrics` is enabled when the
+server binds loopback and **disabled (404) when `HOST` is non-loopback**, unless
+`MCP_METRICS_ENABLED` explicitly enables it. The deploy Compose file sets
+`MCP_METRICS_ENABLED=0`, and the proxy examples return `404` for `/metrics`.
+
+By default `/metrics` accepts the same bearer token as `/mcp`. If you set a
+separate high-entropy `MCP_METRICS_TOKEN`, only that token is accepted there and
+the `/mcp` token is rejected. Metrics have their own per-client limiter
+(`MCP_METRICS_RATE_LIMIT_PER_MIN`, default 60; `0` disables it) and never
+trigger the `/mcp` authentication ban or global breaker; excess scrapes get
+`429` with `Retry-After`.
+
+If you enable metrics on a public listener, keep the proxy deny rule unless you
+really need remote scraping, use the separate token, and scrape from a trusted
+network. Because metrics can reveal traffic patterns, prefer loopback. Both
+`/mcp` and `/metrics` send `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, and `Cache-Control: no-store`.
 
 ## TLS via reverse proxy
 
 The server speaks plain HTTP. To expose it beyond the local machine, put a TLS
-terminating reverse proxy in front of it and keep the app bound to loopback.
+terminating reverse proxy in front of it and keep the app port on
+`127.0.0.1:3000`. The complete, copyable references are
+[`deploy/Caddyfile`](./deploy/Caddyfile) and
+[`deploy/nginx.conf`](./deploy/nginx.conf); [`deploy/README.md`](./deploy/README.md)
+explains the mapping.
 
-Example with Caddy:
+Both references:
+
+- terminate TLS and redirect HTTP to HTTPS;
+- send HSTS (`Strict-Transport-Security: max-age=31536000; includeSubDomains`);
+- cap request bodies at 64 KiB and set header/read timeouts;
+- rate limit at the proxy (Caddy `rate_limit` requires the
+  [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) plugin; nginx
+  uses `limit_req`);
+- forward `Host` and replace any client-supplied `X-Forwarded-For`;
+- return `404` for `/metrics` unless explicitly enabled;
+- proxy to `127.0.0.1:3000`.
+
+The key Caddy directives:
 
 ```caddyfile
+http://todo.example.com {
+    redir https://{host}{uri} permanent
+}
+
 todo.example.com {
-    reverse_proxy 127.0.0.1:3000
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    request_body { max_size 64KB }   # Caddy 2.10+
+
+    handle /metrics { respond 404 }
+
+    reverse_proxy 127.0.0.1:3000 {
+        header_up Host {host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
 }
 ```
 
-Example with nginx:
+The key nginx directives:
 
 ```nginx
+limit_req_zone $binary_remote_addr zone=todo_mcp:10m rate=60r/m;
+
 server {
     listen 443 ssl;
     server_name todo.example.com;
 
-    ssl_certificate     /etc/ssl/certs/todo.example.com.pem;
-    ssl_certificate_key /etc/ssl/private/todo.example.com.key;
+    ssl_certificate     /etc/letsencrypt/live/todo.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/todo.example.com/privkey.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    client_max_body_size 64k;
+    client_header_timeout 10s;
+    client_body_timeout 15s;
+
+    location = /metrics { return 404; }
 
     location / {
+        limit_req zone=todo_mcp burst=20 nodelay;
         proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
     }
 }
 ```
@@ -299,23 +428,148 @@ Guidance:
 
 - Keep the proxy and the MCP server on the same host / private network; do not
   publish the app port on a public interface.
-- Forward the original `Host` header (`proxy_set_header Host $host;`) and add
-  the public hostname to `MCP_ALLOWED_HOSTS`.
-- Set `TRUST_PROXY=loopback` (or the proxy's exact address/CIDR) when the
-  proxy and server share a host. Without it, every client appears as
-  `127.0.0.1` and one client's failures can lock out all clients.
-- Terminate TLS at the proxy, keep certificates up to date, and redirect HTTP
-  to HTTPS.
-- Combine TLS with `MCP_AUTH_TOKEN`; TLS protects the token in transit, the
+- Forward the original `Host` header and add the public hostname to
+  `MCP_ALLOWED_HOSTS`. Replace, do not append to, client-supplied
+  `X-Forwarded-For`.
+- Set `TRUST_PROXY=loopback` when the proxy and the Node process share the
+  host's loopback interface. If the app runs in Docker with a published
+  `127.0.0.1:3000` port, the container usually sees the Docker bridge gateway
+  (for example `172.17.0.1`) instead; trust that exact address/CIDR. Without a
+  matching setting, every client appears as the proxy and one client's failures
+  can lock out all clients. Never use `TRUST_PROXY=true` or a wildcard.
+- Terminate TLS at the proxy, keep certificates current, and redirect HTTP to
+  HTTPS.
+- Combine TLS with the bearer token: TLS protects the token in transit, the
   token protects the endpoint from unauthorized callers.
 - If the proxy and server are on different hosts, set `HOST=0.0.0.0` (or the
-  private interface) for the server and firewall the port so only the proxy
-  can reach it.
+  private interface) for the server and firewall the port so only the proxy can
+  reach it.
+- Keep the proxy's access-log retention and redaction separate from the app's
+  logs. Never log `Authorization` headers or query strings that might contain a
+  token.
 
+## Single-user deployment runbook
+
+This is the short form. The full commands and verification checklist are in
+[`docs/single-user-deployment.md`](./docs/single-user-deployment.md), with
+backup/restore detail in [`docs/backup-restore.md`](./docs/backup-restore.md).
+
+**Assumptions.** One user, one replica, proxy and app on the same host (or a
+private network), `/metrics` not public, and the token in a `0600` file or Docker
+secret. If any of those is false, stop and adjust `TRUST_PROXY`, the firewall,
+and the proxy rules first.
+
+### 1. Token generation and secret file mode
+
+```bash
+install -d -m 700 secrets
+openssl rand -hex 32 > secrets/mcp_auth_token.txt   # 64 hex chars = 256 bits
+chmod 600 secrets/mcp_auth_token.txt
+```
+
+- Use `MCP_AUTH_TOKEN_FILE`; do not pass the production token in a Compose
+  `environment:` value.
+- Docker Compose mounts the secret read-only (typically mode `0444` inside the
+  container); the host `0600` file and `secrets/` directory mode are the real
+  control. Never mount the directory into the container.
+- The file may hold several tokens, one per line, during rotation.
+- `MCP_ALLOW_WEAK_TOKEN` is loopback-only and refused on a non-loopback bind.
+
+### 2. Start and verify
+
+```bash
+docker compose -f docker-compose.deploy.yml up -d
+curl -fsS http://127.0.0.1:3000/healthz
+curl -o /dev/null -w '%{http_code}\n' https://todo.example.com/mcp    # 401
+curl -o /dev/null -w '%{http_code}\n' https://todo.example.com/metrics # 404
+```
+
+Set `MCP_ALLOWED_HOSTS` to the public hostname and `MCP_ALLOWED_ORIGINS` only if
+a browser client is used. Confirm the real client IP in the `msg:"request"`
+log line; otherwise `TRUST_PROXY` does not match the proxy.
+
+### 3. Client configuration
+
+The client must send the header explicitly:
+
+```json
+{
+  "mcpServers": {
+    "todo.txt": {
+      "type": "http",
+      "url": "https://todo.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+There is no OAuth discovery, so a client that requires it cannot use this tier.
+Use your client's secret store or environment interpolation; do not commit the
+token. **Never put the token in a URL** (`?token=…`, `/mcp/<token>`): proxies,
+browsers, shell history, and monitoring record URLs, and the server reads only
+the `Authorization` header.
+
+### 4. Rotation, reload, and revocation
+
+Overlap → `SIGHUP` → verify → remove old → `SIGHUP`:
+
+```bash
+printf '%s\n%s\n' "$(cat secrets/mcp_auth_token.txt)" "$(openssl rand -hex 32)" \
+  > secrets/mcp_auth_token.txt.new
+chmod 600 secrets/mcp_auth_token.txt.new
+mv secrets/mcp_auth_token.txt.new secrets/mcp_auth_token.txt
+docker kill --signal=HUP \
+  "$(docker compose -f docker-compose.deploy.yml ps -q todo-txt-mcp)"
+```
+
+`SIGHUP` re-reads the token file atomically. A missing, empty, unreadable, or
+invalid file keeps the previous tokens active and logs a warning. Reload has no
+effect for `MCP_AUTH_TOKENS`/`MCP_AUTH_TOKEN`; restart for those. Without signal
+support, restart and verify.
+
+Revocation is the same edit: remove the leaked token, send `SIGHUP`, and confirm
+the old value gets `401`. Then inspect logs and the todo file for unauthorized
+changes.
+
+### 5. Backups and restore
+
+- Snapshot `data/todo.txt` before upgrades, rotations, or bulk edits.
+- Keep 7–14 timestamped copies outside the container, mode `0600`, plus one
+  encrypted off-host copy if the data matters.
+- Local writes are atomic but not `fsync`ed, so a crash can lose the last
+  acknowledged write. A backup is the rollback.
+- Restore while the app is stopped: validate size/UTF-8, replace atomically,
+  start, then verify with `list_todos`. Keep the previous file until verified.
+
+See [`docs/backup-restore.md`](./docs/backup-restore.md).
+
+### 6. Incident steps
+
+1. Remove the suspect token, `SIGHUP`, and confirm `401`.
+2. Preserve container and proxy logs, and copy the current `todo.txt` before
+   restoring anything.
+3. Look for `401`/`429` bursts, `auth_failure_circuit_breaker`, unexpected
+   client `ip` values, and writes you did not make.
+4. Restore the newest verified backup if the file was modified.
+5. Generate new tokens, update clients, restart, verify, and review how the
+   token leaked (URL, shell history, client config, proxy log).
+
+### 7. Log retention and redaction
+
+- App logs contain no tokens, `Authorization` headers, request bodies, or todo
+  content. Keep `MCP_LOG_LEVEL=info` in production; `debug` is temporary.
+- Both Compose files use Docker `json-file` with `max-size: 10m` and
+  `max-file: 3` (about 30 MB per container).
+- Rotate proxy logs with `logrotate` or Caddy's log rolling. Do not log
+  `Authorization` or request bodies, and redact query strings if you ship logs
+  off-host.
+- Alert on `401`/`429` spikes, breaker lines, health/readiness failures, and
+  disk usage. Metrics counters are per process and reset on restart.
 ## Public exposure limits
 
 When `/mcp` is reachable by anything other than the local user, the server
-applies in-process abuse controls before authentication. They protect the
+applies in-process abuse controls at the HTTP boundary. They protect the
 backend from brute-force token guessing and request floods, but they are not a
 substitute for rate limiting and TLS at the proxy.
 
@@ -353,9 +607,12 @@ would lock out NATed users, so bans are always temporary.
 
 **Global circuit breaker.** More than `MCP_GLOBAL_AUTH_FAIL_LIMIT` failures
 across all client keys within `MCP_GLOBAL_AUTH_FAIL_WINDOW_SEC` trips a global
-breaker: `/mcp` returns `503` with `Retry-After` and a loud security log line
-until `MCP_GLOBAL_AUTH_FAIL_BAN_SEC` elapses. This catches distributed guessing
-that per-key limits cannot see.
+breaker: invalid `/mcp` traffic gets `503` with `Retry-After` and a loud security
+log line until `MCP_GLOBAL_AUTH_FAIL_BAN_SEC` elapses. This catches distributed
+guessing that per-key limits cannot see. A client presenting a valid token is
+not blocked solely because other clients failed (TLS-4); builds that check the
+breaker before authentication can still return `503` to a valid token during a
+burst.
 
 **Concurrency cap.** At most `MCP_MAX_CONCURRENCY` `POST /mcp` requests may be
 in flight. Additional work is rejected immediately with `503` and
@@ -404,15 +661,21 @@ Never enable it on a host that clients can reach directly: spoofed
 ### Public exposure checklist
 
 - [ ] Bind to loopback and terminate TLS at a trusted proxy.
-- [ ] Set a long random token (`MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or
-      `MCP_AUTH_TOKEN_FILE`). Startup fails without one; never bypass this.
-- [ ] Keep token files mode `0600` and rotate with overlapping tokens.
-- [ ] Set `TRUST_PROXY` only to the real proxy address/network.
+- [ ] Set a 256-bit token through `MCP_AUTH_TOKEN_FILE` (or the Docker secret
+      that feeds it). Startup fails without a token source; never bypass this.
+- [ ] Keep the token file mode `0600`, rotate with overlapping tokens, and
+      reload with `SIGHUP` (or restart if signals are unavailable).
+- [ ] Set `TRUST_PROXY` only to the real proxy address/network (`loopback` for a
+      same-host native proxy; the Docker gateway/CIDR for a published port).
 - [ ] Keep the default rate, lockout, and concurrency limits unless you have
       measured a reason to change them.
 - [ ] Add proxy-level rate limits and alert on `401`/`429` bursts.
-- [ ] Scrape `/metrics` from loopback or protect it at the proxy; it bypasses
-      the `/mcp` throttles and is an unthrottled token oracle.
+- [ ] Leave `/metrics` disabled or deny it at the proxy. If enabled, use a
+      separate `MCP_METRICS_TOKEN` and scrape from a trusted network.
+- [ ] Confirm `MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS` contain only the public
+      name and the exact browser origin.
+- [ ] Back up `data/todo.txt` before upgrades and keep a tested restore path.
+- [ ] Never put the token in a URL; send only `Authorization: Bearer`.
 - [ ] Monitor the `auth_failure_circuit_breaker` log line and the process's
       memory under sustained load.
 
