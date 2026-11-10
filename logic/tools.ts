@@ -113,6 +113,40 @@ function assertSingleLine(text: string, field: string): void {
   }
 }
 
+/**
+ * Validates text supplied by a write tool. Loaded todos are allowed to carry
+ * malformed dates, but new lines must be unambiguous and use real dates.
+ */
+function assertNewTodoText(text: string, field: string): void {
+  assertSingleLine(text, field);
+
+  if (text.trim() === "") {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} must contain at least one non-whitespace character. ` +
+        "Nothing was saved.",
+    );
+  }
+
+  const todo = new Todo(text);
+  if (todo.invalidDateTokens.length > 0) {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} contains an impossible date ` +
+        `(${todo.invalidDateTokens.join(", ")}). Nothing was saved.`,
+      { dates: todo.invalidDateTokens },
+    );
+  }
+
+  if (todo.hasTwoLeadingDates) {
+    throw new ToolFailure(
+      "INVALID_ARGUMENT",
+      `${field} starts with two dates; only one leading date is allowed. ` +
+        "Nothing was saved.",
+    );
+  }
+}
+
 async function todoLine(todo: Todo): Promise<string> {
   return `${await todo.getHash()} ${todo.toDisplayString()}`;
 }
@@ -221,7 +255,7 @@ async function addTodosOperation(
 ) {
   const { todos: texts } = CompactAddTodosSchema.parse(rawArgs);
   for (const text of texts) {
-    assertSingleLine(text, "Todo text");
+    assertNewTodoText(text, "Todo text");
   }
 
   return await withBackendLock(backend, async () => {
@@ -299,9 +333,11 @@ function parseTextUpdate(line: string): TextUpdate {
   assertSingleLine(line, "Update text");
   const match = /^([A-Za-z0-9_-]{8,64})\s+(.+)$/.exec(line.trim());
   if (match === null) {
+    // Never echo the input: update payloads may be large and are not secret,
+    // but returning them makes malformed input a noise amplifier.
     throw new ToolFailure(
       "INVALID_ARGUMENT",
-      `Each update must be '<hash> <text>': ${line}`,
+      "Each update must be '<hash> <text>'.",
     );
   }
   return { hash: match[1], text: match[2] };
@@ -348,6 +384,9 @@ async function updateTodosOperation(
 ) {
   const { updates } = CompactUpdateTodosSchema.parse(rawArgs);
   const parsed = updates.map(parseTextUpdate);
+  for (const update of parsed) {
+    assertNewTodoText(update.text, "Update text");
+  }
   const hashes = parsed.map((update) => update.hash);
   if (new Set(hashes).size !== hashes.length) {
     throw new ToolFailure(
@@ -379,7 +418,16 @@ async function updateTodosOperation(
 
     const updated: Todo[] = [];
     let changed = false;
+    let recurrencesAdded = 0;
     for (const { update, target } of resolved) {
+      if (target.hasTwoLeadingDates) {
+        throw new ToolFailure(
+          "INVALID_ARGUMENT",
+          `Cannot update ${update.hash}: the existing line starts with two ` +
+            "dates, so an update would silently drop one. Nothing was saved.",
+          { hash: update.hash },
+        );
+      }
       const { next, recurrence } = buildReplacement(target, update.text);
       const targetKey = target.toString();
       const nextKey = next.toString();
@@ -406,6 +454,7 @@ async function updateTodosOperation(
       }
       updated.push(next);
       if (recurrence) {
+        recurrencesAdded += 1;
         todos.push(recurrence);
         const recurrenceKey = recurrence.toString();
         lineCounts.set(
@@ -414,6 +463,25 @@ async function updateTodosOperation(
         );
         // The caller needs the new hash to complete the follow-up task.
         updated.push(recurrence);
+      }
+    }
+
+    // A completed recurring todo appends a follow-up line, so the limit must
+    // be checked after expansion and before the single atomic save.
+    if (recurrencesAdded > 0) {
+      const maxTodos = resolveMaxTodos();
+      if (todos.length > maxTodos) {
+        throw new ToolFailure(
+          "LIMIT_EXCEEDED",
+          `Cannot complete ${recurrencesAdded} recurring todo(s): the file ` +
+            `would contain ${todos.length} todos and the limit is ` +
+            `${maxTodos} (TODOTXT_MCP_MAX_TODOS). Nothing was saved.`,
+          {
+            maxTodos,
+            resultingCount: todos.length,
+            recurrenceCount: recurrencesAdded,
+          },
+        );
       }
     }
 
