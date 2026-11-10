@@ -1,7 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -10,23 +7,24 @@ import {
   type SecurityPostureInput,
 } from "../logic/security-posture.ts";
 import { createLogger } from "../logic/logging.ts";
+import {
+  parseLogRecords,
+  removeDirectory,
+  type RunningServer,
+  startServer,
+  stopServer,
+  temporaryDirectory,
+  waitForExit,
+  waitForLog,
+} from "./helpers/server-process.ts";
 
 const directories: string[] = [];
-const children: ChildProcess[] = [];
+const servers: RunningServer[] = [];
 
 afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => stopServer(server)));
   await Promise.all(
-    children.splice(0).map(async (child) => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGTERM");
-        await once(child, "exit");
-      }
-    }),
-  );
-  await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true })
-    ),
+    directories.splice(0).map((directory) => removeDirectory(directory)),
   );
 });
 
@@ -167,7 +165,7 @@ describe("security posture record", () => {
 
 describe("startup posture integration", () => {
   async function tempDirectory(): Promise<string> {
-    const directory = await mkdtemp(join(tmpdir(), "todo-txt-mcp-posture-"));
+    const directory = await temporaryDirectory("todo-txt-mcp-posture-");
     directories.push(directory);
     return directory;
   }
@@ -189,44 +187,11 @@ describe("startup posture integration", () => {
     delete env.MCP_AUTH_TOKENS;
     delete env.MCP_METRICS_TOKEN;
 
-    const child = spawn(process.execPath, [join(process.cwd(), "server.ts")], {
-      cwd: directory,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(child);
+    const server = await startServer({ cwd: directory, env });
+    servers.push(server);
+    await waitForLog(server, (record) => record.msg === "security_posture");
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    const deadline = Date.now() + 10_000;
-    while (
-      !stdout.includes("Server running") ||
-      !`${stdout}\n${stderr}`.includes('"msg":"security_posture"')
-    ) {
-      if (child.exitCode !== null || Date.now() > deadline) {
-        throw new Error(`server did not start:\n${stderr}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    const records = `${stdout}\n${stderr}`
-      .split("\n")
-      .filter((line) => line.startsWith("{"))
-      .flatMap((line) => {
-        try {
-          return [JSON.parse(line) as Record<string, unknown>];
-        } catch {
-          return [];
-        }
-      });
-    const postureRecords = records.filter((record) =>
+    const postureRecords = parseLogRecords(server.logs()).filter((record) =>
       record.msg === "security_posture"
     );
     expect(postureRecords).toHaveLength(1);
@@ -237,14 +202,14 @@ describe("startup posture integration", () => {
       readOnly: false,
       backend: "local",
     });
-    expect(`${stdout}\n${stderr}`).not.toContain(token);
+    expect(server.logs()).not.toContain(token);
   }, 15_000);
 
   it("fails startup for an invalid MCP_METRICS_ENABLED value", async () => {
     const directory = await tempDirectory();
     await writeFile(join(directory, "todo.txt"), "task\n");
 
-    const child = spawn(process.execPath, [join(process.cwd(), "server.ts")], {
+    const server = await startServer({
       cwd: directory,
       env: {
         ...process.env,
@@ -254,22 +219,12 @@ describe("startup posture integration", () => {
         MCP_METRICS_ENABLED: "on",
         TODOTXT_MCP_LOCAL_FILENAME: "todo.txt",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      waitForReady: false,
     });
-    children.push(child);
+    servers.push(server);
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    const [code] = await once(child, "exit") as [number | null];
-    expect(code).toBe(1);
-    expect(stderr).toContain("MCP_METRICS_ENABLED");
-    expect(stdout).not.toContain("Server running");
+    expect(await waitForExit(server.child)).toBe(1);
+    expect(server.stderr()).toContain("MCP_METRICS_ENABLED");
+    expect(server.stdout()).not.toContain("Server running");
   }, 15_000);
 });

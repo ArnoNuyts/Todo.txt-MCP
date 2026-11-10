@@ -6,14 +6,12 @@ import {
   parseRecurrence,
   startOfUtcDay,
 } from "./recurrence.ts";
+import { parseTodoHeader } from "./todo-date-header.ts";
 import {
   CONTEXT_REGEX,
   PROJECT_REGEX,
   TAG_REGEX,
 } from "./tokens.ts";
-
-const TODO_REGEX =
-  /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
 
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
 
@@ -88,54 +86,19 @@ export class Todo {
 
   constructor(text: string) {
     const originalLine = text;
-    const match = text.match(TODO_REGEX);
-    if (match?.groups) {
-      const { done, completionDate, creationDate, rest } = match.groups;
-      const completion = completionDate
-        ? parseDateTag(completionDate)
-        : undefined;
-      const creation = creationDate ? parseDateTag(creationDate) : undefined;
-      if (
-        (completionDate !== undefined && completion === undefined) ||
-        (creationDate !== undefined && creation === undefined)
-      ) {
-        // A regex-valid but impossible date must never become an Invalid Date.
-        // Keep every leading date token as literal text so the line keeps its
-        // original bytes and remains hashable.
-        if (completionDate !== undefined && completion === undefined) {
-          this.dateIssues.invalidTokens.push(completionDate);
-        }
-        if (creationDate !== undefined && creation === undefined) {
-          this.dateIssues.invalidTokens.push(creationDate);
-        }
-        if (!done && completionDate !== undefined && creationDate !== undefined) {
-          this.dateIssues.ambiguous = true;
-        }
-        const prefix = [completionDate, creationDate]
-          .filter((token): token is string => token !== undefined)
-          .map((token) => `${token} `)
-          .join("");
-        text = prefix + rest;
-      } else if (done) {
-        // A completed todo is stored as "x <completionDate> <creationDate>":
-        // the first optional date is the completion date, the second the
-        // creation date. A lone date is therefore a completion date.
-        this.completionDate = completion;
-        this.creationDate = creation;
-        text = rest;
-      } else {
-        // An open todo has no completion date; its creation date is the last
-        // leading date. Two leading dates are ambiguous, so remember that a
-        // write must not silently discard the earlier token.
-        if (completionDate !== undefined && creationDate !== undefined) {
-          this.dateIssues.ambiguous = true;
-        }
-        this.creationDate = creation ?? completion;
-        this.completionDate = undefined;
-        text = rest;
-      }
-      this.priority = match.groups.prio as UpperCaseLetter;
-      this.state = match.groups.done ? TodoStateEnum.done : TodoStateEnum.todo;
+    const parsed = parseTodoHeader(text);
+    if (parsed !== undefined) {
+      this.priority = parsed.priority;
+      this.state = parsed.done
+        ? TodoStateEnum.done
+        : TodoStateEnum.todo;
+      this.completionDate = parsed.header.completionDate;
+      this.creationDate = parsed.header.creationDate;
+      this.dateIssues = {
+        invalidTokens: [...parsed.header.issues.invalidTokens],
+        ambiguous: parsed.header.issues.ambiguous,
+      };
+      text = parsed.header.literalPrefix + parsed.rest;
     }
     this.setText(text);
     this.originalLine = originalLine;
