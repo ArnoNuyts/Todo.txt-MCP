@@ -40,6 +40,27 @@ describe("todo date header", () => {
     expect(parsed?.rest).toBe("task");
   });
 
+  it("keeps a valid completion date when the creation token is impossible", () => {
+    const parsed = parseTodoHeader("x 2024-01-01 2024-13-01 task");
+
+    expect(parsed?.header.completionDate?.toISOString()).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect(parsed?.header.creationDate).toBeUndefined();
+    expect(parsed?.header.literalPrefix).toBe("2024-01-01 2024-13-01 ");
+  });
+
+  it("drops both dates when both leading tokens are impossible", () => {
+    const parsed = parseTodoHeader("2024-13-01 2024-02-30 task");
+
+    expect(parsed?.header.completionDate).toBeUndefined();
+    expect(parsed?.header.creationDate).toBeUndefined();
+    expect(parsed?.header.issues.invalidTokens).toEqual([
+      "2024-13-01",
+      "2024-02-30",
+    ]);
+  });
+
   it("marks an open todo with two date tokens as ambiguous", () => {
     expect(
       parseTodoHeader("2024-01-01 2024-02-02 task")?.header.issues.ambiguous,

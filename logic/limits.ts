@@ -11,13 +11,11 @@ export class LimitExceededError extends Error {
   readonly byteLength: number;
   readonly maxFileBytes: number;
 
-  constructor(
-    source: string,
-    byteLength: number,
-    maxFileBytes: number,
-    message: string,
-  ) {
-    super(message);
+  constructor(source: string, byteLength: number, maxFileBytes: number) {
+    super(
+      `${source} is too large: ${byteLength} bytes exceeds the ` +
+        `${maxFileBytes}-byte limit set by TODOTXT_MCP_MAX_FILE_BYTES.`,
+    );
     this.name = "LimitExceededError";
     this.source = source;
     this.byteLength = byteLength;
@@ -79,12 +77,6 @@ export function assertFileSizeWithinLimit(
   maxFileBytes: number,
 ): void {
   if (byteLength > maxFileBytes) {
-    throw new LimitExceededError(
-      source,
-      byteLength,
-      maxFileBytes,
-      `${source} is too large: ${byteLength} bytes exceeds the ` +
-        `${maxFileBytes}-byte limit set by TODOTXT_MCP_MAX_FILE_BYTES.`,
-    );
+    throw new LimitExceededError(source, byteLength, maxFileBytes);
   }
 }

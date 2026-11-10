@@ -192,12 +192,20 @@ describe("D5: shared body reader for load and write-probe", () => {
       ...fastRetry,
       ...(maxFileBytes === undefined ? {} : { maxFileBytes }),
     });
-    await expect(
-      backend.withLock(async () => {
+    let error: unknown;
+    try {
+      await backend.withLock(async () => {
         await backend.load();
         await backend.save([new Todo("new")]);
-      }),
-    ).rejects.toThrow(/could not be confirmed/);
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      name: "BackendConflictError",
+      details: { backend: "webdav", reason: "outcome-unknown" },
+    });
+    expect((error as Error).message).toMatch(/could not be confirmed/);
   }
 
   it("treats an HTML error page read-back as an unknown outcome", async () => {
@@ -221,5 +229,50 @@ describe("D5: shared body reader for load and write-probe", () => {
       () => response("x".repeat(64), 200, { "Content-Type": "text/plain" }),
       10,
     );
+  });
+
+  it("rejects an oversized Content-Length before reading the probe body", async () => {
+    await saveWithProbe(
+      () =>
+        response("x", 200, {
+          "Content-Type": "text/plain",
+          "Content-Length": "999",
+        }),
+      10,
+    );
+  });
+
+  it("treats invalid UTF-8 in the read-back as unknown", async () => {
+    await saveWithProbe(
+      () => response(new Uint8Array([0xff]), 200, {
+        "Content-Type": "text/plain",
+      }),
+    );
+  });
+
+  it("accepts a missing Content-Type when the read-back matches", async () => {
+    let getCount = 0;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        getCount += 1;
+        if (getCount === 1) {
+          return response("old\n", 200, {
+            "Content-Type": "text/plain",
+            ETag: '"v1"',
+          });
+        }
+        return response("new\n", 200);
+      }
+      return response("", 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new WebDavBackend(url, undefined, undefined, fastRetry);
+
+    await expect(
+      backend.withLock(async () => {
+        await backend.load();
+        await backend.save([new Todo("new")]);
+      }),
+    ).resolves.toBeUndefined();
   });
 });

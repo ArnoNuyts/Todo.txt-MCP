@@ -413,6 +413,37 @@ describe("review follow-ups", () => {
     expect(() => todo.toDisplayString()).toThrow(AmbiguousTodoError);
   });
 
+  it("round-trips the mirror done mixed line without duplicating the date", async () => {
+    const raw = "x 2024-01-01 2024-13-01 task";
+    const todo = new Todo(raw);
+
+    expect(todo.completionDate?.toISOString()).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect(todo.toString()).toBe(raw);
+    expect(todo.toDisplayString()).toBe(raw);
+    await expect(todo.getHash()).resolves.toBeDefined();
+  });
+
+  it("keeps the valid date of a loaded done mixed line when it is updated", async () => {
+    const backend = new MockBackend();
+    const raw = "x 2024-13-01 2024-01-01 task";
+    const target = new Todo(raw);
+    await backend.save([target]);
+
+    const result = await updateTodosHandler(backend, {
+      updates: [`${await target.getHash()} x task edited`],
+    });
+
+    expect(result).not.toMatchObject({ isError: true });
+    expect(backend.getTodos().map((todo) => todo.toString())).toEqual([
+      "x 2024-01-01 task edited",
+    ]);
+    expect(
+      new Todo(backend.getTodos()[0].toString()).completionDate?.toISOString(),
+    ).toBe("2024-01-01T00:00:00.000Z");
+  });
+
   it("round-trips an impossible-date line through the local file backend", async () => {
     const directory = await mkdtemp(join(tmpdir(), "todo-secfix-"));
     const filename = join(directory, "todo.txt");
