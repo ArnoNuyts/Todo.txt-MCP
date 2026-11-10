@@ -7,7 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import type { Readable, Writable } from "node:stream";
 
@@ -30,6 +30,7 @@ import {
 import {
   assertAuthTokensConfigured,
   assertStrongAuthTokens,
+  type AuthTokenOrigin,
   createAuthTokenStore,
   isWeakTokenOverrideEnabled,
   readAuthTokenFile,
@@ -72,6 +73,8 @@ import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 import { serializeTodoContent } from "./logic/content.ts";
+import { probeReadiness } from "./logic/readiness.ts";
+import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
 import {
   addTodosHandler,
   CompactAddTodosSchema,
@@ -413,33 +416,42 @@ export type CreateAppOptions = HttpSecurityOptions & {
   readinessTimeoutMs?: number;
 };
 
-/**
- * Loads and serializes the todo list within `timeoutMs`. Resolves `false` on
- * failure or timeout; never exposes the error or the file contents.
- */
-async function probeReadiness(
-  backend: TodoBackend,
-  timeoutMs: number,
-): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const work = (async () => {
-    const todos = await backend.load();
-    serializeTodoContent(todos);
-    return true;
-  })().catch(() => false);
+interface RateLimitMiddlewareOptions {
+  limiter: SlidingWindowLimiter;
+  clientKey: (req: { ip?: string }) => string;
+  logger: Logger;
+  event: string;
+  message: string;
+}
 
-  const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
-    timer.unref();
-  });
-
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
+/** Shared 429/header handling for the `/mcp` and `/metrics` limiters. */
+function createRateLimitMiddleware(
+  options: RateLimitMiddlewareOptions,
+): (req: Request, res: Response, next: NextFunction) => void {
+  return (req, res, next) => {
+    const key = options.clientKey(req);
+    const limit = options.limiter.check(key);
+    if (limit.limit > 0) {
+      res.setHeader("RateLimit-Limit", String(limit.limit));
+      res.setHeader("RateLimit-Remaining", String(limit.remaining));
+      res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
     }
-  }
+    if (!limit.allowed) {
+      options.logger.warn(options.event, {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        retryAfterSec: limit.retryAfterSec,
+      });
+      res.setHeader("Retry-After", String(limit.retryAfterSec));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: options.message },
+        id: null,
+      });
+      return;
+    }
+    next();
+  };
 }
 
 export function createApp(
@@ -457,6 +469,13 @@ export function createApp(
   const metrics = createMetrics();
   const metricsConfig = resolveMetricsConfig(options.metrics, process.env);
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const mcpRateLimit = createRateLimitMiddleware({
+    limiter: abuse.limiter,
+    clientKey: abuse.clientKey,
+    logger,
+    event: "rate_limited",
+    message: "Too many requests.",
+  });
   const app = express();
 
   // Do not advertise the framework.
@@ -560,28 +579,7 @@ export function createApp(
       return;
     }
 
-    const limit = abuse.limiter.check(key);
-    if (limit.limit > 0) {
-      res.setHeader("RateLimit-Limit", String(limit.limit));
-      res.setHeader("RateLimit-Remaining", String(limit.remaining));
-      res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
-    }
-    if (!limit.allowed) {
-      logger.warn("rate_limited", {
-        requestId: getRequestId(req),
-        ip: req.ip ?? "unknown",
-        retryAfterSec: limit.retryAfterSec,
-      });
-      res.setHeader("Retry-After", String(limit.retryAfterSec));
-      res.status(429).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Too many requests." },
-        id: null,
-      });
-      return;
-    }
-
-    next();
+    mcpRateLimit(req, res, next);
   });
 
   if (authTokenProvider !== undefined || authTokens.length > 0) {
@@ -664,30 +662,16 @@ export function createApp(
       ...(abuseOverrides.now === undefined ? {} : { now: abuseOverrides.now }),
     });
 
-    app.use("/metrics", (req: Request, res: Response, next) => {
-      const key = abuse.clientKey(req);
-      const limit = metricsLimiter.check(key);
-      if (limit.limit > 0) {
-        res.setHeader("RateLimit-Limit", String(limit.limit));
-        res.setHeader("RateLimit-Remaining", String(limit.remaining));
-        res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
-      }
-      if (!limit.allowed) {
-        logger.warn("metrics_rate_limited", {
-          requestId: getRequestId(req),
-          ip: req.ip ?? "unknown",
-          retryAfterSec: limit.retryAfterSec,
-        });
-        res.setHeader("Retry-After", String(limit.retryAfterSec));
-        res.status(429).json({
-          jsonrpc: "2.0",
-          error: { code: -32000, message: "Too many metrics requests." },
-          id: null,
-        });
-        return;
-      }
-      next();
-    });
+    app.use(
+      "/metrics",
+      createRateLimitMiddleware({
+        limiter: metricsLimiter,
+        clientKey: abuse.clientKey,
+        logger,
+        event: "metrics_rate_limited",
+        message: "Too many metrics requests.",
+      }),
+    );
 
     // When a separate metrics token is configured it is the only credential
     // accepted here. Otherwise reuse the /mcp token but bypass its lockout.
@@ -858,6 +842,11 @@ export async function main() {
   }
 
   const backend = createBackend(config);
+  if (config.backend === "local") {
+    // A killed writer can leave an abandoned temp file; clean old ones at the
+    // composition root rather than as a backend-constructor side effect.
+    cleanupStaleTempFiles(config.local.filename);
+  }
 
   if (transportMode === "stdio") {
     // stdio mode skips HTTP-only concerns: bearer tokens, host/origin
@@ -927,7 +916,7 @@ export async function main() {
   // Resolve and validate bearer tokens before building the app so a weak or
   // unreadable secret fails fast instead of silently disabling authentication.
   let authTokens: string[] = [];
-  let authTokenSource: "file" | "env" | "options" | "none" = "none";
+  let authTokenSource: AuthTokenOrigin = "none";
   try {
     if (tokenFile !== undefined && tokenFile !== "") {
       warnOnInsecureTokenFile(tokenFile);
@@ -958,13 +947,13 @@ export async function main() {
   // Keep the active list in a mutable store so SIGHUP can swap it atomically.
   const tokenStore = createAuthTokenStore(authTokens);
 
-  const proxyWarnings: string[] = [];
-  warnOnProxyPosture(host, trustProxy, (message, fields) => {
-    if (typeof fields?.code === "string") {
-      proxyWarnings.push(fields.code);
-    }
-    logger.warn("proxy_posture_warning", { ...fields, message });
-  });
+  const proxyWarnings = warnOnProxyPosture(
+    host,
+    trustProxy,
+    (message, fields) => {
+      logger.warn("proxy_posture_warning", { ...fields, message });
+    },
+  ).map((warning) => warning.code);
 
   const metricsTokenSource = !metricsConfig.enabled
     ? "none" as const

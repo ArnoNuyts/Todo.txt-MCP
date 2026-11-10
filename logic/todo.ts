@@ -18,6 +18,21 @@ const TODO_REGEX =
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
 
 /**
+ * Domain error for mutating a line whose two leading dates cannot be
+ * canonicalised without dropping one. Callers should reject the write with
+ * `INVALID_ARGUMENT` instead of guessing.
+ */
+export class AmbiguousTodoError extends Error {
+  constructor() {
+    super(
+      "This todo starts with two dates; editing it would silently drop one. " +
+        "Delete and re-add it instead.",
+    );
+    this.name = "AmbiguousTodoError";
+  }
+}
+
+/**
  * Serializes tags, emitting a repeated `key:value` token for every value of a
  * multi-valued tag. `Array.toString()` would join them with a comma, which is
  * not a valid todo.txt tag separator and silently loses values.
@@ -83,6 +98,9 @@ export class Todo {
         if (creationDate !== undefined && creation === undefined) {
           this.invalidDateTokens.push(creationDate);
         }
+        if (!done && completionDate !== undefined && creationDate !== undefined) {
+          this.hasTwoLeadingDates = true;
+        }
         const prefix = [completionDate, creationDate]
           .filter((token): token is string => token !== undefined)
           .map((token) => `${token} `)
@@ -121,6 +139,9 @@ export class Todo {
   }
   /** Toggles completion and returns a recurrence todo when one is spawned. */
   toggleState(completedAt: Date = new Date()): { recurrence?: Todo } {
+    if (this.hasTwoLeadingDates) {
+      throw new AmbiguousTodoError();
+    }
     this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;

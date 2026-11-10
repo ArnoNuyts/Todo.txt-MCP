@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
-import { Todo } from "../logic/todo.ts";
+import { AmbiguousTodoError, Todo } from "../logic/todo.ts";
 import {
   addTodosHandler,
   deleteTodosHandler,
@@ -359,6 +359,31 @@ describe("review follow-ups", () => {
 
     expect(todo.toString()).toBe(raw);
     expect(todo.toDisplayString()).toBe(raw);
+  });
+
+  it("treats an invalid date followed by a valid date as ambiguous too", async () => {
+    const raw = "2024-13-01 2024-01-01 task";
+    const todo = new Todo(raw);
+    const backend = new MockBackend();
+    await backend.save([todo]);
+    const saveSpy = vi.spyOn(backend, "save");
+
+    const result = await updateTodosHandler(backend, {
+      updates: [`${await todo.getHash()} task edited`],
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(errorCodeOf(result)).toBe("INVALID_ARGUMENT");
+    expect(textOf(result)).toContain("two");
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(snapshot(backend)).toEqual([raw]);
+  });
+
+  it("refuses to toggle a two-date line without dropping a date", () => {
+    const todo = new Todo("2024-01-01 2024-02-02 task");
+
+    expect(() => todo.toggleState()).toThrow(AmbiguousTodoError);
+    expect(todo.toString()).toBe("2024-01-01 2024-02-02 task");
   });
 
   it("round-trips an impossible-date line through the local file backend", async () => {

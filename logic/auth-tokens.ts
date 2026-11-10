@@ -31,7 +31,7 @@ export interface AuthTokenSourceOptions {
   authTokens?: string[];
 }
 
-type AuthTokenOrigin = "options" | "file" | "env" | "none";
+export type AuthTokenOrigin = "options" | "file" | "env" | "none";
 
 export interface ResolvedAuthTokens {
   tokens: string[];

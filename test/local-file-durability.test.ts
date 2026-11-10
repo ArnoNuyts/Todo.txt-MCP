@@ -480,13 +480,16 @@ describe("local file durability", () => {
       }
     });
 
-    it("cleans up on LocalFileBackend construction without throwing", async () => {
+    it("cleans up at the composition root without a constructor side effect", async () => {
       const filename = join(tempDir, "todo.txt");
       await writeFile(filename, "task\n");
       const oldTemp = await createTempFile(tempDir, 2 * 60 * 60 * 1_000);
       const recentTemp = await createTempFile(tempDir, 60_000);
 
       expect(() => new LocalFileBackend(filename)).not.toThrow();
+      expect(await readdir(tempDir)).toContain(oldTemp.split("/").at(-1));
+
+      expect(cleanupStaleTempFiles(filename)).toBe(1);
 
       const entries = await readdir(tempDir);
       expect(entries).not.toContain(oldTemp.split("/").at(-1));

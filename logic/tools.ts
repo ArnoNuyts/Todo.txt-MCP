@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { Todo } from "./todo.ts";
+import { AmbiguousTodoError, Todo } from "./todo.ts";
 import { filterTodos } from "./Todos.ts";
 import { TodoStateEnum } from "../types/enums.ts";
 import type { TodoBackend } from "./backend.ts";
 import { withBackendLock } from "./backend-lock.ts";
 import { resolveMaxTodos } from "./limits.ts";
+import { RecurrenceRangeError } from "./recurrence.ts";
 import { guardTool, notFoundError, ToolFailure } from "./tool-errors.ts";
 
 // Schemas
@@ -362,7 +363,21 @@ function buildReplacement(target: Todo, text: string): {
       const requestedCompletion = next.completionDate;
       next.state = TodoStateEnum.todo;
       next.completionDate = undefined;
-      recurrence = next.toggleState(requestedCompletion).recurrence;
+      try {
+        recurrence = next.toggleState(requestedCompletion).recurrence;
+      } catch (error) {
+        if (
+          error instanceof RecurrenceRangeError ||
+          error instanceof AmbiguousTodoError
+        ) {
+          throw new ToolFailure("INVALID_ARGUMENT", error.message, {
+            ...(error instanceof RecurrenceRangeError
+              ? { amount: error.recurrence.amount, unit: error.recurrence.unit }
+              : {}),
+          });
+        }
+        throw error;
+      }
     }
   } else {
     next.completionDate = undefined;

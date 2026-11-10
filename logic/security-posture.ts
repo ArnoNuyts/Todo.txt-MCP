@@ -1,3 +1,4 @@
+import type { AuthTokenOrigin } from "./auth-tokens.ts";
 import { isLoopbackHost, type TrustProxyValue } from "./http-security.ts";
 import type { Logger } from "./logging.ts";
 
@@ -7,7 +8,7 @@ import type { Logger } from "./logging.ts";
  * token values, request bodies, or todo content.
  */
 
-type PostureTokenSource = "file" | "env" | "options" | "none";
+type PostureTokenSource = AuthTokenOrigin;
 
 /** Where `/metrics` gets its credential from, if it has one. */
 type MetricsTokenSource = "env" | "mcp" | "none";
