@@ -309,7 +309,9 @@ exhaust the process memory:
   (default: `1048576`, i.e. 1 MiB). An oversized file is rejected before it is
   parsed.
 - `TODOTXT_MCP_MAX_TODOS`: Maximum total number of todos (default: `10000`).
-  `add_todos` rejects an add that would exceed this limit and saves nothing.
+  The limit is checked after recurrence expansion, so an add or a completion
+  that would append a follow-up past the cap fails with `LIMIT_EXCEEDED` and
+  saves nothing.
 
 ### File configuration example
 
@@ -326,12 +328,14 @@ exhaust the process memory:
 
 - **Four tools:** `list_todos`, `add_todos`, `update_todos`, `delete_todos`.
   There are no tool profiles.
-- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`) registers only
-  `list_todos`; mutating tools are absent from `tools/list` and cannot be
-  called. Prompts and resources remain available.
+- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`, case-insensitive)
+  registers only `list_todos`; mutating tools are absent from `tools/list` and
+  cannot be called. Prompts and resources remain available. Any other value,
+  including an unrecognized string, leaves writes enabled.
 - **Text-only:** successful results are `hash text` lines. No
-  `structuredContent` and no output schemas. Errors still carry a stable
-  `structuredContent.error.code`.
+  `structuredContent` and no output schemas. Handler failures carry a stable
+  `structuredContent.error.code`; schema-bound input violations are rejected by
+  the MCP SDK with `-32602` and no structured error object.
 - **Batch-first, text-first:** `add_todos` and `update_todos` both take arrays
   of todo.txt lines; `delete_todos` takes hashes.
 - **Benchmark:** the multi-item add/edit/status/pagination workflow costs
@@ -348,8 +352,9 @@ exhaust the process memory:
   are never logged.
 - **Metrics:** `GET /metrics` serves in-memory Prometheus counters
   (`todo_mcp_requests_total`, auth failures, and response classes). It requires
-  the bearer token when authentication is enabled and is open otherwise, so keep
-  the server on loopback or scrape it through the protected proxy.
+  the bearer token, but bypasses the `/mcp` rate limiter, authentication
+  lockout, and global breaker, so it is an unthrottled token oracle: keep the
+  server on loopback or protect `/metrics` at the proxy.
 
 See [SECURITY.md](SECURITY.md) for rotation, file permissions, and exposure
 guidance.
@@ -377,7 +382,9 @@ guidance.
 `due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
 Completing a recurring todo follows the usual todo.txt convention:
 `rec:+1w` advances from the due date, `rec:1w` from the completion date, and
-a `t:` threshold keeps its offset from the due date.
+a `t:` threshold keeps its offset from the due date. Month and year recurrences
+clamp to the last day of the target month (`2026-01-31` + `rec:+1m` is
+`2026-02-28`; `2024-02-29` + `rec:+1y` is `2025-02-28`).
 
 All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
@@ -395,12 +402,27 @@ today's creation date. Additions never create duplicates; a recurrence spawned
 by completing a todo is always added.
 
 Todo text must be valid Unicode without line separators or control characters
-(tab is allowed). Unchanged lines are written back byte-for-byte, so saving
-does not reorder tags or rewrite CRLF endings.
+(tab is allowed). Bidi controls (U+202A–U+202E, U+2066–U+2069) are accepted as
+ordinary text; they cannot create a new line, but they can visually reorder
+terminal output. Unchanged lines are written back byte-for-byte, so saving does
+not reorder tags or rewrite CRLF endings.
 
-Failures return `isError: true` with a stable machine-readable code in
+Calendar dates must be real dates. `add_todos` and `update_todos` reject
+impossible values in a leading date field, such as `2024-13-01 task` or
+`2024-02-30 task`, with `INVALID_ARGUMENT` and save nothing. A date-only string
+without a trailing space is plain text, not a date field. A pre-existing file
+that already contains an impossible date stays listable, hashable, and
+deletable; the raw line is preserved. An edit never silently drops a date: a
+line carrying two leading date tokens is rejected with `INVALID_ARGUMENT`
+rather than rewritten with one date. Error messages for malformed update lines
+do not echo the submitted payload; they describe the expected `<hash> <text>`
+shape.
+
+Handler failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
-`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`.
+`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`. Schema-bound input violations
+(for example an array over the batch limit) are rejected by the MCP SDK with
+`-32602` and do not include a `structuredContent.error` object.
 
 ### MCP resources
 
@@ -442,13 +464,20 @@ Lock takeover is conservative:
 
 Local writes are atomic (temp file plus rename), preserve the existing file
 mode, refuse to replace a read-only file, and reject any write that would
-exceed `TODOTXT_MCP_MAX_FILE_BYTES` before creating a temp file. Reads use
-strict UTF-8 decoding and refuse invalid bytes instead of silently rewriting
-them with replacement characters.
+exceed `TODOTXT_MCP_MAX_FILE_BYTES` before creating a temp file. Atomicity is
+not durability: the temp file and its directory are not fsynced, so a power
+loss can lose the most recently acknowledged write even though readers never
+observe a partially written file. A writer killed between creating the temp
+file and renaming it can leave a stale `.<uuid>.tmp` file next to the todo
+file; it is inert and safe to delete. Reads use strict UTF-8 decoding and
+refuse invalid bytes instead of silently rewriting them with replacement
+characters.
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
-reload with `list_todos` before retrying. A `200` body with an HTML content
+reload with `list_todos` before retrying. Reads use `redirect: "manual"` and
+reject any `3xx` response, so point `TODOTXT_MCP_WEBDAV_URL` at the final
+resource URL instead of relying on a redirect. A `200` body with an HTML content
 type is rejected, and HTML/XML error pages are rejected even when a proxy
 omits or mislabels `Content-Type`, before any of them can be parsed as todos.
 When a PUT fails after it may have reached storage, the

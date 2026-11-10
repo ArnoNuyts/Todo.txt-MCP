@@ -34,13 +34,21 @@ authorization (there is a single shared todo file).
   are accepted by default: `localhost`, `127.0.0.1`, `[::1]`. Ports are
   ignored, and a missing or invalid `Host` header is rejected with a `403`
   JSON-RPC error.
-- **Origin allowlist.** Cross-origin browser requests are only allowed from
-  `http://localhost:3000` by default. Requests without an `Origin` header
-  (command-line clients, MCP clients) continue to work. CORS never emits
-  `Access-Control-Allow-Origin: *`. If `MCP_ALLOWED_ORIGINS` is empty, no CORS
-  headers are emitted and any request that carries an `Origin` header is
-  rejected with a `403`; clients without an `Origin` header still work.
-- **Request body limit.** Request bodies are capped at 64 KiB.
+- **Origin allowlist (`POST /mcp` only).** Cross-origin browser requests are
+  only allowed from `http://localhost:3000` by default. The MCP transport
+  enforces the allowlist on `POST /mcp`. Other methods on `/mcp` (`OPTIONS`,
+  `GET`, `DELETE`) and the `/healthz` and `/metrics` routes do not reject a
+  disallowed `Origin`; they rely on CORS header omission. They never emit
+  `Access-Control-Allow-Origin: *` and never reflect a disallowed origin, so a
+  browser cannot read their responses. Requests without an `Origin` header
+  (command-line clients, MCP clients) continue to work. If `MCP_ALLOWED_ORIGINS`
+  is empty, no CORS headers are emitted and `POST /mcp` requests that carry an
+  `Origin` header are rejected with a `403`.
+- **Request body limit.** Request bodies are capped at 64 KiB. `POST /mcp`
+  accepts `application/json` and `application/*+json`; any other declared media
+  type is rejected with `415`. A request with **no** `Content-Type` header is
+  treated as `application/json`, so command-line clients that omit it still
+  work.
 - The server is stateless (`sessionIdGenerator: undefined`) and returns JSON
   responses rather than long-lived SSE streams.
 - `/mcp` and `/metrics` send `X-Content-Type-Options: nosniff`,
@@ -48,8 +56,9 @@ authorization (there is a single shared todo file).
   name is not advertised. Structured logs never include tokens, bodies, or todo
   content.
 - `GET /healthz` returns `{"status":"ok"}` for health checks and is never
-  authenticated. `/mcp` and `/metrics` require a bearer token; the server
-  refuses to start when no token source is configured.
+  authenticated, but it is still subject to Host validation: a missing or
+  foreign `Host` header is rejected with `403`. `/mcp` and `/metrics` require a
+  bearer token; the server refuses to start when no token source is configured.
 
 ### Configuration
 
@@ -64,7 +73,7 @@ authorization (there is a single shared todo file).
 | `MCP_AUTH_TOKEN_FILE` | unset | File containing one or more tokens. Takes precedence over both environment variables. Keep it mode `0600`. |
 | `MCP_ALLOW_WEAK_TOKEN` | unset | Set to `1` to allow environment/file tokens shorter than 32 characters. |
 | `MCP_LOG_LEVEL` | `info` | Structured JSON log level: `debug`, `info`, `warn`, or `error`. |
-| `MCP_READ_ONLY` | unset | Set to `1`, `true`, or `yes` to register only `list_todos`; mutating tools are absent. |
+| `MCP_READ_ONLY` | unset | Set to `1`, `true`, or `yes` (case-insensitive) to register only `list_todos`; mutating tools are absent. Any other value, including an unknown string, leaves writes enabled (fails open). |
 | `TRUST_PROXY` | `false` | Express `trust proxy` setting. Accepts `false`, `true`, a hop count, `loopback`, or an IP/CIDR list. Leave unset/false unless a trusted proxy is in front. |
 | `MCP_RATE_LIMIT_PER_MIN` | `60` | Requests per client key per minute. `0` disables the rate limiter. |
 | `MCP_AUTH_FAIL_LIMIT` | `10` | Failed authentications before a client key is temporarily banned. |
@@ -95,6 +104,10 @@ all logs go to stderr.
 Authentication is **mandatory**. The server refuses to start when none of
 `MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or `MCP_AUTH_TOKEN_FILE` is set, or when
 every configured value is empty.
+
+The exported `createApp()` factory can build an app without tokens for tests and
+embedders. That auth-off mode is not reachable from `main()`, which always
+resolves a token source and exits when none is configured.
 
 Set a long, random token and pass it to clients as a bearer token:
 
@@ -128,6 +141,48 @@ Note that bearer tokens are only as private as the transport. Do not send the
 token over plain HTTP across a network you do not trust, and do not commit it
 to the repository. `.env` files are ignored by git; `.env.example` documents
 the variables without real secrets.
+
+The 32-character minimum is a floor, not an entropy guarantee. For an
+internet-facing deployment use a CSPRNG-generated 256-bit secret (64 hex
+characters from `openssl rand -hex 32`, or at least 43 base64url characters),
+not a passphrase. `MCP_ALLOW_WEAK_TOKEN=1` is a local-experiment escape hatch;
+it can admit very short tokens and should never be set on a public host.
+
+### Authentication model and deployment tiers
+
+This is a **shared static bearer token**, not an identity system. It is not
+OAuth 2.1 and has no per-client identity, scopes, expiry, revocation list, or
+attribution. Every holder of the token can read and modify the whole todo file,
+and every client behind one token is indistinguishable in the logs. Use these
+tiers to decide whether the model fits:
+
+| Deployment | Verdict |
+| --- | --- |
+| Loopback only, as shipped | Adequate for a local single user |
+| One user behind a TLS proxy | Adequate **only if** the token is 256-bit, `TRUST_PROXY` matches the real proxy, `/metrics` is blocked or proxy-protected, and one replica owns the file |
+| Small trusted team (shared file) | **Not adequate**: no per-client identity, scopes, revocation, or audit |
+| Public multi-tenant / SaaS | **Not adequate**: no tenant isolation, OAuth 2.1, or MCP resource metadata |
+| Multi-replica deployment | **Not adequate**: abuse state is per process and the file lock is process-local |
+
+For the exact hardening steps required before public exposure, see
+[`SINGLE_USER_TLS_TASKLIST.md`](./SINGLE_USER_TLS_TASKLIST.md).
+
+Known limits of this model, even for the single-user tier:
+
+- A leaked token is valid until the operator removes it and restarts; there is
+  no expiry or revocation list and no `SIGHUP` reload.
+- The global auth-failure breaker is checked before authentication, so a
+  distributed burst can briefly return `503` to a client holding a valid token.
+- `/metrics` is an unthrottled token oracle (see below); protect it at the
+  proxy or keep it on loopback.
+- `MCP_READ_ONLY` is process-wide. It cannot give one client read-only access
+  while another client writes.
+- Four or more active tokens in `MCP_AUTH_TOKENS` are fine for rotation, but
+  they still share one identity and one full-access scope.
+
+If you need team or public exposure, put an identity-aware proxy (OIDC/mTLS)
+in front, or plan the move to per-client tokens with scopes and an audit trail;
+the long-term MCP profile is OAuth 2.1 with RFC 9728 resource metadata.
 
 ### Token rotation
 
@@ -163,11 +218,14 @@ by the test suite) are exempt from the length check.
 
 ## Read-only mode
 
-Set `MCP_READ_ONLY=1` (also `true` or `yes`) to register only `list_todos`.
-`add_todos`, `update_todos`, and `delete_todos` are absent from `tools/list` and
-cannot be called. The `todo_format` prompt and all MCP resources remain
-available. An explicit `{ readOnly: false }` programmatic option overrides the
-environment variable.
+Set `MCP_READ_ONLY=1` (also `true` or `yes`, case-insensitive) to register only
+`list_todos`. Only those exact values enable it; every other value — including
+`on`, `truee`, or an empty string — leaves the write tools enabled, so a typo
+fails open rather than locking the agent out of writes. `add_todos`,
+`update_todos`, and `delete_todos` are absent from `tools/list` and cannot be
+called. The `todo_format` prompt and all MCP resources remain available. An
+explicit `{ readOnly: false }` programmatic option overrides the environment
+variable.
 
 ## Structured logging and metrics
 
@@ -195,13 +253,16 @@ todo_mcp_responses_429_total
 todo_mcp_auth_failures_total
 ```
 
-Counters are per process and reset on restart. When a token is configured,
-`/metrics` requires the same bearer token as `/mcp`; when authentication is
-disabled the endpoint is open, matching the local-first default. Because metrics
-can reveal traffic patterns, keep the server bound to loopback or place
-`/metrics` behind the same TLS proxy and bearer token you use for `/mcp`. Both
-`/mcp` and `/metrics` send `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: no-referrer`, and `Cache-Control: no-store`.
+Counters are per process and reset on restart. `/metrics` requires the same
+bearer token as `/mcp`. It deliberately bypasses the `/mcp` rate limiter,
+authentication-failure lockout, and global circuit breaker, so a metrics scraper
+cannot trip the login lockout. The same exemption makes `/metrics` an
+**unthrottled token oracle** if it is exposed: guesses against it are neither
+rate-limited nor banned. Keep it bound to loopback or protect it at the reverse
+proxy. Because metrics can reveal traffic patterns, place `/metrics` behind the
+same TLS proxy and bearer token you use for `/mcp`. Both `/mcp` and `/metrics`
+send `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+`Cache-Control: no-store`.
 
 ## TLS via reverse proxy
 
@@ -240,6 +301,9 @@ Guidance:
   publish the app port on a public interface.
 - Forward the original `Host` header (`proxy_set_header Host $host;`) and add
   the public hostname to `MCP_ALLOWED_HOSTS`.
+- Set `TRUST_PROXY=loopback` (or the proxy's exact address/CIDR) when the
+  proxy and server share a host. Without it, every client appears as
+  `127.0.0.1` and one client's failures can lock out all clients.
 - Terminate TLS at the proxy, keep certificates up to date, and redirect HTTP
   to HTTPS.
 - Combine TLS with `MCP_AUTH_TOKEN`; TLS protects the token in transit, the
@@ -299,7 +363,12 @@ in flight. Additional work is rejected immediately with `503` and
 
 **Connection timeouts.** After `listen()`, the server sets
 `requestTimeout = 15s`, `headersTimeout = 10s`, and `keepAliveTimeout = 5s` to
-cut off slow-header and slow-body connections.
+cut off slow-header and slow-body connections. Node enforces the request and
+header deadlines on its connections-checking tick, controlled by
+`connectionsCheckingInterval` (default 30s). The configured 10s/15s values are
+therefore quantized: slow-header and slow-body cutoffs are observed at roughly
+30s unless the interval is lowered for the process, or the proxy in front
+enforces shorter deadlines.
 
 `GET /healthz` is registered before all abuse controls and is never rate
 limited or authenticated, so orchestrators can still probe the process.
@@ -342,7 +411,8 @@ Never enable it on a host that clients can reach directly: spoofed
 - [ ] Keep the default rate, lockout, and concurrency limits unless you have
       measured a reason to change them.
 - [ ] Add proxy-level rate limits and alert on `401`/`429` bursts.
-- [ ] Scrape `/metrics` from loopback or protect it with the bearer token.
+- [ ] Scrape `/metrics` from loopback or protect it at the proxy; it bypasses
+      the `/mcp` throttles and is an unthrottled token oracle.
 - [ ] Monitor the `auth_failure_circuit_breaker` log line and the process's
       memory under sustained load.
 

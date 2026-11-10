@@ -140,6 +140,21 @@ function looksLikeHtml(text: string): boolean {
     .test(text.slice(0, 1024));
 }
 
+/**
+ * A full HTML/XML document is an error page even when a proxy mislabels it as
+ * `text/plain`. A lone `<html>` token can legitimately appear in todo text, so
+ * only document-level markers are rejected for plain text.
+ */
+function looksLikeHtmlDocument(text: string): boolean {
+  const prefix = text.slice(0, 1024);
+  const hasHtmlElement = /<html\b/i.test(prefix);
+  return /<!doctype\s+html/i.test(prefix) ||
+    /<\?xml/i.test(prefix) ||
+    (hasHtmlElement &&
+      /<(?:head|body|title|meta|script|form)\b|<\/(?:html|head|body)\s*>/i
+        .test(prefix));
+}
+
 /** Servers may normalise EOLs or the trailing newline of the stored body. */
 function hasSameTodoContent(left: string, right: string): boolean {
   const normalize = (value: string) =>
@@ -305,7 +320,18 @@ export class WebDavBackend implements TodoBackend {
     const response = await this.fetchWithRetry({
       method: "GET",
       headers: this.getHeaders(),
+      // A redirect changes which resource is parsed as the todo file. Reads,
+      // like writes, must describe the resource at the configured URL.
+      redirect: "manual",
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      await discardBody(response);
+      throw new Error(
+        `WebDAV load was redirected (${response.status} ${response.statusText}). ` +
+          "Refusing to follow a redirect for a read.",
+      );
+    }
 
     if (!response.ok) {
       if (response.status === 404) {
@@ -356,7 +382,10 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    if (mediaTypeOf(contentType) !== "text/plain" && looksLikeHtml(text)) {
+    const isErrorPage = mediaTypeOf(contentType) === "text/plain"
+      ? looksLikeHtmlDocument(text)
+      : looksLikeHtml(text);
+    if (isErrorPage) {
       throw new Error(
         "Failed to load todos from WebDAV: the response looks like an HTML " +
           "error page, not a todo file. The stored file was not modified.",

@@ -48,29 +48,65 @@ export class Todo {
    */
   private originalLine: string | undefined;
   private originalSerialized: string | undefined;
+  /**
+   * Leading date tokens that matched {@link TODO_REGEX} but are not real
+   * calendar dates. They are kept as text rather than as an Invalid Date so a
+   * loaded line can always be serialized and hashed.
+   */
+  invalidDateTokens: string[] = [];
+  /**
+   * True when an open todo starts with two valid dates. Only one can be its
+   * creation date, so editing such a line would silently drop a token; write
+   * operations reject it instead.
+   */
+  hasTwoLeadingDates = false;
 
   constructor(text: string) {
     const originalLine = text;
     const match = text.match(TODO_REGEX);
     if (match?.groups) {
-      const { done, completionDate, creationDate } = match.groups;
-      if (done) {
+      const { done, completionDate, creationDate, rest } = match.groups;
+      const completion = completionDate
+        ? parseDateTag(completionDate)
+        : undefined;
+      const creation = creationDate ? parseDateTag(creationDate) : undefined;
+      if (
+        (completionDate !== undefined && completion === undefined) ||
+        (creationDate !== undefined && creation === undefined)
+      ) {
+        // A regex-valid but impossible date must never become an Invalid Date.
+        // Keep every leading date token as literal text so the line keeps its
+        // original bytes and remains hashable.
+        if (completionDate !== undefined && completion === undefined) {
+          this.invalidDateTokens.push(completionDate);
+        }
+        if (creationDate !== undefined && creation === undefined) {
+          this.invalidDateTokens.push(creationDate);
+        }
+        const prefix = [completionDate, creationDate]
+          .filter((token): token is string => token !== undefined)
+          .map((token) => `${token} `)
+          .join("");
+        text = prefix + rest;
+      } else if (done) {
         // A completed todo is stored as "x <completionDate> <creationDate>":
         // the first optional date is the completion date, the second the
         // creation date. A lone date is therefore a completion date.
-        this.completionDate = completionDate
-          ? new Date(completionDate)
-          : undefined;
-        this.creationDate = creationDate ? new Date(creationDate) : undefined;
+        this.completionDate = completion;
+        this.creationDate = creation;
+        text = rest;
       } else {
-        // An open todo has no completion date; a lone date is its creation
-        // date.
-        const date = creationDate ?? completionDate;
-        this.creationDate = date ? new Date(date) : undefined;
+        // An open todo has no completion date; its creation date is the last
+        // leading date. Two leading dates are ambiguous, so remember that a
+        // write must not silently discard the earlier token.
+        if (completionDate !== undefined && creationDate !== undefined) {
+          this.hasTwoLeadingDates = true;
+        }
+        this.creationDate = creation ?? completion;
         this.completionDate = undefined;
+        text = rest;
       }
       this.priority = match.groups.prio as UpperCaseLetter;
-      text = match.groups.rest as string;
       this.state = match.groups.done ? TodoStateEnum.done : TodoStateEnum.todo;
     }
     this.setText(text);
@@ -78,8 +114,8 @@ export class Todo {
     try {
       this.originalSerialized = this.serialize();
     } catch {
-      // Keep construction permissive for malformed dates; serialization will
-      // fail with the original error when the line is actually written.
+      // Keep construction permissive for programmatic mutation; a loaded line
+      // with malformed dates is handled above and never reaches this catch.
       this.originalSerialized = undefined;
     }
   }
@@ -135,7 +171,9 @@ export class Todo {
     const serialized = this.serialize();
     if (
       this.originalLine !== undefined &&
-      serialized === this.originalSerialized
+      // A two-date line cannot be canonicalised without dropping a token, so
+      // keep the raw line until the caller deletes or explicitly rewrites it.
+      (this.hasTwoLeadingDates || serialized === this.originalSerialized)
     ) {
       return this.originalLine;
     }
@@ -164,6 +202,10 @@ export class Todo {
   }
 
   toDisplayString() {
+    if (this.hasTwoLeadingDates && this.originalLine !== undefined) {
+      // Show both dates so the user can see why an update is rejected.
+      return this.originalLine;
+    }
     return (this.isDone() ? "x " : "") +
       (this.priority ? `(${this.priority}) ` : "") +
       // Creation dates are omitted from the display string. Only a completed
