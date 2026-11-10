@@ -1,31 +1,55 @@
 import type { TodoBackend } from "./backend.ts";
 import { serializeTodoContent } from "./content.ts";
 
+export interface ReadinessResult {
+  ready: boolean;
+  /** Server-side only; never sent to the client. */
+  reason?: string;
+}
+
 /**
- * Loads and serializes the todo list within `timeoutMs`. Resolves `false` on
- * failure or timeout; never exposes the error or the file contents.
+ * Builds a single-flight readiness probe. Timed-out probes keep the underlying
+ * load running once; later probes reuse it instead of starting another load.
  */
-export async function probeReadiness(
+export function createReadinessProbe(
   backend: TodoBackend,
   timeoutMs: number,
-): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const work = (async () => {
-    const todos = await backend.load();
-    serializeTodoContent(todos);
-    return true;
-  })().catch(() => false);
+): () => Promise<ReadinessResult> {
+  let inFlight: Promise<ReadinessResult> | undefined;
 
-  const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
-    timer.unref();
-  });
+  const run = async (): Promise<ReadinessResult> => {
+    let timer: NodeJS.Timeout | undefined;
+    const work = (async () => {
+      const todos = await backend.load();
+      serializeTodoContent(todos);
+      return { ready: true } as const;
+    })().catch((error: unknown) => ({
+      ready: false as const,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
 
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
+    const timeout = new Promise<ReadinessResult>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ ready: false, reason: "readiness timeout" });
+      }, Math.max(1, timeoutMs));
+      timer.unref();
+    });
+
+    try {
+      return await Promise.race([work, timeout]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     }
-  }
+  };
+
+  return () => {
+    if (inFlight === undefined) {
+      inFlight = run().finally(() => {
+        inFlight = undefined;
+      });
+    }
+    return inFlight;
+  };
 }

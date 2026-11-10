@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../server.ts";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
 import type { TodoBackend } from "../logic/backend.ts";
+import { createReadinessProbe } from "../logic/readiness.ts";
 import type { Todo } from "../logic/todo.ts";
 
 describe("readiness probe", () => {
@@ -91,5 +92,37 @@ describe("readiness probe", () => {
 
     const health = await fetch(`${baseUrl}/healthz`);
     expect(health.status).toBe(200);
+  });
+
+  it("shares one in-flight load across concurrent probes", async () => {
+    let loads = 0;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return [];
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 1_000);
+
+    const results = await Promise.all([probe(), probe(), probe()]);
+
+    expect(results).toEqual([{ ready: true }, { ready: true }, { ready: true }]);
+    expect(loads).toBe(1);
+  });
+
+  it("returns a server-side reason when the backend fails", async () => {
+    const backend: TodoBackend = {
+      load: async () => {
+        throw new Error("backend unavailable");
+      },
+      save: async () => {},
+    };
+
+    await expect(createReadinessProbe(backend, 1_000)()).resolves.toEqual({
+      ready: false,
+      reason: "backend unavailable",
+    });
   });
 });
