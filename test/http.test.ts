@@ -400,6 +400,18 @@ describe("MCP HTTP endpoint", () => {
     expect(body.result?.serverInfo?.name).toBe("todo.txt-mcp");
   });
 
+  it("keeps grouped security options when a flat alias is explicitly undefined", async () => {
+    const token = "grouped-token-aaaaaaaaaaaaaaaaaaaaaaaa";
+    await restartApp({
+      security: { authToken: token },
+      authToken: undefined,
+    });
+
+    const response = await postWithToken(token);
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+
   it("requires a bearer token on /mcp when configured", async () => {
     await restartApp({ authToken: "s3cret-token" });
 

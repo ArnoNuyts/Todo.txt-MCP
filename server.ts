@@ -475,12 +475,32 @@ function createRateLimitMiddleware(
   };
 }
 
+/** Flat security fields override the grouped form only when actually set. */
+function resolveSecurityOptions(
+  options: CreateAppOptions,
+): HttpSecurityOptions {
+  const flat: HttpSecurityOptions = {};
+  if (options.allowedHosts !== undefined) {
+    flat.allowedHosts = options.allowedHosts;
+  }
+  if (options.allowedOrigins !== undefined) {
+    flat.allowedOrigins = options.allowedOrigins;
+  }
+  if (options.authToken !== undefined) {
+    flat.authToken = options.authToken;
+  }
+  if (options.authTokens !== undefined) {
+    flat.authTokens = options.authTokens;
+  }
+  return { ...options.security, ...flat };
+}
+
 export function createApp(
   backend: TodoBackend,
   options: CreateAppOptions = {},
 ) {
   const { allowedHosts, allowedOrigins, authTokens, authTokenProvider } =
-    resolveHttpSecurityOptions({ ...options.security, ...options });
+    resolveHttpSecurityOptions(resolveSecurityOptions(options));
   const tokenSource = authTokenProvider ?? authTokens;
   const abuseOverrides = options.limits?.abuse ?? options.abuse ?? {};
   const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
@@ -943,9 +963,9 @@ export async function main() {
 
   // Resolve metrics before building the app: invalid boolean/rate values and
   // a weak separate metrics token fail startup with a clear message.
-  let metricsConfig: ReturnType<typeof resolveMetricsConfig>;
+  let metricsConfig: ResolvedMetricsConfig;
   try {
-    metricsConfig = resolveMetricsConfig({}, process.env);
+    metricsConfig = resolveMetricsConfig({ host }, process.env);
     if (metricsConfig.token !== undefined) {
       assertStrongMetricsToken(
         metricsConfig.token,
