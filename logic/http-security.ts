@@ -83,12 +83,13 @@ export function resolveHttpSecurityOptions(
     ? toAuthTokenProvider(options.authTokens)
     : undefined;
   if (dynamicProvider !== undefined) {
-    const authTokens = dynamicProvider().filter((entry) => entry !== "");
+    // Dynamic sources are read per request; do not snapshot them here, or
+    // `authTokens` would go stale after the first reload.
     return {
       allowedHosts,
       allowedOrigins,
-      authToken: authTokens[0],
-      authTokens,
+      authToken: undefined,
+      authTokens: [],
       authTokenProvider: dynamicProvider,
     };
   }
@@ -167,8 +168,13 @@ export function createBearerAuthMiddleware(
 
   return (req, res, next) => {
     // Resolve per request: a token-file reload swaps the provider's contents
-    // without rebuilding the Express app.
-    const expectedTokens = provider().filter((entry) => entry !== "");
+    // without rebuilding the Express app. A throwing provider fails closed.
+    let expectedTokens: string[] = [];
+    try {
+      expectedTokens = provider().filter((entry) => entry !== "");
+    } catch {
+      expectedTokens = [];
+    }
     const provided = extractBearerToken(req.headers.authorization);
     let authorized = false;
     if (provided !== undefined) {

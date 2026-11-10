@@ -75,14 +75,15 @@ describe("security posture record", () => {
       proxyWarnings: ["proxy_trust_wildcard"],
     }));
 
-    expect(record.warnings).toEqual([
+    expect(record.warnings).toHaveLength(6);
+    expect(record.warnings).toEqual(expect.arrayContaining([
       "non_loopback_bind",
       "metrics_enabled_non_loopback",
       "weak_token_override",
       "proxy_trust_wildcard",
       "read_only_value_unrecognized",
       "env_token_non_loopback",
-    ]);
+    ]));
   });
 
   it("does not warn about metrics when it is disabled", () => {

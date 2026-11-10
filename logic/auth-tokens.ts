@@ -86,7 +86,8 @@ function dedupe(tokens: string[]): string[] {
   return [...new Set(tokens)];
 }
 
-function isDynamicTokenSource(
+/** True when a source can change between requests (provider or store). */
+export function isDynamicAuthTokenSource(
   source: AuthTokenSource | undefined,
 ): source is AuthTokenProvider | AuthTokenStore {
   return typeof source === "function" ||
@@ -116,20 +117,14 @@ export function toAuthTokenProvider(
   return () => source.get();
 }
 
-/** True when a source can change between requests (provider or store). */
-export function isDynamicAuthTokenSource(
-  source: AuthTokenSource | undefined,
-): boolean {
-  return isDynamicTokenSource(source);
-}
-
 /** Creates a token store that `SIGHUP` reloads can atomically swap. */
 export function createAuthTokenStore(
   initialTokens: string[],
 ): MutableAuthTokenStore {
   let tokens = dedupe(initialTokens);
   return {
-    get: () => tokens,
+    // Return a copy so a consumer cannot mutate the reload state in place.
+    get: () => [...tokens],
     set: (nextTokens: string[]) => {
       tokens = dedupe(nextTokens);
     },

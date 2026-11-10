@@ -63,18 +63,28 @@ export class Todo {
    */
   private originalLine: string | undefined;
   private originalSerialized: string | undefined;
+  private dateIssues: {
+    invalidTokens: string[];
+    ambiguous: boolean;
+  } = { invalidTokens: [], ambiguous: false };
+
   /**
    * Leading date tokens that matched {@link TODO_REGEX} but are not real
-   * calendar dates. They are kept as text rather than as an Invalid Date so a
-   * loaded line can always be serialized and hashed.
+   * calendar dates. Kept read-only for callers so parser bookkeeping cannot be
+   * mutated from outside the class.
    */
-  invalidDateTokens: string[] = [];
+  get invalidDateTokens(): readonly string[] {
+    return this.dateIssues.invalidTokens;
+  }
+
   /**
-   * True when an open todo starts with two valid dates. Only one can be its
+   * True when an open todo starts with two date tokens. Only one can be its
    * creation date, so editing such a line would silently drop a token; write
    * operations reject it instead.
    */
-  hasTwoLeadingDates = false;
+  get hasTwoLeadingDates(): boolean {
+    return this.dateIssues.ambiguous;
+  }
 
   constructor(text: string) {
     const originalLine = text;
@@ -93,13 +103,13 @@ export class Todo {
         // Keep every leading date token as literal text so the line keeps its
         // original bytes and remains hashable.
         if (completionDate !== undefined && completion === undefined) {
-          this.invalidDateTokens.push(completionDate);
+          this.dateIssues.invalidTokens.push(completionDate);
         }
         if (creationDate !== undefined && creation === undefined) {
-          this.invalidDateTokens.push(creationDate);
+          this.dateIssues.invalidTokens.push(creationDate);
         }
         if (!done && completionDate !== undefined && creationDate !== undefined) {
-          this.hasTwoLeadingDates = true;
+          this.dateIssues.ambiguous = true;
         }
         const prefix = [completionDate, creationDate]
           .filter((token): token is string => token !== undefined)
@@ -118,7 +128,7 @@ export class Todo {
         // leading date. Two leading dates are ambiguous, so remember that a
         // write must not silently discard the earlier token.
         if (completionDate !== undefined && creationDate !== undefined) {
-          this.hasTwoLeadingDates = true;
+          this.dateIssues.ambiguous = true;
         }
         this.creationDate = creation ?? completion;
         this.completionDate = undefined;
@@ -224,7 +234,9 @@ export class Todo {
 
   toDisplayString() {
     if (this.hasTwoLeadingDates && this.originalLine !== undefined) {
-      // Show both dates so the user can see why an update is rejected.
+      // Show both dates so the user can see why an update is rejected. This
+      // deliberately differs from canonical rows, which hide the creation
+      // date, so `search` can match these literal tokens.
       return this.originalLine;
     }
     return (this.isDone() ? "x " : "") +

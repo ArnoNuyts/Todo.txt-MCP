@@ -1,6 +1,6 @@
 # Single-User TLS Proxy — Hardening Task List
 
-Status: **planning** (no code changes yet)
+Status: **implemented** in `feat/tls-single-user-hardening` (P0); P1 and owner decisions remain open.
 Scope: **Tier 2 — one user behind a TLS-terminating reverse proxy** on a public
 hostname. Goal: move the deployment from “B, adequate with conditions” to
 “A−/B+, secure by default” without building team/SaaS identity features.

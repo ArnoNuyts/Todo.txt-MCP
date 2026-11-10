@@ -1,6 +1,7 @@
 import type { AuthTokenOrigin } from "./auth-tokens.ts";
 import { isLoopbackHost, type TrustProxyValue } from "./http-security.ts";
 import type { Logger } from "./logging.ts";
+import { isRecognizedReadOnlyValue } from "./read-only.ts";
 
 /**
  * One startup record describing the security-relevant configuration. It is
@@ -35,7 +36,7 @@ export interface SecurityPostureInput {
 export interface SecurityPostureRecord {
   host: string;
   port: number;
-  trustProxy: TrustProxyValue | false;
+  trustProxy: TrustProxyValue;
   metrics: {
     enabled: boolean;
     tokenSource: MetricsTokenSource;
@@ -46,17 +47,6 @@ export interface SecurityPostureRecord {
   backend: "local" | "webdav";
   warnings: string[];
 }
-
-/** Accepted `MCP_READ_ONLY` spellings. Anything else is called out. */
-const RECOGNIZED_READ_ONLY_VALUES = new Set([
-  "",
-  "0",
-  "false",
-  "no",
-  "1",
-  "true",
-  "yes",
-]);
 
 /** Messages for posture warnings that do not have a dedicated log record. */
 const POSTURE_WARNING_MESSAGES: Record<string, string> = {
@@ -107,7 +97,7 @@ export function buildSecurityPosture(
   }
   if (
     input.readOnlyValue !== undefined &&
-    !RECOGNIZED_READ_ONLY_VALUES.has(input.readOnlyValue.trim().toLowerCase())
+    !isRecognizedReadOnlyValue(input.readOnlyValue)
   ) {
     addWarning(warnings, "read_only_value_unrecognized");
   }

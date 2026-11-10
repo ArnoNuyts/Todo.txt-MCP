@@ -39,8 +39,9 @@ import {
 } from "./logic/auth-tokens.ts";
 import {
   assertStrongMetricsToken,
-  resolveMetricsConfig,
   type MetricsOverrides,
+  type ResolvedMetricsConfig,
+  resolveMetricsConfig,
 } from "./logic/metrics-config.ts";
 import { logSecurityPosture } from "./logic/security-posture.ts";
 import {
@@ -74,6 +75,7 @@ import type { TodoTxtMcpConfig } from "./logic/config.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 import { serializeTodoContent } from "./logic/content.ts";
 import { probeReadiness } from "./logic/readiness.ts";
+import { resolveReadOnlyMode } from "./logic/read-only.ts";
 import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
 import {
   addTodosHandler,
@@ -110,20 +112,6 @@ export interface CreateTodoMcpServerOptions {
   activity?: OperationTracker;
 }
 
-/**
- * Resolves read-only mode from an explicit option, then `MCP_READ_ONLY`.
- * Accepts `1`, `true`, or `yes` (case-insensitive).
- */
-export function resolveReadOnlyMode(
-  options: { readOnly?: boolean } = {},
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (options.readOnly !== undefined) {
-    return options.readOnly;
-  }
-  const value = env.MCP_READ_ONLY?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
 
 export function createTodoMcpServer(
   backend: TodoBackend,
@@ -401,6 +389,8 @@ export async function runStdioServer(
   await finished;
 }
 
+export { resolveReadOnlyMode };
+
 export type CreateAppOptions = HttpSecurityOptions & {
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
@@ -410,11 +400,27 @@ export type CreateAppOptions = HttpSecurityOptions & {
   logger?: Logger;
   /** Overrides `MCP_LOG_LEVEL` for the default logger. */
   logLevel?: LogLevel;
-  /** `/metrics` settings; `main()` passes the host-derived defaults. */
+  /** `/metrics` overrides for tests/embedders; resolved from env when absent. */
   metrics?: MetricsOverrides;
+  /** Already-resolved metrics settings, used by `main()` for one source of truth. */
+  resolvedMetrics?: ResolvedMetricsConfig;
   /** Readiness probe timeout in milliseconds. Default: 2000. */
   readinessTimeoutMs?: number;
 };
+
+/** Describes which credential `/metrics` uses, for the posture record only. */
+function describeMetricsTokenSource(
+  config: ResolvedMetricsConfig,
+  authConfigured: boolean,
+): "env" | "mcp" | "none" {
+  if (!config.enabled) {
+    return "none";
+  }
+  if (config.token !== undefined) {
+    return "env";
+  }
+  return authConfigured ? "mcp" : "none";
+}
 
 interface RateLimitMiddlewareOptions {
   limiter: SlidingWindowLimiter;
@@ -467,7 +473,8 @@ export function createApp(
   const logger = options.logger ??
     createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
   const metrics = createMetrics();
-  const metricsConfig = resolveMetricsConfig(options.metrics, process.env);
+  const metricsConfig = options.resolvedMetrics ??
+    resolveMetricsConfig(options.metrics, process.env);
   const readOnly = resolveReadOnlyMode(options, process.env);
   const mcpRateLimit = createRateLimitMiddleware({
     limiter: abuse.limiter,
@@ -946,6 +953,7 @@ export async function main() {
 
   // Keep the active list in a mutable store so SIGHUP can swap it atomically.
   const tokenStore = createAuthTokenStore(authTokens);
+  const readOnlyMode = resolveReadOnlyMode({}, process.env);
 
   const proxyWarnings = warnOnProxyPosture(
     host,
@@ -955,13 +963,10 @@ export async function main() {
     },
   ).map((warning) => warning.code);
 
-  const metricsTokenSource = !metricsConfig.enabled
-    ? "none" as const
-    : metricsConfig.token !== undefined
-    ? "env" as const
-    : authTokens.length > 0
-    ? "mcp" as const
-    : "none" as const;
+  const metricsTokenSource = describeMetricsTokenSource(
+    metricsConfig,
+    authTokens.length > 0,
+  );
 
   // Re-read and re-validate the token file on SIGHUP. A failed reload keeps the
   // previous tokens active; log only the count or the reason, never contents.
@@ -988,15 +993,10 @@ export async function main() {
 
   const app = createApp(backend, {
     logger,
+    readOnly: readOnlyMode,
     ...(trustProxy === undefined ? {} : { trustProxy }),
     ...(authTokens.length > 0 ? { authTokens: tokenStore } : {}),
-    metrics: {
-      enabled: metricsConfig.enabled,
-      rateLimitPerMin: metricsConfig.rateLimitPerMin,
-      ...(metricsConfig.token === undefined
-        ? {}
-        : { token: metricsConfig.token }),
-    },
+    resolvedMetrics: metricsConfig,
   });
 
   const port = Number(process.env.PORT ?? "3000");
@@ -1028,7 +1028,7 @@ export async function main() {
       },
       tokenSource: authTokenSource,
       tokenCount: authTokens.length,
-      readOnly: resolveReadOnlyMode({}, process.env),
+      readOnly: readOnlyMode,
       backend: config.backend,
       allowWeakToken: allowWeakTokens,
       ...(process.env.MCP_READ_ONLY === undefined

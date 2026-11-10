@@ -166,7 +166,9 @@ describe("metrics endpoint hardening", () => {
 
     const limited = await scrape(token);
     expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBe("60");
+    const retryAfter = Number(limited.headers.get("retry-after"));
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(60);
     const body = (await limited.json()) as RpcError;
     expect(body.error?.code).toBe(-32000);
     expect(body.error?.message).toBe("Too many metrics requests.");

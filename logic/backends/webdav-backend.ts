@@ -134,25 +134,29 @@ function isTodoContentType(value: string | null): boolean {
     mediaType === "binary/octet-stream";
 }
 
-/** An error page is not a todo file, even when the proxy omits Content-Type. */
-function looksLikeHtml(text: string): boolean {
-  return /<!doctype\s+html|<html\b|<head\b|<body\b|<meta\b|<title\b|<script\b|<!--|<\?xml/i
-    .test(text.slice(0, 1024));
-}
+const HTML_PROBE_LENGTH = 1024;
+const BROAD_HTML_MARKER =
+  /<!doctype\s+html|<html\b|<head\b|<body\b|<meta\b|<title\b|<script\b|<!--|<\?xml/i;
+const DOCUMENT_HTML_MARKER =
+  /<(?:head|body|title|meta|script|form)\b|<\/(?:html|head|body)\s*>/i;
 
 /**
- * A full HTML/XML document is an error page even when a proxy mislabels it as
- * `text/plain`. A lone `<html>` token can legitimately appear in todo text, so
- * only document-level markers are rejected for plain text.
+ * An error page is not a todo file. Without `text/plain` we can be strict and
+ * reject any HTML/XML marker; with `text/plain` only document-level markers
+ * are rejected, because a lone `<html>` token can legitimately be todo text.
  */
-function looksLikeHtmlDocument(text: string): boolean {
-  const prefix = text.slice(0, 1024);
+function looksLikeErrorPage(
+  text: string,
+  mediaType: string | null,
+): boolean {
+  const prefix = text.slice(0, HTML_PROBE_LENGTH);
+  if (mediaType !== "text/plain") {
+    return BROAD_HTML_MARKER.test(prefix);
+  }
   const hasHtmlElement = /<html\b/i.test(prefix);
   return /<!doctype\s+html/i.test(prefix) ||
     /<\?xml/i.test(prefix) ||
-    (hasHtmlElement &&
-      /<(?:head|body|title|meta|script|form)\b|<\/(?:html|head|body)\s*>/i
-        .test(prefix));
+    (hasHtmlElement && DOCUMENT_HTML_MARKER.test(prefix));
 }
 
 /** Servers may normalise EOLs or the trailing newline of the stored body. */
@@ -382,10 +386,7 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    const isErrorPage = mediaTypeOf(contentType) === "text/plain"
-      ? looksLikeHtmlDocument(text)
-      : looksLikeHtml(text);
-    if (isErrorPage) {
+    if (looksLikeErrorPage(text, mediaTypeOf(contentType))) {
       throw new Error(
         "Failed to load todos from WebDAV: the response looks like an HTML " +
           "error page, not a todo file. The stored file was not modified.",
