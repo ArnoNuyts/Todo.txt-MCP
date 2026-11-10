@@ -1,5 +1,3 @@
-import { ToolFailure } from "./tool-errors.ts";
-
 /** Accepted `rec:` values: optional `+` for strict recurrence, positive amount. */
 const RECURRENCE_PATTERN = /^(\+)?([1-9]\d*)([dwmy])$/i;
 
@@ -73,15 +71,28 @@ function clampedUtcDate(
   return new Date(Date.UTC(year, monthIndex, Math.min(day, lastDay)));
 }
 
-function invalidRecurrence(recurrence: Recurrence): ToolFailure {
-  const value = `rec:${recurrence.strict ? "+" : ""}${recurrence.amount}` +
-    recurrence.unit;
-  return new ToolFailure(
-    "INVALID_ARGUMENT",
-    `Invalid recurrence "${value}": the next date is out of range. ` +
-      "Nothing was saved.",
-    { amount: recurrence.amount, unit: recurrence.unit },
-  );
+/**
+ * Domain error for a recurrence that would leave the supported date range.
+ * It is intentionally independent of the tool/MCP error layer; `tools.ts`
+ * maps it to `INVALID_ARGUMENT`.
+ */
+export class RecurrenceRangeError extends Error {
+  readonly recurrence: Recurrence;
+
+  constructor(recurrence: Recurrence) {
+    const value = `rec:${recurrence.strict ? "+" : ""}${recurrence.amount}` +
+      recurrence.unit;
+    super(
+      `Invalid recurrence "${value}": the next date is out of range. ` +
+        "Nothing was saved.",
+    );
+    this.name = "RecurrenceRangeError";
+    this.recurrence = recurrence;
+  }
+}
+
+function invalidRecurrence(recurrence: Recurrence): RecurrenceRangeError {
+  return new RecurrenceRangeError(recurrence);
 }
 
 function addRecurrence(date: Date, recurrence: Recurrence): Date {

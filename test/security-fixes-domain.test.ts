@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
-import { Todo } from "../logic/todo.ts";
+import { AmbiguousTodoError, Todo } from "../logic/todo.ts";
 import {
   addTodosHandler,
   deleteTodosHandler,
@@ -35,16 +34,8 @@ function snapshot(backend: MockBackend): string[] {
   return backend.getTodos().map((todo) => todo.toString());
 }
 
-/**
- * Computes the same short hash `Todo.getHash()` produces, from the raw line.
- * This lets a test address a line whose `toString()` is still broken.
- */
-function rawHash(line: string): string {
-  return createHash("sha256")
-    .update(line)
-    .digest()
-    .subarray(0, 8)
-    .toString("base64url");
+async function hashLine(line: string): Promise<string> {
+  return await new Todo(line).getHash();
 }
 
 afterEach(() => {
@@ -72,7 +63,7 @@ describe("T1/F1 invalid-date lockout", () => {
     });
 
     expect(result).not.toMatchObject({ isError: true });
-    expect(textOf(result)).toContain(`${rawHash(raw)} ${raw}`);
+    expect(textOf(result)).toContain(`${await hashLine(raw)} ${raw}`);
     expect(textOf(result)).toContain("keep");
   });
 
@@ -94,7 +85,7 @@ describe("T1/F1 invalid-date lockout", () => {
     await backend.save([new Todo(raw), new Todo("keep")]);
 
     const result = await updateTodosHandler(backend, {
-      updates: [`${rawHash(raw)} fixed`],
+      updates: [`${await hashLine(raw)} fixed`],
     });
 
     expect(result).not.toMatchObject({ isError: true });
@@ -119,7 +110,7 @@ describe("T1/F1 invalid-date lockout", () => {
     await backend.save([new Todo(raw), new Todo("keep")]);
 
     const result = await deleteTodosHandler(backend, {
-      hashes: [rawHash(raw)],
+      hashes: [await hashLine(raw)],
     });
 
     expect(result).not.toMatchObject({ isError: true });
@@ -347,10 +338,17 @@ describe("T7/F8 recurrence edges", () => {
 });
 
 describe("review follow-ups", () => {
-  it("lists only the impossible date token when the other date is valid", () => {
-    const todo = new Todo("x 2024-13-01 2024-01-01 task");
+  it("reports only the impossible date token when the other date is valid", async () => {
+    const backend = new MockBackend();
+    const result = await addTodosHandler(backend, {
+      todos: ["x 2024-13-01 2024-01-01 task"],
+    });
 
-    expect(todo.invalidDateTokens).toEqual(["2024-13-01"]);
+    expect(result).toMatchObject({ isError: true });
+    expect(errorCodeOf(result)).toBe("INVALID_ARGUMENT");
+    expect(textOf(result)).toContain("2024-13-01");
+    expect(textOf(result)).not.toContain("2024-01-01");
+    expect(backend.getTodos()).toEqual([]);
   });
 
   it("keeps a two-date line raw for display and hashing", () => {
@@ -359,6 +357,31 @@ describe("review follow-ups", () => {
 
     expect(todo.toString()).toBe(raw);
     expect(todo.toDisplayString()).toBe(raw);
+  });
+
+  it("treats an invalid date followed by a valid date as ambiguous too", async () => {
+    const raw = "2024-13-01 2024-01-01 task";
+    const todo = new Todo(raw);
+    const backend = new MockBackend();
+    await backend.save([todo]);
+    const saveSpy = vi.spyOn(backend, "save");
+
+    const result = await updateTodosHandler(backend, {
+      updates: [`${await todo.getHash()} task edited`],
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(errorCodeOf(result)).toBe("INVALID_ARGUMENT");
+    expect(textOf(result)).toContain("two");
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(snapshot(backend)).toEqual([raw]);
+  });
+
+  it("refuses to toggle a two-date line without dropping a date", () => {
+    const todo = new Todo("2024-01-01 2024-02-02 task");
+
+    expect(() => todo.toggleState()).toThrow(AmbiguousTodoError);
+    expect(todo.toString()).toBe("2024-01-01 2024-02-02 task");
   });
 
   it("round-trips an impossible-date line through the local file backend", async () => {

@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { Todo } from "./todo.ts";
+import { AmbiguousTodoError, Todo } from "./todo.ts";
 import { filterTodos } from "./Todos.ts";
 import { TodoStateEnum } from "../types/enums.ts";
 import type { TodoBackend } from "./backend.ts";
 import { withBackendLock } from "./backend-lock.ts";
 import { resolveMaxTodos } from "./limits.ts";
+import { RecurrenceRangeError } from "./recurrence.ts";
 import { guardTool, notFoundError, ToolFailure } from "./tool-errors.ts";
 
 // Schemas
@@ -117,7 +118,7 @@ function assertSingleLine(text: string, field: string): void {
  * Validates text supplied by a write tool. Loaded todos are allowed to carry
  * malformed dates, but new lines must be unambiguous and use real dates.
  */
-function assertNewTodoText(text: string, field: string): void {
+function parseNewTodo(text: string, field: string): Todo {
   assertSingleLine(text, field);
 
   if (text.trim() === "") {
@@ -145,6 +146,8 @@ function assertNewTodoText(text: string, field: string): void {
         "Nothing was saved.",
     );
   }
+
+  return todo;
 }
 
 async function todoLine(todo: Todo): Promise<string> {
@@ -254,9 +257,10 @@ async function addTodosOperation(
   rawArgs: unknown,
 ) {
   const { todos: texts } = CompactAddTodosSchema.parse(rawArgs);
-  for (const text of texts) {
-    assertNewTodoText(text, "Todo text");
-  }
+  const parsed = texts.map((text) => ({
+    text,
+    todo: parseNewTodo(text, "Todo text"),
+  }));
 
   return await withBackendLock(backend, async () => {
     const todos = [...await backend.load()];
@@ -269,8 +273,7 @@ async function addTodosOperation(
     }
     const added: Todo[] = [];
     const skipped: Array<{ hash: string; text: string }> = [];
-    for (const text of texts) {
-      const todo = new Todo(text);
+    for (const { text, todo } of parsed) {
       if (!todo.creationDate) {
         todo.creationDate = new Date();
       }
@@ -343,11 +346,10 @@ function parseTextUpdate(line: string): TextUpdate {
   return { hash: match[1], text: match[2] };
 }
 
-function buildReplacement(target: Todo, text: string): {
+function buildReplacement(target: Todo, next: Todo): {
   next: Todo;
   recurrence?: Todo;
 } {
-  const next = new Todo(text);
   if (!next.creationDate) {
     next.creationDate = target.creationDate;
   }
@@ -362,7 +364,21 @@ function buildReplacement(target: Todo, text: string): {
       const requestedCompletion = next.completionDate;
       next.state = TodoStateEnum.todo;
       next.completionDate = undefined;
-      recurrence = next.toggleState(requestedCompletion).recurrence;
+      try {
+        recurrence = next.toggleState(requestedCompletion).recurrence;
+      } catch (error) {
+        if (
+          error instanceof RecurrenceRangeError ||
+          error instanceof AmbiguousTodoError
+        ) {
+          throw new ToolFailure("INVALID_ARGUMENT", error.message, {
+            ...(error instanceof RecurrenceRangeError
+              ? { amount: error.recurrence.amount, unit: error.recurrence.unit }
+              : {}),
+          });
+        }
+        throw error;
+      }
     }
   } else {
     next.completionDate = undefined;
@@ -383,10 +399,10 @@ async function updateTodosOperation(
   rawArgs: unknown,
 ) {
   const { updates } = CompactUpdateTodosSchema.parse(rawArgs);
-  const parsed = updates.map(parseTextUpdate);
-  for (const update of parsed) {
-    assertNewTodoText(update.text, "Update text");
-  }
+  const parsed = updates.map((line) => {
+    const update = parseTextUpdate(line);
+    return { ...update, next: parseNewTodo(update.text, "Update text") };
+  });
   const hashes = parsed.map((update) => update.hash);
   if (new Set(hashes).size !== hashes.length) {
     throw new ToolFailure(
@@ -399,7 +415,10 @@ async function updateTodosOperation(
     const todos = [...await backend.load()];
     const index = await todoIndex(todos);
 
-    const resolved: Array<{ update: TextUpdate; target: Todo }> = [];
+    const resolved: Array<{
+      update: TextUpdate & { next: Todo };
+      target: Todo;
+    }> = [];
     const missing: string[] = [];
     for (const update of parsed) {
       const target = firstMatchingTodo(index, update.hash);
@@ -428,7 +447,7 @@ async function updateTodosOperation(
           { hash: update.hash },
         );
       }
-      const { next, recurrence } = buildReplacement(target, update.text);
+      const { next, recurrence } = buildReplacement(target, update.next);
       const targetKey = target.toString();
       const nextKey = next.toString();
       if (

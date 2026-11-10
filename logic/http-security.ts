@@ -2,7 +2,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { Request, RequestHandler, Response } from "express";
 import type { CorsOptions } from "cors";
-import { resolveAuthTokens } from "./auth-tokens.ts";
+import {
+  isDynamicAuthTokenSource,
+  resolveAuthTokens,
+  toAuthTokenProvider,
+  type AuthTokenProvider,
+  type AuthTokenSource,
+  type AuthTokenStore,
+} from "./auth-tokens.ts";
 
 export const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 export const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000"];
@@ -22,8 +29,11 @@ export interface HttpSecurityOptions {
   allowedOrigins?: string | string[];
   /** Single bearer token. Kept for tests and backwards compatibility. */
   authToken?: string;
-  /** Multiple active bearer tokens, e.g. during rotation. */
-  authTokens?: string[];
+  /**
+   * Active bearer tokens (during rotation) or a provider/store that is read on
+   * every request so a token-file reload takes effect without a restart.
+   */
+  authTokens?: string[] | AuthTokenProvider | AuthTokenStore;
 }
 
 export interface ResolvedHttpSecurityOptions {
@@ -33,6 +43,8 @@ export interface ResolvedHttpSecurityOptions {
   authToken: string | undefined;
   /** All active tokens. Empty when authentication is disabled. */
   authTokens: string[];
+  /** Present when the caller supplied a dynamic token source. */
+  authTokenProvider?: AuthTokenProvider;
 }
 
 /**
@@ -67,8 +79,28 @@ export function resolveHttpSecurityOptions(
     options.allowedOrigins ?? env.MCP_ALLOWED_ORIGINS,
     DEFAULT_ALLOWED_ORIGINS,
   );
+  const dynamicProvider = isDynamicAuthTokenSource(options.authTokens)
+    ? toAuthTokenProvider(options.authTokens)
+    : undefined;
+  if (dynamicProvider !== undefined) {
+    // Dynamic sources are read per request; do not snapshot them here, or
+    // `authTokens` would go stale after the first reload.
+    return {
+      allowedHosts,
+      allowedOrigins,
+      authToken: undefined,
+      authTokens: [],
+      authTokenProvider: dynamicProvider,
+    };
+  }
+
   const resolvedTokens = resolveAuthTokens(
-    { authToken: options.authToken, authTokens: options.authTokens },
+    {
+      authToken: options.authToken,
+      ...(Array.isArray(options.authTokens)
+        ? { authTokens: options.authTokens }
+        : {}),
+    },
     env,
   );
   const authTokens = resolvedTokens.tokens;
@@ -126,13 +158,23 @@ export interface BearerAuthHooks {
  * middleware to the abuse-control implementation.
  */
 export function createBearerAuthMiddleware(
-  token: string | string[],
+  token: AuthTokenSource,
   hooks: BearerAuthHooks = {},
 ): RequestHandler {
-  const expectedTokens = (Array.isArray(token) ? token : [token])
-    .filter((entry) => entry !== "");
+  const provider = toAuthTokenProvider(token);
+  if (provider === undefined) {
+    throw new Error("createBearerAuthMiddleware requires a token source.");
+  }
 
   return (req, res, next) => {
+    // Resolve per request: a token-file reload swaps the provider's contents
+    // without rebuilding the Express app. A throwing provider fails closed.
+    let expectedTokens: string[] = [];
+    try {
+      expectedTokens = provider().filter((entry) => entry !== "");
+    } catch {
+      expectedTokens = [];
+    }
     const provided = extractBearerToken(req.headers.authorization);
     let authorized = false;
     if (provided !== undefined) {
@@ -255,6 +297,108 @@ export function parseTrustProxy(
     }
   }
   return entries.length === 1 ? entries[0] : entries;
+}
+
+/** True for loopback binds and the `localhost` hostname. */
+export function isLoopbackHost(host: string): boolean {
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed === "localhost") {
+    return true;
+  }
+  const address = trimmed.startsWith("[") && trimmed.endsWith("]")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+  const version = isIP(address);
+  if (version === 4) {
+    return address.startsWith("127.");
+  }
+  if (version === 6) {
+    return address === "::1" || address === "0:0:0:0:0:0:0:1";
+  }
+  return false;
+}
+
+function isWildcardTrustProxy(trustProxy: TrustProxyValue): boolean {
+  if (trustProxy === true) {
+    return true;
+  }
+  const entries = Array.isArray(trustProxy)
+    ? trustProxy
+    : typeof trustProxy === "string"
+    ? trustProxy.split(",")
+    : [];
+  return entries.some((entry) => {
+    const normalized = entry.trim().toLowerCase();
+    return normalized === "true" || normalized === "0.0.0.0/0" ||
+      normalized === "::/0";
+  });
+}
+
+export interface ProxyPostureWarning {
+  code: "proxy_trust_missing" | "proxy_trust_wildcard";
+  message: string;
+}
+
+export type ProxyPostureWarn = (
+  message: string,
+  fields?: Record<string, unknown>,
+) => void;
+
+/**
+ * Warns about proxy trust settings that are dangerous for a non-loopback bind.
+ *
+ * - No trust: every client looks like the proxy IP, so per-IP limits, lockouts,
+ *   and logs are shared by all clients.
+ * - Wildcard trust: `X-Forwarded-For` is attacker-controlled, so the same
+ *   controls can be bypassed.
+ *
+ * Loopback binds are quiet because they are not reachable through a proxy.
+ * Returns the warnings that were emitted; the sink is injectable for tests.
+ */
+export function warnOnProxyPosture(
+  host: string,
+  trustProxy: TrustProxyValue | undefined,
+  warn: ProxyPostureWarn = (message, fields) => {
+    if (fields === undefined) {
+      console.warn(message);
+    } else {
+      console.warn(message, fields);
+    }
+  },
+): ProxyPostureWarning[] {
+  if (isLoopbackHost(host)) {
+    return [];
+  }
+
+  const disabled = trustProxy === undefined || trustProxy === false ||
+    trustProxy === 0 ||
+    (Array.isArray(trustProxy) && trustProxy.length === 0);
+  const warnings: ProxyPostureWarning[] = [];
+
+  if (disabled) {
+    warnings.push({
+      code: "proxy_trust_missing",
+      message:
+        `[security] HOST "${host}" is not loopback but TRUST_PROXY is unset ` +
+        `or false. Every client will appear as the proxy IP, so per-client ` +
+        `limits, lockouts, and logs are ineffective. Set TRUST_PROXY=loopback ` +
+        `for a same-host proxy, or the proxy's exact IP/CIDR.`,
+    });
+  } else if (isWildcardTrustProxy(trustProxy)) {
+    warnings.push({
+      code: "proxy_trust_wildcard",
+      message:
+        `[security] HOST "${host}" is not loopback and TRUST_PROXY trusts ` +
+        `every hop (true or a /0 wildcard). Clients can spoof ` +
+        `X-Forwarded-For and bypass per-IP limits, lockouts, and log ` +
+        `attribution. Use TRUST_PROXY=loopback or the proxy's exact IP/CIDR.`,
+    });
+  }
+
+  for (const warning of warnings) {
+    warn(warning.message, { code: warning.code, host });
+  }
+  return warnings;
 }
 
 /**

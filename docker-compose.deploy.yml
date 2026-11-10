@@ -1,3 +1,16 @@
+# Single-user deployment: token from a Docker secret, loopback-only publish.
+#
+# Before the first start, create the host secret (never commit it):
+#   install -d -m 700 secrets
+#   openssl rand -hex 32 > secrets/mcp_auth_token.txt
+#   chmod 600 secrets/mcp_auth_token.txt
+#
+# Compose mounts ./secrets/mcp_auth_token.txt at /run/secrets/mcp_auth_token.
+# The app reads it through MCP_AUTH_TOKEN_FILE and supports SIGHUP reload:
+#   docker kill --signal=HUP "$(docker compose -f docker-compose.deploy.yml ps -q todo-txt-mcp)"
+#
+# See docs/single-user-deployment.md and SECURITY.md before exposing /mcp.
+
 services:
   todo-txt-mcp:
     # Build directly from the git repository
@@ -6,6 +19,7 @@ services:
 
     ports:
       # Bind to the loopback interface only; use a TLS reverse proxy to expose it.
+      # Never publish 3000:3000 or 0.0.0.0:3000 on a public host.
       - "127.0.0.1:3000:3000"
 
     init: true
@@ -32,19 +46,39 @@ services:
       retries: 3
       start_period: 5s
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     volumes:
       # Mount a directory, not a single file: atomic writes replace the file
       # with a rename inside this directory.
       - ./data:/data
 
+    secrets:
+      - mcp_auth_token
+
     environment:
       # Network security (see SECURITY.md)
       - HOST=0.0.0.0
-      - MCP_ALLOWED_HOSTS=localhost,127.0.0.1
-      - MCP_ALLOWED_ORIGINS=http://localhost:3000
-      # Required unless you replace this line with MCP_AUTH_TOKENS or
-      # MCP_AUTH_TOKEN_FILE. Compose refuses to start without it.
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required}
+      # Set the public hostname and browser origin in .env, for example:
+      #   MCP_ALLOWED_HOSTS=todo.example.com
+      #   MCP_ALLOWED_ORIGINS=https://todo.example.com
+      - "MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      - "MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-http://localhost:3000}"
+      # Prefer the 0600 secret file over an environment token. The file takes
+      # precedence over MCP_AUTH_TOKENS and MCP_AUTH_TOKEN.
+      - MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_token
+      # Trust only the real proxy hop. For a same-host native proxy use
+      # "loopback". With Docker's published port the app usually sees the
+      # Docker bridge gateway instead; set TRUST_PROXY to that address/CIDR and
+      # confirm the client IP in the `msg:"request"` log line.
+      - "TRUST_PROXY=${TRUST_PROXY:-loopback}"
+      # Metrics are OFF by default. Enable only with a separate high-entropy
+      # MCP_METRICS_TOKEN and an explicit proxy rule.
+      - MCP_METRICS_ENABLED=0
       # Configuration
       - TODOTXT_MCP_BACKEND=local
       - TODOTXT_MCP_LOCAL_FILENAME=/data/todo.txt
@@ -52,3 +86,7 @@ services:
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user
       # - TODOTXT_MCP_WEBDAV_PASSWORD=pass
+
+secrets:
+  mcp_auth_token:
+    file: ./secrets/mcp_auth_token.txt

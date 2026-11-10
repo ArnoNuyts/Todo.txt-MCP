@@ -1,5 +1,13 @@
 # Internet-Readiness Hardening Tasklist
 
+> **Historical / superseded (2026-10-31).** This document records the original
+> gap assessment and is kept for context. The remediation status lives in
+> [`SECURITY_AUDIT_2026-11-08.md`](./SECURITY_AUDIT_2026-11-08.md) and
+> [`TDD_FIX_TASKLIST.md`](./TDD_FIX_TASKLIST.md); the remaining single-user TLS
+> work is tracked in
+> [`SINGLE_USER_TLS_TASKLIST.md`](./SINGLE_USER_TLS_TASKLIST.md). Do not use the
+> checkboxes below as the current plan.
+
 Assessment date: 2026-10-31 · Scope: `server.ts`, `logic/http-security.ts`, backends, deployment.
 
 ## Verdict
