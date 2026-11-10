@@ -20,7 +20,11 @@ export interface TodoDateIssues {
 interface TodoDateHeader {
   /** `x <completionDate> <creationDate> ...` when the todo is done. */
   completionDate?: Date;
-  /** The last leading date for an open todo, or the second for a done one. */
+  /**
+   * A leading date that parsed successfully. For an open todo it is normally
+   * the last token; for a done todo it is the second token when valid. In a
+   * mixed line the surviving valid token may be the first.
+   */
   creationDate?: Date;
   /** Raw tokens to emit when an invalid date prevents structured parsing. */
   literalPrefix: string;

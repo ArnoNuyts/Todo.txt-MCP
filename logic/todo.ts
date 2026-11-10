@@ -183,13 +183,14 @@ export class Todo {
   private serialize() {
     // Completed todos must be serialized as
     // "x [priority] <completionDate> <creationDate> <text> [tags]" so that
-    // TODO_REGEX parses the dates back into the same fields. Open todos only
-    // carry a creation date.
+    // parseTodoHeader parses the dates back into the same fields. Open todos
+    // only carry a creation date.
     const dates: string[] = [];
     // The literal prefix of a line with an invalid token is already part of
     // `text`; emitting the parsed dates too would duplicate a valid token.
     if (this.invalidDateTokens.length === 0) {
       if (this.isDone()) {
+        // On a done line a lone date is the completion date by format.
         if (this.completionDate) dates.push(formatDate(this.completionDate));
         if (this.creationDate) dates.push(formatDate(this.creationDate));
       } else if (this.creationDate) {

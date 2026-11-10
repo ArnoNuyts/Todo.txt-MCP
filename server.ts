@@ -482,8 +482,7 @@ function createRateLimitMiddleware(
 /**
  * Builds the `/mcp` auth hooks. The failure hook records metrics, applies the
  * per-key lockout and the global breaker, and writes the 429/503 response when
- * either limit is reached. It returns the hooks unchanged in shape from the
- * former inline implementation.
+ * either limit is reached.
  */
 function createMcpAuthHooks(options: {
   abuse: AbuseControls;

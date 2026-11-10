@@ -175,50 +175,55 @@ async function readTodoBody(
   response: Response,
   maxFileBytes: number,
 ): Promise<string> {
-  const contentType = response.headers.get("Content-Type");
-  const mediaType = mediaTypeOf(contentType);
-  if (!isTodoContentType(contentType)) {
-    await discardBody(response);
-    throw new Error(
-      "Failed to load todos from WebDAV: expected a plain-text body but " +
-        `received "${contentType}". The stored file was not modified.`,
-    );
-  }
+  try {
+    const contentType = response.headers.get("Content-Type");
+    const mediaType = mediaTypeOf(contentType);
+    if (!isTodoContentType(contentType)) {
+      throw new Error(
+        "Failed to read the WebDAV todo body: expected a plain-text body " +
+          `but received "${contentType}". The stored file was not modified.`,
+      );
+    }
 
-  // Reject an obviously oversized file before reading the body.
-  const contentLength = response.headers.get("Content-Length");
-  if (contentLength !== null && /^\d+$/.test(contentLength.trim())) {
+    // Reject an obviously oversized file before reading the body.
+    const contentLength = response.headers.get("Content-Length");
+    if (contentLength !== null && /^\d+$/.test(contentLength.trim())) {
+      assertFileSizeWithinLimit(
+        "WebDAV todo file",
+        Number(contentLength.trim()),
+        maxFileBytes,
+      );
+    }
+
+    const bytes = await response.arrayBuffer();
     assertFileSizeWithinLimit(
       "WebDAV todo file",
-      Number(contentLength.trim()),
+      bytes.byteLength,
       maxFileBytes,
     );
+
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(
+        "WebDAV todo file is not valid UTF-8. Refusing to load or rewrite it.",
+      );
+    }
+
+    if (looksLikeErrorPage(text, mediaType)) {
+      throw new Error(
+        "Failed to read the WebDAV todo body: the response looks like an " +
+          "HTML error page, not a todo file. The stored file was not modified.",
+      );
+    }
+
+    return text;
+  } catch (error) {
+    // Every rejection path drains the body; callers never need to.
+    await discardBody(response);
+    throw error;
   }
-
-  const bytes = await response.arrayBuffer();
-  assertFileSizeWithinLimit(
-    "WebDAV todo file",
-    bytes.byteLength,
-    maxFileBytes,
-  );
-
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new Error(
-      "WebDAV todo file is not valid UTF-8. Refusing to load or rewrite it.",
-    );
-  }
-
-  if (looksLikeErrorPage(text, mediaType)) {
-    throw new Error(
-      "Failed to load todos from WebDAV: the response looks like an HTML " +
-        "error page, not a todo file. The stored file was not modified.",
-    );
-  }
-
-  return text;
 }
 
 type WriteProbe =
@@ -463,7 +468,6 @@ export class WebDavBackend implements TodoBackend {
         },
       };
     } catch {
-      await discardBody(response);
       return { state: "unknown" };
     }
   }
