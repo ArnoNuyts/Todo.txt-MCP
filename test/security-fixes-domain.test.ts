@@ -359,6 +359,27 @@ describe("review follow-ups", () => {
     expect(todo.toDisplayString()).toBe(raw);
   });
 
+  it("exposes the valid date of a mixed invalid+valid line and keeps its bytes", () => {
+    const raw = "2024-13-01 2024-01-01 task";
+    const todo = new Todo(raw);
+
+    expect(todo.invalidDateTokens).toEqual(["2024-13-01"]);
+    expect(todo.creationDate?.toISOString()).toBe("2024-01-01T00:00:00.000Z");
+    expect(todo.toString()).toBe(raw);
+    expect(todo.toDisplayString()).toBe(raw);
+    expect(() => todo.setText("changed")).not.toThrow();
+    expect(() => todo.toString()).toThrow(AmbiguousTodoError);
+  });
+
+  it("round-trips a done mixed line without duplicating the valid date", () => {
+    const raw = "x 2024-13-01 2024-01-01 task";
+    const todo = new Todo(raw);
+
+    expect(todo.creationDate?.toISOString()).toBe("2024-01-01T00:00:00.000Z");
+    expect(todo.toString()).toBe(raw);
+    expect(todo.toDisplayString()).toBe(raw);
+  });
+
   it("treats an invalid date followed by a valid date as ambiguous too", async () => {
     const raw = "2024-13-01 2024-01-01 task";
     const todo = new Todo(raw);

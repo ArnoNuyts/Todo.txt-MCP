@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
+import { Todo } from "../logic/todo.ts";
 
 const url = "https://dav.example.com/todo.txt";
 /** Disable retries and real backoff delays in tests. */
@@ -162,5 +163,63 @@ describe("F9: full error pages mislabeled text/plain", () => {
       .load();
 
     expect(todos).toHaveLength(2);
+  });
+});
+
+describe("D5: shared body reader for load and write-probe", () => {
+  /** Simulates a lost PUT (500) followed by a read-back with `probeBody`. */
+  async function saveWithProbe(
+    probeBody: () => Response,
+    maxFileBytes?: number,
+  ): Promise<void> {
+    let getCount = 0;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        getCount += 1;
+        if (getCount === 1) {
+          return response("old\n", 200, {
+            "Content-Type": "text/plain",
+            ETag: '"v1"',
+          });
+        }
+        return probeBody();
+      }
+      return response("", 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = new WebDavBackend(url, undefined, undefined, {
+      ...fastRetry,
+      ...(maxFileBytes === undefined ? {} : { maxFileBytes }),
+    });
+    await expect(
+      backend.withLock(async () => {
+        await backend.load();
+        await backend.save([new Todo("new")]);
+      }),
+    ).rejects.toThrow(/could not be confirmed/);
+  }
+
+  it("treats an HTML error page read-back as an unknown outcome", async () => {
+    await saveWithProbe(() =>
+      response(
+        "<!doctype html><html><body>login</body></html>\n",
+        200,
+        { "Content-Type": "text/plain" },
+      )
+    );
+  });
+
+  it("treats a non-text read-back content type as unknown", async () => {
+    await saveWithProbe(() =>
+      response("new\n", 200, { "Content-Type": "text/html" })
+    );
+  });
+
+  it("treats a read-back body over the byte limit as unknown", async () => {
+    await saveWithProbe(
+      () => response("x".repeat(64), 200, { "Content-Type": "text/plain" }),
+      10,
+    );
   });
 });

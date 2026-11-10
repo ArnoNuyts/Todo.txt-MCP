@@ -69,6 +69,11 @@ export function parseTodoHeader(text: string): ParsedTodoHeader | undefined {
       done: isDone,
       priority: prio as UpperCaseLetter | undefined,
       header: {
+        // Keep the date that did parse so consumers can still observe it. The
+        // literal prefix stays the source of truth for serialization, so the
+        // invalid token is never silently dropped or rewritten.
+        completionDate: isDone ? completion : undefined,
+        creationDate: isDone ? creation : creation ?? completion,
         literalPrefix,
         issues: {
           invalidTokens,

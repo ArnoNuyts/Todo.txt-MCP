@@ -186,11 +186,15 @@ export class Todo {
     // TODO_REGEX parses the dates back into the same fields. Open todos only
     // carry a creation date.
     const dates: string[] = [];
-    if (this.isDone()) {
-      if (this.completionDate) dates.push(formatDate(this.completionDate));
-      if (this.creationDate) dates.push(formatDate(this.creationDate));
-    } else if (this.creationDate) {
-      dates.push(formatDate(this.creationDate));
+    // The literal prefix of a line with an invalid token is already part of
+    // `text`; emitting the parsed dates too would duplicate a valid token.
+    if (this.invalidDateTokens.length === 0) {
+      if (this.isDone()) {
+        if (this.completionDate) dates.push(formatDate(this.completionDate));
+        if (this.creationDate) dates.push(formatDate(this.creationDate));
+      } else if (this.creationDate) {
+        dates.push(formatDate(this.creationDate));
+      }
     }
 
     return (this.isDone() ? "x " : "") +
@@ -214,8 +218,10 @@ export class Todo {
     return (this.isDone() ? "x " : "") +
       (this.priority ? `(${this.priority}) ` : "") +
       // Creation dates are omitted from the display string. Only a completed
-      // todo shows a date and it is always its completion date.
-      (this.isDone() && this.completionDate
+      // todo shows a date and it is always its completion date. A line with an
+      // invalid token already carries its literal dates in `text`.
+      (this.invalidDateTokens.length === 0 && this.isDone() &&
+          this.completionDate
         ? formatDate(this.completionDate) + " "
         : "") +
       this.text +
