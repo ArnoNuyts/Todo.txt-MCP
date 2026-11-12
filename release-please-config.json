@@ -3,7 +3,8 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "@arnoarnoarno/todo.txt-mcp"
+      "package-name": "@arnoarnoarno/todo.txt-mcp",
+      "include-component-in-tag": false
     }
   }
 }
