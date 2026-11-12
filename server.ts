@@ -71,6 +71,12 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 /** Readiness probes must not hang on a wedged backend. */
 const READINESS_TIMEOUT_MS = 2_000;
 
+/**
+ * Reuse a successful readiness result briefly so a probe flood cannot reparse
+ * the todo file after each probe settles. Failures are never cached.
+ */
+const READINESS_CACHE_MS = 5_000;
+
 import { filterTodos } from "./logic/Todos.ts";
 import type { TodoBackend } from "./logic/backend.ts";
 import { LocalFileBackend } from "./logic/backends/local-file-backend.ts";
@@ -688,6 +694,7 @@ export function createApp(
     backend,
     options.limits?.readinessTimeoutMs ?? options.readinessTimeoutMs ??
       READINESS_TIMEOUT_MS,
+    { cacheMs: READINESS_CACHE_MS },
   );
   const mcpRateLimit = createRateLimitMiddleware({
     limiter: abuse.limiter,

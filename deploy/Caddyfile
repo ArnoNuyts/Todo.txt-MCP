@@ -67,6 +67,14 @@ todo.example.com {
 	# 	}
 	# }
 
+	# /readyz performs a full load + serialize of the todo list, so keep it off
+	# the public listener. Probe it over loopback or an internal listener (for
+	# example an orchestrator exec probe against 127.0.0.1:3000). Do not put the
+	# MCP bearer token in a probe spec. /healthz stays reachable for liveness.
+	handle /readyz {
+		respond 404
+	}
+
 	# /metrics is OFF by default. The app returns 404 for /metrics when HOST is
 	# non-loopback unless MCP_METRICS_ENABLED is set explicitly; this deny rule
 	# makes the proxy independent of app configuration.

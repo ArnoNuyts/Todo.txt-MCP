@@ -411,9 +411,12 @@ exhaust the process memory:
   `MCP_METRICS_TOKEN` to keep the metrics credential distinct from `/mcp`; the
   metrics limiter (`MCP_METRICS_RATE_LIMIT_PER_MIN`, default 60) is separate
   from the `/mcp` limits. The proxy examples deny `/metrics` by default.
-- **Health:** `GET /healthz` is cheap liveness; `GET /readyz` loads and
-  serializes the todo list and returns `503` when the backend is unusable. Use
-  `/readyz` for readiness probes and keep `/healthz` for liveness.
+- **Health:** `GET /healthz` is cheap liveness and stays reachable through the
+  reference proxies. `GET /readyz` loads and serializes the todo list and
+  returns `503` when the backend is unusable; it is unauthenticated but meant
+  for internal/orchestrator probes only. Probe it over loopback or an internal
+  listener: the reference Caddy and nginx configs return `404` for `/readyz` on
+  the public host. Do not put the MCP bearer token in a probe spec.
 - **Backups:** snapshot `data/todo.txt` before upgrades or bulk edits. See
   [docs/backup-restore.md](docs/backup-restore.md).
 
