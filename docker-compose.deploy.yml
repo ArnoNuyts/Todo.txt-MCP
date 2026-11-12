@@ -24,7 +24,9 @@ services:
 
     init: true
     restart: unless-stopped
-    mem_limit: 256m
+    # The worst-case legal todo.txt needs ~320 MB RSS; 512m leaves headroom for
+    # cgroup accounting and concurrent requests. See docs/memory-budget.md.
+    mem_limit: 512m
     pids_limit: 256
     stop_grace_period: 15s
     read_only: true
@@ -61,6 +63,10 @@ services:
       - mcp_auth_token
 
     environment:
+      # Keep the V8 heap below the cgroup limit so a pathological file fails
+      # with a restartable V8 OOM instead of an abrupt container kill. The cgroup
+      # still enforces RSS; this flag is not a memory cap. See docs/memory-budget.md.
+      - NODE_OPTIONS=--max-old-space-size=384
       # Network security (see SECURITY.md)
       - HOST=0.0.0.0
       # Set the public hostname and browser origin in .env, for example:
