@@ -45,8 +45,9 @@ services:
     stop_grace_period: 15s
     read_only: true
     tmpfs:
-      # npm needs a writable directory for its cache and the installed package.
-      - /tmp:mode=1777
+      # npm needs a writable, executable directory for its cache and the
+      # installed package; Docker mounts tmpfs noexec by default.
+      - /tmp:mode=1777,exec
     cap_drop:
       - ALL
     security_opt:
