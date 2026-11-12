@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { BackendConflictError } from "./backend-errors.ts";
 import { FileLockTimeoutError } from "./file-lock.ts";
-import { LimitExceededError } from "./limits.ts";
+import {
+  LimitExceededError,
+  ReadLineLengthLimitError,
+  ReadTodoCountLimitError,
+  UnsafeTodoFileContentError,
+} from "./limits.ts";
 
 /**
  * Stable error codes returned in `structuredContent.error.code`. Clients can
@@ -94,6 +99,30 @@ function mapError(error: unknown): ToolErrorResult {
     return toolError("LIMIT_EXCEEDED", error.message, {
       byteLength: error.byteLength,
       maxFileBytes: error.maxFileBytes,
+    });
+  }
+
+  if (error instanceof ReadTodoCountLimitError) {
+    return toolError("LIMIT_EXCEEDED", error.message, {
+      maxReadTodos: error.maxReadTodos,
+      actualCount: error.actualCount,
+    });
+  }
+
+  if (error instanceof ReadLineLengthLimitError) {
+    return toolError("LIMIT_EXCEEDED", error.message, {
+      maxLineChars: error.maxLineChars,
+      lineLength: error.lineLength,
+      lineNumber: error.lineNumber,
+    });
+  }
+
+  if (error instanceof UnsafeTodoFileContentError) {
+    // The message and details intentionally carry only the location and code
+    // point; the offending line content is never echoed.
+    return toolError("BACKEND_ERROR", error.message, {
+      lineNumber: error.lineNumber,
+      codePoint: error.codePoint,
     });
   }
 

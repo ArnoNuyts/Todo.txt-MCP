@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "todo.txt-mcp": "./bin/todo.txt-mcp.js"
+    "todo.txt-mcp": "bin/todo.txt-mcp.js"
   },
   "files": [
     "bin/",
@@ -46,7 +46,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "bench:actions": "node bench/actions.ts",
-    "bench:agent": "node bench/agent-eval.ts"
+    "bench:agent": "node bench/agent-eval.ts",
+    "bench:worst-case": "node bench/worst-case-file.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

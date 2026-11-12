@@ -58,15 +58,20 @@ authorization (there is a single shared todo file).
   advertised. Structured logs never include tokens, bodies, or todo content.
 - `GET /healthz` returns `{"status":"ok"}` for liveness checks and is never
   authenticated, but it is still subject to Host validation: a missing or
-  foreign `Host` header is rejected with `403`. `GET /readyz` is also
-  unauthenticated and Host-validated; it performs a bounded load/serialize of
-  the todo list and returns `503 {"status":"unavailable"}` when the backend is
-  broken, so use it for readiness probes and keep `/healthz` for liveness.
-  `/readyz` has its own per-client limiter (`MCP_READYZ_RATE_LIMIT_PER_MIN`,
-  default 120; `0` disables) and returns a JSON-RPC `429` with `Retry-After`
-  when a probe budget is exhausted. `/healthz` is never rate limited. `/mcp`
-  and `/metrics` require a bearer token; the server refuses to start when no
-  token source is configured.
+  foreign `Host` header is rejected with `403`. `GET /readyz` is
+  **unauthenticated** and Host-validated; it performs a bounded load/serialize
+  of the todo list and returns `503 {"status":"unavailable"}` when the backend
+  is broken. Because it triggers backend work, `/readyz` is for internal
+  orchestrator probes only: probe it over loopback or an internal listener, and
+  keep `/healthz` for public liveness checks. The reference Caddy and nginx
+  configs return `404` for `/readyz`, `/readyz/`, and case variants on the
+  public host. A successful readiness result is cached for 5 seconds to absorb
+  probe floods; failures are never cached. `/readyz` also has its own
+  per-client limiter (`MCP_READYZ_RATE_LIMIT_PER_MIN`, default 120; `0`
+  disables) and returns a JSON-RPC `429` with `Retry-After` when a probe budget
+  is exhausted; `/healthz` is never rate limited. Never put the MCP bearer
+  token in a probe spec. `/mcp` and `/metrics` require a bearer token; the
+  server refuses to start when no token source is configured.
 - **`/metrics` is off by default on a network deployment.** It is enabled when
   the server binds loopback and disabled when `HOST` is non-loopback, unless
   `MCP_METRICS_ENABLED` explicitly enables it. Set `MCP_METRICS_TOKEN` to keep

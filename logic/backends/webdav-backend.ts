@@ -6,7 +6,10 @@ import { BackendConflictError } from "../backend-errors.ts";
 import {
   assertFileSizeWithinLimit,
   resolveMaxFileBytes,
+  resolveMaxLineChars,
+  resolveMaxReadTodos,
 } from "../limits.ts";
+import { validateTodoFileContent } from "../todo-file-validation.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -38,6 +41,10 @@ export interface WebDavBackendOptions {
   random?: () => number;
   /** Maximum allowed todo file size in bytes. Defaults to the env limit. */
   maxFileBytes?: number;
+  /** Maximum number of physical lines. Defaults to `TODOTXT_MCP_MAX_READ_TODOS`. */
+  maxReadTodos?: number;
+  /** Maximum UTF-16 code units per line. Defaults to `TODOTXT_MCP_MAX_LINE_CHARS`. */
+  maxLineChars?: number;
 }
 
 /**
@@ -246,6 +253,8 @@ export class WebDavBackend implements TodoBackend {
   private readonly maxDelayMs: number;
   private readonly random: () => number;
   private readonly maxFileBytes: number;
+  private readonly maxReadTodos: number;
+  private readonly maxLineChars: number;
   /**
    * Holds the revision for one load -> save transaction. `withLock` creates a
    * fresh context per mutation, so concurrent reads in other contexts cannot
@@ -290,6 +299,8 @@ export class WebDavBackend implements TodoBackend {
     this.maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
     this.random = options.random ?? Math.random;
     this.maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
+    this.maxReadTodos = options.maxReadTodos ?? resolveMaxReadTodos();
+    this.maxLineChars = options.maxLineChars ?? resolveMaxLineChars();
   }
 
   private getHeaders(): Record<string, string> {
@@ -413,14 +424,18 @@ export class WebDavBackend implements TodoBackend {
 
     const text = await readTodoBody(response, this.maxFileBytes);
 
+    // Validate before constructing Todos so a WebDAV body gets the same
+    // read-side bounds and content checks as a local file.
+    const lines = validateTodoFileContent(text, {
+      maxReadTodos: this.maxReadTodos,
+      maxLineChars: this.maxLineChars,
+    });
+
     // Only record the revision after the body was read successfully, so a
     // failed load can never be turned into a write in the same transaction.
     this.recordRevision({ exists: true, etag, lastModified });
 
-    return text
-      .split("\n")
-      .filter((x) => x.trim())
-      .map((x) => new Todo(x));
+    return lines.filter((x) => x.trim()).map((x) => new Todo(x));
   }
 
   /**
