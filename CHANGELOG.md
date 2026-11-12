@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.1](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.4.0...v3.4.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* restore v-prefixed release tags ([e57dd68](https://github.com/ArnoNuyts/Todo.txt-MCP/commit/e57dd683be1b280bf88d8d3c0cfc13c7db3eb919))
+* restore v-prefixed release tags ([8728eb2](https://github.com/ArnoNuyts/Todo.txt-MCP/commit/8728eb2124c88013a627fee5a240d82ea9400e09))
+
 ## [3.4.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.3.0...v3.4.0) (2026-11-12)
 
 
