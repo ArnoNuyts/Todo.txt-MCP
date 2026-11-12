@@ -87,6 +87,8 @@ Use [`deploy/Caddyfile`](../deploy/Caddyfile) or
 - rate limit at the edge;
 - forward `Host` and a replaced `X-Forwarded-For`;
 - return `404` for `/metrics` by default;
+- return `404` for `/readyz` and its subpaths (`/readyz/`, case-insensitive)
+  by default, because it triggers a full load and serialize;
 - proxy to `127.0.0.1:3000`.
 
 After reloading the proxy, verify:
@@ -98,6 +100,10 @@ curl -o /dev/null -w '%{http_code}\n' \
   https://todo.example.com/mcp                      # 401 without a token
 curl -o /dev/null -w '%{http_code}\n' \
   https://todo.example.com/metrics                  # 404 by default
+curl -o /dev/null -w '%{http_code}\n' \
+  https://todo.example.com/readyz                   # 404 by default
+curl -o /dev/null -w '%{http_code}\n' \
+  https://todo.example.com/readyz/                  # 404 by default
 ```
 
 ## 5. `TRUST_PROXY` and the real client IP
@@ -246,8 +252,13 @@ copy-paste script. The minimum rules:
 - [ ] Read the release notes and `SECURITY.md` changes.
 - [ ] `docker compose -f docker-compose.deploy.yml build --pull`
 - [ ] `docker compose -f docker-compose.deploy.yml up -d`
-- [ ] `/healthz` and `/readyz` are `200`; an authenticated `list_todos`
-      succeeds and lists the expected todos.
+- [ ] `/healthz` is `200` on the public host. `/readyz` is `200` over
+      loopback or an internal listener (for example
+      `curl -fsS http://127.0.0.1:3000/readyz`) and `404` through the
+      reference proxy: it is an internal/orchestrator probe, not a public
+      endpoint, because it loads and serializes the todo list. Do not put the
+      MCP bearer token in a probe spec. An authenticated `list_todos` succeeds
+      and lists the expected todos.
 - [ ] `/metrics` is still `404` unless deliberately enabled.
 - [ ] Confirm the client IP in logs is still the real client.
 - [ ] Keep the previous image and backup until the new one has run normally.

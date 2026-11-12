@@ -32,7 +32,7 @@ describe("readiness probe", () => {
 
   async function startApp(
     backend: TodoBackend,
-    options: { readinessTimeoutMs?: number } = {},
+    options: { readinessTimeoutMs?: number; readinessCacheMs?: number } = {},
   ) {
     httpServer = createApp(backend, {
       authToken: "readyz-token-aaaaaaaaaaaaaaaaaaaaaaaa",
@@ -137,6 +137,145 @@ describe("readiness probe", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(probe()).resolves.toEqual({ ready: true });
     expect(loads).toBe(2);
+  });
+
+  it("serves repeated HTTP probes from the readiness cache", async () => {
+    let loads = 0;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        return [];
+      },
+      save: async () => {},
+    };
+
+    await startApp(backend, { readinessCacheMs: 60_000 });
+
+    const first = await fetch(`${baseUrl}/readyz`);
+    const second = await fetch(`${baseUrl}/readyz`);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(loads).toBe(1);
+  });
+
+  it("reuses a successful result for cacheMs without a second backend load", async () => {
+    let loads = 0;
+    let clock = 1_000;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        return [];
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 1_000, {
+      cacheMs: 5_000,
+      now: () => clock,
+    });
+
+    await expect(probe()).resolves.toEqual({ ready: true });
+    clock += 4_999;
+    await expect(probe()).resolves.toEqual({ ready: true });
+
+    expect(loads).toBe(1);
+  });
+
+  it("probes again after the cached result expires", async () => {
+    let loads = 0;
+    let clock = 1_000;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        return [];
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 1_000, {
+      cacheMs: 5_000,
+      now: () => clock,
+    });
+
+    await expect(probe()).resolves.toEqual({ ready: true });
+    clock += 5_000;
+    await expect(probe()).resolves.toEqual({ ready: true });
+
+    expect(loads).toBe(2);
+  });
+
+  it("does not cache failures", async () => {
+    let loads = 0;
+    let clock = 1_000;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        if (loads === 1) {
+          throw new Error("backend unavailable");
+        }
+        return [];
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 1_000, {
+      cacheMs: 5_000,
+      now: () => clock,
+    });
+
+    await expect(probe()).resolves.toEqual({
+      ready: false,
+      reason: "backend unavailable",
+    });
+    await expect(probe()).resolves.toEqual({ ready: true });
+
+    expect(loads).toBe(2);
+  });
+
+  it("does not cache a timed-out result even when caching is enabled", async () => {
+    let loads = 0;
+    let release!: () => void;
+    const backend: TodoBackend = {
+      load: () => {
+        loads += 1;
+        if (loads > 1) {
+          return Promise.resolve([]);
+        }
+        return new Promise<Todo[]>((resolve) => {
+          release = () => resolve([]);
+        });
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 10, { cacheMs: 5_000 });
+
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    expect(loads).toBe(1);
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(probe()).resolves.toEqual({ ready: true });
+    expect(loads).toBe(2);
+  });
+
+  it("keeps single-flight behavior and serves the settled result from cache", async () => {
+    let loads = 0;
+    const backend: TodoBackend = {
+      load: async () => {
+        loads += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return [];
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 1_000, { cacheMs: 5_000 });
+
+    const results = await Promise.all([probe(), probe(), probe()]);
+
+    expect(results).toEqual([{ ready: true }, { ready: true }, { ready: true }]);
+    expect(loads).toBe(1);
+
+    await expect(probe()).resolves.toEqual({ ready: true });
+    expect(loads).toBe(1);
   });
 
   it("returns a server-side reason when the backend fails", async () => {
