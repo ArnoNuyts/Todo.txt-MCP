@@ -177,7 +177,7 @@ test the latest merged code locally without changing the stable default:
 ```bash
 TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
 # or pin the exact prerelease:
-TODOTXT_MCP_VERSION=3.3.0-beta.1 docker compose up -d --force-recreate
+TODOTXT_MCP_VERSION=3.3.1-beta.123 docker compose up -d --force-recreate
 ```
 
 1. **Run**:
