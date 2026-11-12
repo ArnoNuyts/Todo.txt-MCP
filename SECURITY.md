@@ -51,10 +51,11 @@ authorization (there is a single shared todo file).
   work.
 - The server is stateless (`sessionIdGenerator: undefined`) and returns JSON
   responses rather than long-lived SSE streams.
-- `/mcp` and `/metrics` send `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`; the framework
-  name is not advertised. Structured logs never include tokens, bodies, or todo
-  content.
+- `/mcp`, `/metrics`, and `/readyz` send `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
+  `Cross-Origin-Resource-Policy: same-origin`, and
+  `Content-Security-Policy: default-src 'none'`; the framework name is not
+  advertised. Structured logs never include tokens, bodies, or todo content.
 - `GET /healthz` returns `{"status":"ok"}` for liveness checks and is never
   authenticated, but it is still subject to Host validation: a missing or
   foreign `Host` header is rejected with `403`. `GET /readyz` is
@@ -65,9 +66,12 @@ authorization (there is a single shared todo file).
   keep `/healthz` for public liveness checks. The reference Caddy and nginx
   configs return `404` for `/readyz`, `/readyz/`, and case variants on the
   public host. A successful readiness result is cached for 5 seconds to absorb
-  probe floods; failures are never cached. Never put the MCP bearer token in a
-  probe spec. `/mcp` and `/metrics` require a bearer token;
-  the server refuses to start when no token source is configured.
+  probe floods; failures are never cached. `/readyz` also has its own
+  per-client limiter (`MCP_READYZ_RATE_LIMIT_PER_MIN`, default 120; `0`
+  disables) and returns a JSON-RPC `429` with `Retry-After` when a probe budget
+  is exhausted; `/healthz` is never rate limited. Never put the MCP bearer
+  token in a probe spec. `/mcp` and `/metrics` require a bearer token; the
+  server refuses to start when no token source is configured.
 - **`/metrics` is off by default on a network deployment.** It is enabled when
   the server binds loopback and disabled when `HOST` is non-loopback, unless
   `MCP_METRICS_ENABLED` explicitly enables it. Set `MCP_METRICS_TOKEN` to keep
@@ -90,8 +94,9 @@ authorization (there is a single shared todo file).
 | `MCP_METRICS_ENABLED` | loopback: on; non-loopback: off | Set to `1`/`true`/`yes` to enable `GET /metrics` on a non-loopback bind, or `0`/`false`/`no` to disable it anywhere. Disabled means `404`. |
 | `MCP_METRICS_TOKEN` | unset | Optional separate high-entropy token for `/metrics`. When set, only this token is accepted there; the `/mcp` token is rejected. |
 | `MCP_METRICS_RATE_LIMIT_PER_MIN` | `60` | Separate per-client rate limit for `/metrics`. `0` disables the metrics limiter; this limiter never triggers the `/mcp` auth ban. |
-| `MCP_READ_ONLY` | unset | Set to `1`, `true`, or `yes` (case-insensitive) to register only `list_todos`; mutating tools are absent. Any other value, including an unknown string, leaves writes enabled (fails open). |
-| `TRUST_PROXY` | `false` | Express `trust proxy` setting. Accepts `false`, `true`, a hop count, `loopback`, or an IP/CIDR list. Leave unset/false unless a trusted proxy is in front. |
+| `MCP_READ_ONLY` | unset | Set to `1`, `true`, or `yes` (case-insensitive) to register only `list_todos`; mutating tools are absent. `0`, `false`, `no`, or empty leaves writes enabled. Any other value fails startup. |
+| `MCP_READYZ_RATE_LIMIT_PER_MIN` | `120` | Separate per-client rate limit for unauthenticated `GET /readyz`. `0` disables the limiter; `/healthz` is never limited. |
+| `TRUST_PROXY` | `false` | Express `trust proxy` setting. Accepts `false`, `true`, a hop count, `loopback`, or an IP/CIDR list. Leave unset/false unless a trusted proxy is in front. `true` or a `/0` wildcard is refused when `HOST` is non-loopback. |
 | `MCP_RATE_LIMIT_PER_MIN` | `60` | Requests per client key per minute. `0` disables the rate limiter. |
 | `MCP_AUTH_FAIL_LIMIT` | `10` | Failed authentications before a client key is temporarily banned. |
 | `MCP_AUTH_FAIL_WINDOW_SEC` | `900` | Sliding window for counting authentication failures. |
@@ -304,13 +309,12 @@ the host mode.
 ## Read-only mode
 
 Set `MCP_READ_ONLY=1` (also `true` or `yes`, case-insensitive) to register only
-`list_todos`. Only those exact values enable it; every other value — including
-`on`, `truee`, or an empty string — leaves the write tools enabled, so a typo
-fails open rather than locking the agent out of writes. `add_todos`,
-`update_todos`, and `delete_todos` are absent from `tools/list` and cannot be
-called. The `todo_format` prompt and all MCP resources remain available. An
-explicit `{ readOnly: false }` programmatic option overrides the environment
-variable.
+`list_todos`. `0`, `false`, `no`, or an empty value leaves the write tools
+enabled. Any other value — including `on`, `truee`, or `2` — fails startup with
+a clear error instead of silently enabling writes. `add_todos`, `update_todos`,
+and `delete_todos` are absent from `tools/list` and cannot be called. The
+`todo_format` prompt and all MCP resources remain available. An explicit
+`{ readOnly: false }` programmatic option overrides the environment variable.
 
 ## Structured logging and metrics
 
@@ -651,7 +655,9 @@ TRUST_PROXY=10.0.0.0/8,172.16.0.0/12
 ```
 
 Never enable it on a host that clients can reach directly: spoofed
-`X-Forwarded-For` headers would defeat the rate limiter and lockout.
+`X-Forwarded-For` headers would defeat the rate limiter and lockout. The server
+refuses to start when `HOST` is non-loopback and `TRUST_PROXY` is `true` or a
+`/0` wildcard (`0.0.0.0/0`, `::/0`, or a list containing one).
 
 ### Limitations
 

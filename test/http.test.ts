@@ -514,24 +514,53 @@ describe("MCP HTTP endpoint", () => {
     expect((await postWithToken(second)).status).toBe(200);
   });
 
+  function expectDefenseInDepthHeaders(headers: Headers): void {
+    expect(headers.get("x-content-type-options")).toBe("nosniff");
+    expect(headers.get("referrer-policy")).toBe("no-referrer");
+    expect(headers.get("cache-control")).toBe("no-store");
+    expect(headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(headers.get("content-security-policy")).toBe("default-src 'none'");
+  }
+
   it("sets security headers and hides the framework name", async () => {
     const mcp = await fetch(`${baseUrl}/mcp`);
     expect(mcp.status).toBe(405);
     expect(mcp.headers.get("x-powered-by")).toBeNull();
-    expect(mcp.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(mcp.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(mcp.headers.get("cache-control")).toBe("no-store");
+    expectDefenseInDepthHeaders(mcp.headers);
     await mcp.body?.cancel();
 
     const metrics = await fetch(`${baseUrl}/metrics`);
     expect(metrics.status).toBe(200);
     expect(metrics.headers.get("x-powered-by")).toBeNull();
-    expect(metrics.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(metrics.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(metrics.headers.get("cache-control")).toBe("no-store");
+    expectDefenseInDepthHeaders(metrics.headers);
     expect(metrics.headers.get("content-type"))
       .toContain("text/plain");
     await metrics.body?.cancel();
+  });
+
+  it("sets defense-in-depth headers on 401 and 403 responses", async () => {
+    await restartApp({ authToken: "header-token-aaaaaaaaaaaaaaaaaaaa" });
+
+    const unauthorized = await fetch(`${baseUrl}/metrics`);
+    expect(unauthorized.status).toBe(401);
+    expectDefenseInDepthHeaders(unauthorized.headers);
+    await unauthorized.body?.cancel();
+
+    const forbidden = await rawRequest({
+      headers: {
+        host: "evil.example",
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: initializeBody(),
+    });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.headers["cross-origin-resource-policy"]).toBe(
+      "same-origin",
+    );
+    expect(forbidden.headers["content-security-policy"]).toBe(
+      "default-src 'none'",
+    );
   });
 
   it("echoes a valid request ID and replaces an invalid one", async () => {
