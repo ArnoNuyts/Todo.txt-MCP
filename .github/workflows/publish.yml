@@ -3,9 +3,12 @@ name: Publish
 on:
   release:
     types: [published]
-  # Test builds for local Docker testing. These do not create a GitHub
-  # release and never move the `latest` dist-tag.
+  # Every push to release/next publishes an automatic beta to npm's `next`
+  # tag. prerelease-v* tags are a manual escape hatch for testing an arbitrary
+  # commit. Neither creates a GitHub release or moves `latest`.
   push:
+    branches:
+      - release/next
     tags:
       - "prerelease-v*"
 
@@ -28,17 +31,27 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      - name: Set prerelease version
-        if: startsWith(github.ref, 'refs/tags/prerelease-v')
+      - name: Set test-build version
+        if: startsWith(github.ref, 'refs/tags/prerelease-v') || github.ref == 'refs/heads/release/next'
         run: |
-          version="${GITHUB_REF_NAME#prerelease-v}"
-          case "$version" in
-            *-alpha.*|*-beta.*|*-rc.*) ;;
-            *)
-              echo "::error::Tag must be prerelease-vX.Y.Z-alpha.N, -beta.N, or -rc.N."
-              exit 1
-              ;;
-          esac
+          if [[ "$GITHUB_REF" == refs/tags/prerelease-v* ]]; then
+            version="${GITHUB_REF_NAME#prerelease-v}"
+            case "$version" in
+              *-alpha.*|*-beta.*|*-rc.*) ;;
+              *)
+                echo "::error::Tag must be prerelease-vX.Y.Z-alpha.N, -beta.N, or -rc.N."
+                exit 1
+                ;;
+            esac
+          else
+            # Next patch + a unique beta number for this workflow run.
+            version="$(node -e '
+              const pkg = require("./package.json");
+              const base = pkg.version.split("-")[0].split("+")[0];
+              const [major, minor, patch] = base.split(".").map(Number);
+              process.stdout.write(`${major}.${minor}.${patch + 1}-beta.${process.env.GITHUB_RUN_NUMBER}`);
+            ')"
+          fi
           npm version "$version" --no-git-tag-version
       - run: npm run typecheck
       - run: npm test

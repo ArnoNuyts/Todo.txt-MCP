@@ -171,8 +171,8 @@ a recreated container downloads it again. Pin the release with
 [`docker-compose.yml`](docker-compose.yml) adds memory/PID limits, log rotation,
 and a read-only runtime.
 
-`TODOTXT_MCP_VERSION` also accepts a dist-tag, so once a prerelease is published
-to npm's `next` tag you can test it locally without changing the stable default:
+Every push to `release/next` publishes a beta to npm's `next` tag, so you can
+test the latest merged code locally without changing the stable default:
 
 ```bash
 TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
