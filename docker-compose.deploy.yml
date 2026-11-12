@@ -24,7 +24,7 @@ services:
       - -c
       - >-
         npm install --global --prefix /tmp/todo-txt-mcp
-        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.3.0} 1>&2
+        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.4.0} 1>&2
         && exec /tmp/todo-txt-mcp/bin/todo.txt-mcp
     # npm writes its cache and logs to $HOME; /tmp is the writable tmpfs below.
     # The rest of the filesystem stays read-only.

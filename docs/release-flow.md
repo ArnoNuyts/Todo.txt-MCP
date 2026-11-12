@@ -57,7 +57,7 @@ release.
 Every push to `release/next` — including a merged pull request — runs the
 publish workflow and publishes an automatic beta. The version is the next patch
 plus a beta number derived from the workflow run, for example
-`3.3.1-beta.123`. `package.json` in the repository is not changed, and npm lets
+`3.4.1-beta.123`. `package.json` in the repository is not changed, and npm lets
 each version be published only once.
 
 Test it with the Compose setup:
@@ -65,18 +65,18 @@ Test it with the Compose setup:
 ```bash
 TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
 # or pin the exact snapshot:
-TODOTXT_MCP_VERSION=3.3.1-beta.123 docker compose up -d --force-recreate
+TODOTXT_MCP_VERSION=3.4.1-beta.123 docker compose up -d --force-recreate
 ```
 
 The package is installed when the container starts, so a new beta needs
 `--force-recreate` (or an equivalent recreate) to take effect. Return to the
-stable release with `TODOTXT_MCP_VERSION=3.3.0` (or by removing the variable).
+stable release with `TODOTXT_MCP_VERSION=3.4.0` (or by removing the variable).
 
 For a one-off build from an arbitrary commit, push a manual tag instead:
 
 ```bash
-git tag prerelease-v3.3.1-beta.1
-git push origin prerelease-v3.3.1-beta.1
+git tag prerelease-v3.4.1-beta.1
+git push origin prerelease-v3.4.1-beta.1
 ```
 
 That publishes exactly that version to `next` and does not create a GitHub

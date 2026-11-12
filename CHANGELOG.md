@@ -1,6 +1,6 @@
 # Changelog
 
-## [3.4.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/todo.txt-mcp-v3.3.0...todo.txt-mcp-v3.4.0) (2026-11-12)
+## [3.4.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.3.0...v3.4.0) (2026-11-12)
 
 
 ### Features
@@ -42,7 +42,7 @@
 * parse duplicate tag values in linear time ([d427a23](https://github.com/ArnoNuyts/Todo.txt-MCP/commit/d427a23b4f72324e9a8bb09dbd8cb2aab64f478d))
 * **todo:** parse tag values in linear time ([2a35699](https://github.com/ArnoNuyts/Todo.txt-MCP/commit/2a35699789006e8ba4a8fdc67efee7483b7e6bbc))
 
-## [3.3.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/todo.txt-mcp-v3.2.0...todo.txt-mcp-v3.3.0) (2026-11-12)
+## [3.3.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.2.0...v3.3.0) (2026-11-12)
 
 
 ### Features
