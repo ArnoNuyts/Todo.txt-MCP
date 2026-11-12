@@ -48,6 +48,22 @@ function serializeTags(tags: { [key: string]: string | string[] }): string {
     .join(" ");
 }
 
+/**
+ * Restores the public `string | string[]` tag shape from the per-key value
+ * sets used during parsing. A single value stays a string so serialization and
+ * callers see the same representation as before.
+ */
+function materializeTags(
+  valuesByKey: Map<string, Set<string>>,
+): { [key: string]: string | string[] } {
+  const tags: { [key: string]: string | string[] } = {};
+  for (const [key, values] of valuesByKey) {
+    const list = [...values];
+    tags[key] = list.length === 1 ? list[0] : list;
+  }
+  return tags;
+}
+
 export class Todo {
   text: string = "";
   state: TodoStateEnum = TodoStateEnum.todo;
@@ -264,30 +280,35 @@ export class Todo {
       this.contexts.add(context.groups!.name);
     }
 
-    const matchTags = text.matchAll(TAG_REGEX);
-    for (const tag of matchTags) {
+    const tagValues = this.collectTagValues(text);
+    this.tags = materializeTags(tagValues);
+    // Projects and contexts were extracted from the original body above; the
+    // single global pass removes every tag token (and its leading whitespace)
+    // without the per-token `replace` scan that made this quadratic.
+    this.text = text.replace(TAG_REGEX, "");
+  }
+
+  /**
+   * Collects tag values for one body into per-key sets seeded with the values
+   * already on this todo. This preserves append/dedupe behavior across repeated
+   * `setText` calls while keeping membership checks O(1) and first-seen order.
+   */
+  private collectTagValues(text: string): Map<string, Set<string>> {
+    const valuesByKey = new Map<string, Set<string>>();
+    for (const [key, value] of Object.entries(this.tags)) {
+      valuesByKey.set(key, new Set(Array.isArray(value) ? value : [value]));
+    }
+    for (const tag of text.matchAll(TAG_REGEX)) {
       const key = tag.groups!.key;
       const value = tag.groups!.value;
-      const existing = this.tags[key];
-      const alreadyPresent = existing === value ||
-        (Array.isArray(existing) && existing.includes(value));
-      // Re-applying the same body (a common follow-up edit) must not append an
-      // identical tag, which would render as `due:2026-12-15,2026-12-15`.
-      if (!alreadyPresent) {
-        switch (typeof existing) {
-          case "object":
-            this.tags[key] = [...existing, value];
-            break;
-          case "string":
-            this.tags[key] = [existing, value];
-            break;
-          default:
-            this.tags[key] = value;
-        }
+      let values = valuesByKey.get(key);
+      if (values === undefined) {
+        values = new Set();
+        valuesByKey.set(key, values);
       }
-      text = text.replace(tag[0], "");
+      values.add(value);
     }
-    this.text = text;
+    return valuesByKey;
   }
 
   setTag(key: string, value: string): void {
