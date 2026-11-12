@@ -380,8 +380,9 @@ exhaust the process memory:
   There are no tool profiles.
 - **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`, case-insensitive)
   registers only `list_todos`; mutating tools are absent from `tools/list` and
-  cannot be called. Prompts and resources remain available. Any other value,
-  including an unrecognized string, leaves writes enabled.
+  cannot be called. Prompts and resources remain available. `0`/`false`/`no`
+  or an empty value leaves writes enabled; any other value fails startup
+  instead of silently enabling writes.
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Handler failures carry a stable
   `structuredContent.error.code`; schema-bound input violations are rejected by
@@ -411,11 +412,19 @@ exhaust the process memory:
   `MCP_METRICS_TOKEN` to keep the metrics credential distinct from `/mcp`; the
   metrics limiter (`MCP_METRICS_RATE_LIMIT_PER_MIN`, default 60) is separate
   from the `/mcp` limits. The proxy examples deny `/metrics` by default.
-- **Health:** `GET /healthz` is cheap liveness; `GET /readyz` loads and
-  serializes the todo list and returns `503` when the backend is unusable. Use
-  `/readyz` for readiness probes and keep `/healthz` for liveness.
-- **Backups:** snapshot `data/todo.txt` before upgrades or bulk edits. See
+- **Health:** `GET /healthz` is cheap, unthrottled liveness; `GET /readyz`
+  loads and serializes the todo list and returns `503` when the backend is
+  unusable. `/readyz` has a separate per-client limiter
+  (`MCP_READYZ_RATE_LIMIT_PER_MIN`, default 120; `0` disables) and returns
+  `429` with `Retry-After` when exceeded. Use `/readyz` for readiness probes
+  and keep `/healthz` for liveness.
+- **Backups:** run `bin/backup-todo.sh` before upgrades or bulk edits; it
+  snapshots `data/todo.txt` with a SHA-256 sidecar and count-based retention,
+  and never includes tokens, `.env`, or `secrets/`. See
   [docs/backup-restore.md](docs/backup-restore.md).
+- **CI security:** `.github/workflows/security.yml` runs Gitleaks secret
+  scanning on pushes and pull requests, plus dependency review on pull
+  requests.
 
 See [SECURITY.md](SECURITY.md) for rotation, file permissions, and exposure
 guidance.

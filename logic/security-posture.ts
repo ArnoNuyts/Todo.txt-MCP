@@ -57,7 +57,7 @@ const POSTURE_WARNING_MESSAGES: Record<string, string> = {
     "GET /metrics is enabled on a non-loopback bind. Restrict it at the proxy " +
     "and/or set MCP_METRICS_TOKEN.",
   read_only_value_unrecognized:
-    "MCP_READ_ONLY has an unrecognized value, so writes remain enabled. Use " +
+    "MCP_READ_ONLY has an unrecognized value; startup rejects it. Use " +
     "1/true/yes or 0/false/no.",
   env_token_non_loopback:
     "The MCP auth token comes from the environment on a non-loopback bind. " +

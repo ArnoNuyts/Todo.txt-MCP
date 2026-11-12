@@ -16,6 +16,7 @@ import {
   createBearerAuthMiddleware,
   DEFAULT_HOST,
   isLoopbackHost,
+  isWildcardTrustProxy,
   parseTrustProxy,
   type BearerAuthHooks,
   type HttpSecurityOptions,
@@ -71,6 +72,9 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 /** Readiness probes must not hang on a wedged backend. */
 const READINESS_TIMEOUT_MS = 2_000;
 
+/** Cap concurrent sockets so a connection flood cannot exhaust file handles. */
+const MAX_CONNECTIONS = 256;
+
 import { filterTodos } from "./logic/Todos.ts";
 import type { TodoBackend } from "./logic/backend.ts";
 import { LocalFileBackend } from "./logic/backends/local-file-backend.ts";
@@ -79,6 +83,7 @@ import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 import { serializeTodoContent } from "./logic/content.ts";
+import { resolveReadyzRateLimitPerMin } from "./logic/readiness-config.ts";
 import { createReadinessProbe } from "./logic/readiness.ts";
 import { resolveReadOnlyMode } from "./logic/read-only.ts";
 import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
@@ -410,6 +415,7 @@ export interface CreateAppOptions extends HttpSecurityOptions {
   limits?: {
     abuse?: AbuseControlOverrides;
     readinessTimeoutMs?: number;
+    readyzRateLimitPerMin?: number;
   };
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
@@ -425,6 +431,8 @@ export interface CreateAppOptions extends HttpSecurityOptions {
   resolvedMetrics?: ResolvedMetricsConfig;
   /** Readiness probe timeout in milliseconds. Default: 2000. */
   readinessTimeoutMs?: number;
+  /** Probes per client key per minute. Default: 120; `0` disables. */
+  readyzRateLimitPerMin?: number;
 }
 
 /** Describes which credential `/metrics` uses, for the posture record only. */
@@ -696,6 +704,24 @@ export function createApp(
     event: "rate_limited",
     message: "Too many requests.",
   });
+  // `/readyz` is unauthenticated, so give it an independent bucket. Exhausting
+  // readiness probes must not consume the `/mcp` or `/metrics` budgets.
+  const readyzLimiter = new SlidingWindowLimiter({
+    limit: resolveReadyzRateLimitPerMin(
+      options.limits?.readyzRateLimitPerMin ?? options.readyzRateLimitPerMin,
+      process.env,
+    ),
+    windowMs: 60_000,
+    maxEntries: abuseConfig.maxTrackedKeys,
+    ...(abuseOverrides.now === undefined ? {} : { now: abuseOverrides.now }),
+  });
+  const readyzRateLimit = createRateLimitMiddleware({
+    limiter: readyzLimiter,
+    clientKey: abuse.clientKey,
+    logger,
+    event: "readyz_rate_limited",
+    message: "Too many readiness requests.",
+  });
   const app = express();
 
   // Do not advertise the framework.
@@ -736,6 +762,10 @@ export function createApp(
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "no-store");
+    // These endpoints return data or diagnostics; never let another origin
+    // load them as a subresource or execute injected markup.
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    res.setHeader("Content-Security-Policy", "default-src 'none'");
     next();
   };
   app.use("/mcp", securityHeaders);
@@ -757,7 +787,7 @@ export function createApp(
   // Liveness stays cheap; readiness actually loads and serializes the todo
   // list so a bricked backend is visible. It is unauthenticated but still
   // Host-validated by the middleware above, and never returns the error.
-  app.get("/readyz", async (req: Request, res: Response) => {
+  app.get("/readyz", readyzRateLimit, async (req: Request, res: Response) => {
     const result = await readiness();
     if (!result.ready) {
       logger.warn("readiness_failed", {
@@ -972,6 +1002,19 @@ export async function main() {
     return;
   }
 
+  // Resolve globally for both transports so a typo fails startup instead of
+  // silently leaving writes enabled.
+  let readOnlyMode: boolean;
+  try {
+    readOnlyMode = resolveReadOnlyMode({}, process.env);
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   let config: TodoTxtMcpConfig;
   try {
     config = await loadConfig();
@@ -1005,7 +1048,7 @@ export async function main() {
   if (transportMode === "stdio") {
     // stdio mode skips HTTP-only concerns: bearer tokens, host/origin
     // allowlists, TLS, and metrics. stdout carries protocol frames only.
-    await runStdioServer(backend);
+    await runStdioServer(backend, { readOnly: readOnlyMode });
     return;
   }
 
@@ -1021,6 +1064,16 @@ export async function main() {
   }
 
   const host = process.env.HOST ?? DEFAULT_HOST;
+  if (!isLoopbackHost(host) && isWildcardTrustProxy(trustProxy)) {
+    console.error(
+      `❌ TRUST_PROXY trusts every hop (true or a /0 wildcard) while HOST ` +
+        `"${host}" is not loopback. Clients can spoof X-Forwarded-For and ` +
+        `bypass per-IP limits and lockouts. Use TRUST_PROXY=loopback or the ` +
+        `proxy's exact IP/CIDR.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   const logger = createLogger({ level: resolveLogLevel(process.env) });
   const allowWeakTokens = isWeakTokenOverrideEnabled(
     process.env.MCP_ALLOW_WEAK_TOKEN,
@@ -1100,7 +1153,20 @@ export async function main() {
 
   // Keep the active list in a mutable store so SIGHUP can swap it atomically.
   const tokenStore = createAuthTokenStore(authTokens);
-  const readOnlyMode = resolveReadOnlyMode({}, process.env);
+
+  let readyzRateLimitPerMin: number;
+  try {
+    readyzRateLimitPerMin = resolveReadyzRateLimitPerMin(
+      undefined,
+      process.env,
+    );
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const proxyWarnings = warnOnProxyPosture(
     host,
@@ -1125,6 +1191,7 @@ export async function main() {
   const app = createApp(backend, {
     logger,
     readOnly: readOnlyMode,
+    limits: { readyzRateLimitPerMin },
     ...(trustProxy === undefined ? {} : { trustProxy }),
     ...(authTokens.length > 0 ? { authTokens: tokenStore } : {}),
     resolvedMetrics: metricsConfig,
@@ -1168,6 +1235,10 @@ export async function main() {
       proxyWarnings,
     });
   });
+
+  // Bound the number of simultaneous sockets. Requests are already
+  // rate-limited per client, but that does not cap a flood of idle clients.
+  server.maxConnections = MAX_CONNECTIONS;
 
   // Bound slow-body and idle-connection attacks.
   server.requestTimeout = 15_000;

@@ -43,12 +43,31 @@ describe("read-only mode", () => {
     expect(resolveReadOnlyMode({}, {})).toBe(false);
     expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "1" })).toBe(true);
     expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "true" })).toBe(true);
-    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "yes" })).toBe(true);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "YES" })).toBe(true);
     expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "0" })).toBe(false);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "false" })).toBe(false);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "No" })).toBe(false);
+    expect(resolveReadOnlyMode({}, { MCP_READ_ONLY: "" })).toBe(false);
     expect(resolveReadOnlyMode({ readOnly: false }, { MCP_READ_ONLY: "1" }))
       .toBe(false);
     expect(resolveReadOnlyMode({ readOnly: true }, { MCP_READ_ONLY: "0" }))
       .toBe(true);
+  });
+
+  it("fails closed on an unrecognized MCP_READ_ONLY value", () => {
+    for (const value of ["on", "truee", "enabled", "2", " read-only "]) {
+      expect(() => resolveReadOnlyMode({}, { MCP_READ_ONLY: value }))
+        .toThrow(/Invalid MCP_READ_ONLY/);
+    }
+  });
+
+  it("lets an explicit readOnly option override an invalid environment value", () => {
+    expect(
+      resolveReadOnlyMode({ readOnly: false }, { MCP_READ_ONLY: "on" }),
+    ).toBe(false);
+    expect(
+      resolveReadOnlyMode({ readOnly: true }, { MCP_READ_ONLY: "on" }),
+    ).toBe(true);
   });
 
   it("exposes only list_todos but keeps resources available", async () => {
