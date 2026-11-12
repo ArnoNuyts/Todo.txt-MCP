@@ -68,7 +68,10 @@ describe("proxy posture warnings", () => {
       ["10.0.0.0/8", "0.0.0.0/0"],
       warn,
     ))).toEqual(["proxy_trust_wildcard"]);
-    expect(warnings).toHaveLength(4);
+    expect(codes(warnOnProxyPosture("0.0.0.0", "1.2.3.4/0", warn))).toEqual([
+      "proxy_trust_wildcard",
+    ]);
+    expect(warnings).toHaveLength(5);
     expect(warnings[0].message).toContain("spoof");
   });
 
