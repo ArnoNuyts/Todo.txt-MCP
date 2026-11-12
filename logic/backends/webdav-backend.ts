@@ -174,6 +174,51 @@ function hasSameTodoContent(left: string, right: string): boolean {
 }
 
 /**
+ * Reads at most `maxBytes` from a response stream. Unlike `arrayBuffer()`,
+ * this aborts before buffering an unbounded chunked/oversized body.
+ */
+async function readBoundedBody(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (response.body === null) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assertFileSizeWithinLimit("WebDAV todo file", bytes.byteLength, maxBytes);
+    return bytes;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      try {
+        assertFileSizeWithinLimit("WebDAV todo file", total, maxBytes);
+      } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        throw error;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/**
  * Reads and validates one stored todo body. Shared by `load()` and the
  * write-probe so content-type, size, UTF-8 and error-page rules cannot drift.
  * Throws on every rejection; the probe maps that to `unknown` at its call site.
@@ -202,12 +247,7 @@ async function readTodoBody(
       );
     }
 
-    const bytes = await response.arrayBuffer();
-    assertFileSizeWithinLimit(
-      "WebDAV todo file",
-      bytes.byteLength,
-      maxFileBytes,
-    );
+    const bytes = await readBoundedBody(response, maxFileBytes);
 
     let text: string;
     try {

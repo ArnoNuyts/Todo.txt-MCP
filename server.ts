@@ -93,6 +93,7 @@ import { resolveReadyzRateLimitPerMin } from "./logic/readiness-config.ts";
 import { createReadinessProbe } from "./logic/readiness.ts";
 import { resolveReadOnlyMode } from "./logic/read-only.ts";
 import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
+import { SERVER_VERSION } from "./logic/version.ts";
 import {
   addTodosHandler,
   CompactAddTodosSchema,
@@ -138,7 +139,7 @@ export function createTodoMcpServer(
     options.activity === undefined ? work() : options.activity.run(work);
   const server = new McpServer({
     name: "todo.txt-mcp",
-    version: "3.2.0",
+    version: SERVER_VERSION,
   });
 
   server.registerPrompt(

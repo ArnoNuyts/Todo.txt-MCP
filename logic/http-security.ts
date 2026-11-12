@@ -338,8 +338,11 @@ export function isWildcardTrustProxy(
     : [];
   return entries.some((entry) => {
     const normalized = entry.trim().toLowerCase();
-    return normalized === "true" || normalized === "0.0.0.0/0" ||
-      normalized === "::/0";
+    if (normalized === "true") {
+      return true;
+    }
+    const [address, prefix] = normalized.split("/");
+    return prefix === "0" && isIP(address) !== 0;
   });
 }
 
