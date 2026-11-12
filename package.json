@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "todo.txt-mcp": "./bin/todo.txt-mcp.js"
+    "todo.txt-mcp": "bin/todo.txt-mcp.js"
   },
   "files": [
     "bin/",
