@@ -3,6 +3,14 @@ name: Publish
 on:
   release:
     types: [published]
+  # Every push to release/next publishes an automatic beta to npm's `next`
+  # tag. prerelease-v* tags are a manual escape hatch for testing an arbitrary
+  # commit. Neither creates a GitHub release or moves `latest`.
+  push:
+    branches:
+      - release/next
+    tags:
+      - "prerelease-v*"
 
 permissions:
   contents: read
@@ -23,6 +31,28 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - name: Set test-build version
+        if: startsWith(github.ref, 'refs/tags/prerelease-v') || github.ref == 'refs/heads/release/next'
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/prerelease-v* ]]; then
+            version="${GITHUB_REF_NAME#prerelease-v}"
+            case "$version" in
+              *-alpha.*|*-beta.*|*-rc.*) ;;
+              *)
+                echo "::error::Tag must be prerelease-vX.Y.Z-alpha.N, -beta.N, or -rc.N."
+                exit 1
+                ;;
+            esac
+          else
+            # Next patch + a unique beta number for this workflow run.
+            version="$(node -e '
+              const pkg = require("./package.json");
+              const base = pkg.version.split("-")[0].split("+")[0];
+              const [major, minor, patch] = base.split(".").map(Number);
+              process.stdout.write(`${major}.${minor}.${patch + 1}-beta.${process.env.GITHUB_RUN_NUMBER}`);
+            ')"
+          fi
+          npm version "$version" --no-git-tag-version
       - run: npm run typecheck
       - run: npm test
       - name: Publish to npm
@@ -32,4 +62,8 @@ jobs:
             echo "@arnoarnoarno/todo.txt-mcp@${version} is already published; skipping."
             exit 0
           fi
-          npm publish --provenance --access public
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$tag"

@@ -125,7 +125,17 @@ In stdio mode:
 ```yaml
 services:
   todo-txt-mcp:
-    build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
+    # Run the published npm package in the official Node image; no local build.
+    image: node:26-alpine
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --global --prefix /tmp/todo-txt-mcp
+        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.2.0} 1>&2
+        && exec /tmp/todo-txt-mcp/bin/todo.txt-mcp
+    user: node
+    working_dir: /tmp
     ports:
       # Loopback only; put a TLS reverse proxy in front to expose it.
       - "127.0.0.1:3000:3000"
@@ -133,6 +143,13 @@ services:
       # Mount a directory so atomic file replacement works.
       - ./data:/data
     environment:
+      # npm state lives in the writable /tmp tmpfs.
+      - HOME=/tmp
+      - NPM_CONFIG_AUDIT=false
+      - NPM_CONFIG_CACHE=/tmp/npm-cache
+      - NPM_CONFIG_FUND=false
+      - NPM_CONFIG_IGNORE_SCRIPTS=true
+      - NPM_CONFIG_UPDATE_NOTIFIER=false
       - HOST=0.0.0.0
       - MCP_ALLOWED_HOSTS=localhost,127.0.0.1
       - MCP_ALLOWED_ORIGINS=http://localhost:3000
@@ -144,6 +161,23 @@ services:
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user
       # - TODOTXT_MCP_WEBDAV_PASSWORD=pass
+```
+
+The Compose setup pulls the official `node:26-alpine` image and runs the
+published npm package, so there is no local build. The first start needs
+outbound HTTPS to `registry.npmjs.org`; the package is installed into `/tmp`, so
+a recreated container downloads it again. Pin the release with
+`TODOTXT_MCP_VERSION` (default `3.2.0`). The full
+[`docker-compose.yml`](docker-compose.yml) adds memory/PID limits, log rotation,
+and a read-only runtime.
+
+Every push to `release/next` publishes a beta to npm's `next` tag, so you can
+test the latest merged code locally without changing the stable default:
+
+```bash
+TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
+# or pin the exact prerelease:
+TODOTXT_MCP_VERSION=3.3.0-beta.1 docker compose up -d --force-recreate
 ```
 
 1. **Run**:
