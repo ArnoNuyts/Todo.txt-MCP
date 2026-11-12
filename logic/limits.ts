@@ -9,11 +9,18 @@ export const DEFAULT_MAX_READ_TODOS = 50_000;
 export const DEFAULT_MAX_LINE_CHARS = 8_192;
 
 /**
+ * Base class for read-side capacity failures. It deliberately lives here
+ * instead of the tool layer so storage backends and file helpers do not import
+ * the MCP error envelope. `tool-errors.ts` maps subclasses to `LIMIT_EXCEEDED`.
+ */
+class TodoFileLimitError extends Error {}
+
+/**
  * Domain error for an exceeded file-size limit. It deliberately lives here
  * instead of the tool layer so storage backends and file helpers do not import
  * the MCP error envelope. `tool-errors.ts` maps it to `LIMIT_EXCEEDED`.
  */
-export class LimitExceededError extends Error {
+export class LimitExceededError extends TodoFileLimitError {
   readonly source: string;
   readonly byteLength: number;
   readonly maxFileBytes: number;
@@ -55,7 +62,7 @@ export function parsePositiveIntegerEnv(
 }
 
 /** Formats a Unicode code point as `U+XXXX` without exposing the character. */
-export function formatCodePoint(codePoint: number): string {
+function formatCodePoint(codePoint: number): string {
   return `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
@@ -63,7 +70,7 @@ export function formatCodePoint(codePoint: number): string {
  * Domain error for a todo file with too many physical lines. It reports only
  * counts so an oversized file cannot be echoed back through a tool result.
  */
-export class ReadTodoCountLimitError extends Error {
+export class ReadTodoCountLimitError extends TodoFileLimitError {
   readonly actualCount: number;
   readonly maxReadTodos: number;
 
@@ -83,15 +90,15 @@ export class ReadTodoCountLimitError extends Error {
  * Domain error for a todo file line longer than the read-path ceiling. Only
  * the line number and length are exposed.
  */
-export class ReadLineLengthLimitError extends Error {
+export class ReadLineLengthLimitError extends TodoFileLimitError {
   readonly lineNumber: number;
   readonly lineLength: number;
   readonly maxLineChars: number;
 
   constructor(lineNumber: number, lineLength: number, maxLineChars: number) {
     super(
-      `Todo file line ${lineNumber} is ${lineLength} characters long; the ` +
-        `limit is ${maxLineChars} set by TODOTXT_MCP_MAX_LINE_CHARS. ` +
+      `Todo file line ${lineNumber} is ${lineLength} UTF-16 code units long; ` +
+        `the limit is ${maxLineChars} set by TODOTXT_MCP_MAX_LINE_CHARS. ` +
         "Trim the line or raise the limit. Nothing was changed.",
     );
     this.name = "ReadLineLengthLimitError";

@@ -12,6 +12,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTodoMcpServer } from "../server.ts";
 import { LocalFileBackend } from "../logic/backends/local-file-backend.ts";
+import { WebDavBackend } from "../logic/backends/webdav-backend.ts";
+import { createReadinessProbe } from "../logic/readiness.ts";
 import {
   DEFAULT_MAX_LINE_CHARS,
   DEFAULT_MAX_READ_TODOS,
@@ -40,6 +42,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   if (tempDir) {
     await rm(tempDir, { recursive: true, force: true });
     tempDir = "";
@@ -128,6 +131,22 @@ describe("structural validation", () => {
     await expect(readTodosFromFile(filename)).rejects.toBeInstanceOf(
       ReadTodoCountLimitError,
     );
+  });
+
+  it("reports a bounded readiness failure without leaking file content", async () => {
+    const filename = await writeTodoFile(
+      "too-many-for-readiness.txt",
+      "a\n".repeat(50_001),
+    );
+
+    const result = await createReadinessProbe(
+      new LocalFileBackend(filename),
+      1_000,
+    )();
+
+    expect(result.ready).toBe(false);
+    expect(result.reason).toContain("50001");
+    expect(result.reason).not.toContain("a\na\na");
   });
 });
 
@@ -257,16 +276,11 @@ describe("manual low-memory check", () => {
   it("rejects a 1 MB / 500,000-line file under a 128 MB heap", async () => {
     const filename = await writeTodoFile("low-memory.txt", "a\n".repeat(500_000));
     const script = `
-      import { readFileSync } from "node:fs";
       import { pathToFileURL } from "node:url";
-      const moduleUrl = pathToFileURL(process.env.TODO_VALIDATION_MODULE).href;
-      const { validateTodoFileContent } = await import(moduleUrl);
-      const data = readFileSync(process.env.TODO_FILE, "utf8");
+      const moduleUrl = pathToFileURL(process.env.TODO_HELPER_MODULE).href;
+      const { readTodosFromFile } = await import(moduleUrl);
       try {
-        validateTodoFileContent(data, {
-          maxReadTodos: 50000,
-          maxLineChars: 8192,
-        });
+        await readTodosFromFile(process.env.TODO_FILE);
         console.log("ACCEPTED");
         process.exit(1);
       } catch (error) {
@@ -282,12 +296,14 @@ describe("manual low-memory check", () => {
         env: {
           ...process.env,
           TODO_FILE: filename,
-          TODO_VALIDATION_MODULE: join(
+          TODO_HELPER_MODULE: join(
             import.meta.dirname,
             "..",
             "logic",
-            "todo-file-validation.ts",
+            "todo-file-helpers.ts",
           ),
+          // Do not inherit a parent heap flag; the child sets its own.
+          NODE_OPTIONS: "",
         },
         encoding: "utf8",
         timeout: 10_000,
@@ -298,6 +314,40 @@ describe("manual low-memory check", () => {
     expect(child.signal).toBeNull();
     expect(child.status, child.stderr).toBe(0);
     expect(child.stdout.trim()).toBe("ReadTodoCountLimitError");
+  });
+});
+
+describe("WebDAV read path", () => {
+  it("applies the line-count cap to a WebDAV body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("a\n".repeat(50_001), {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        })
+      ),
+    );
+
+    await expect(
+      new WebDavBackend("https://dav.example.com/todo.txt").load(),
+    ).rejects.toBeInstanceOf(ReadTodoCountLimitError);
+  });
+
+  it("rejects unsafe content from a WebDAV body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("safe\nbad\u0000line\n", {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        })
+      ),
+    );
+
+    await expect(
+      new WebDavBackend("https://dav.example.com/todo.txt").load(),
+    ).rejects.toBeInstanceOf(UnsafeTodoFileContentError);
   });
 });
 

@@ -362,6 +362,16 @@ exhaust the process memory:
   The limit is checked after recurrence expansion, so an add or a completion
   that would append a follow-up past the cap fails with `LIMIT_EXCEEDED` and
   saves nothing.
+- `TODOTXT_MCP_MAX_READ_TODOS`: Maximum physical lines accepted on read
+  (default: `50000`). It is deliberately higher than the write cap so an
+  over-cap file stays readable, trimmable, and deletable through MCP.
+- `TODOTXT_MCP_MAX_LINE_CHARS`: Maximum UTF-16 code units in one line
+  (default: `8192`; astral characters count twice). The write tools keep their
+  smaller 2,000/2,100-character limits.
+
+The same read limits apply to the local-file and WebDAV backends. See
+[`docs/file-safety.md`](docs/file-safety.md) for the full validation rules,
+CRLF handling, rejected control characters, and recovery steps.
 
 ### File configuration example
 

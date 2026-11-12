@@ -11,7 +11,7 @@ line content.
 | --- | --- | --- |
 | `TODOTXT_MCP_MAX_FILE_BYTES` | `1048576` (1 MiB) | Total file size in bytes. |
 | `TODOTXT_MCP_MAX_READ_TODOS` | `50000` | Physical lines accepted on read. |
-| `TODOTXT_MCP_MAX_LINE_CHARS` | `8192` | Maximum characters in one line. |
+| `TODOTXT_MCP_MAX_LINE_CHARS` | `8192` | Maximum UTF-16 code units in one line (astral characters count twice). |
 | `TODOTXT_MCP_MAX_TODOS` | `10000` | Todo count enforced by write tools. |
 
 The read cap is larger than the write cap on purpose: a file that grew past
@@ -23,7 +23,8 @@ tools keep their smaller 2,000/2,100-character limits.
 
 - LF (`\n`) separates lines.
 - CRLF (`\r\n`) is accepted, and the trailing `\r` is preserved for untouched
-  lines so a save keeps the file byte-for-byte.
+  lines so a save keeps the file byte-for-byte. A single trailing `\r` at end
+  of file is accepted for the same reason.
 - A bare `\r` anywhere else in a line is rejected.
 - Tab (`\t`) is allowed.
 - NUL, C0 controls other than tab, DEL, C1 controls, U+2028 (line separator),
