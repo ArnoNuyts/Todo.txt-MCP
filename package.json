@@ -1,6 +1,6 @@
 {
   "name": "@arnoarnoarno/todo.txt-mcp",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Model Context Protocol server for managing a todo.txt file",
   "license": "MIT",
   "type": "module",
