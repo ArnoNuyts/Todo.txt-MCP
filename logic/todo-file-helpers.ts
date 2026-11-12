@@ -24,11 +24,18 @@ import { isNotFoundError } from "./fs-errors.ts";
 import {
   assertFileSizeWithinLimit,
   resolveMaxFileBytes,
+  resolveMaxLineChars,
+  resolveMaxReadTodos,
 } from "./limits.ts";
+import { validateTodoFileContent } from "./todo-file-validation.ts";
 
 export interface ReadTodosOptions {
   /** Maximum allowed file size in bytes. Defaults to `TODOTXT_MCP_MAX_FILE_BYTES`. */
   maxFileBytes?: number;
+  /** Maximum number of physical lines. Defaults to `TODOTXT_MCP_MAX_READ_TODOS`. */
+  maxReadTodos?: number;
+  /** Maximum characters per line. Defaults to `TODOTXT_MCP_MAX_LINE_CHARS`. */
+  maxLineChars?: number;
 }
 
 export interface WriteTodosOptions {
@@ -41,6 +48,8 @@ export async function readTodosFromFile(
   options: ReadTodosOptions = {},
 ): Promise<Todo[]> {
   const maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
+  const maxReadTodos = options.maxReadTodos ?? resolveMaxReadTodos();
+  const maxLineChars = options.maxLineChars ?? resolveMaxLineChars();
   let fileInfo: Stats;
   try {
     fileInfo = await stat(filename); // Check if file exists
@@ -91,7 +100,11 @@ export async function readTodosFromFile(
     maxFileBytes,
   );
 
-  return data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x));
+  // Validate structure after decoding and before building Todo objects. The
+  // returned lines keep their original bytes (including a CRLF terminator).
+  const lines = validateTodoFileContent(data, { maxReadTodos, maxLineChars });
+
+  return lines.filter((x) => x.trim()).map((x) => new Todo(x));
 }
 
 /**
