@@ -21,7 +21,10 @@ This page assumes the Compose deployment in
 | `deploy/` and Compose file | Rebuilding the deployment | Configuration-as-code. |
 
 Do **not** put the token or `.env` in a backup that is copied to a shared drive
-without encryption.
+without encryption. Backups made by `bin/backup-todo.sh` contain only
+`data/todo.txt` and its `.sha256` sidecar; they never include tokens, `.env`, or
+`secrets/`. Back up deployment secrets separately (encrypted) only if you need
+to rebuild the host from scratch.
 
 ## Snapshot while running
 
@@ -29,47 +32,26 @@ Local writes are temp-file + rename, so a reader that opens `data/todo.txt` sees
 one complete version even if a write lands during the copy. For a guaranteed
 consistent snapshot (or before an upgrade), stop the service first.
 
+The repository ships the procedure as an executable script:
+
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+# From the repository root; writes backups/todo-<UTC timestamp>.txt plus .sha256.
+./bin/backup-todo.sh
 
-BACKUP_DIR="${BACKUP_DIR:-backups}"
-KEEP="${KEEP:-14}"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-SRC="data/todo.txt"
-DEST="$BACKUP_DIR/todo-$STAMP.txt"
-
-umask 077
-mkdir -p "$BACKUP_DIR"
-
-if [[ ! -f "$SRC" ]]; then
-  echo "missing $SRC" >&2
-  exit 1
-fi
-
-# Refuse a snapshot that exceeds the app's default file cap.
-size="$(stat -c '%s' "$SRC")"
-if (( size > 1048576 )); then
-  echo "refusing: $SRC is $size bytes (limit 1048576)" >&2
-  exit 1
-fi
-
-# Refuse invalid UTF-8 before it becomes the only copy.
-iconv -f UTF-8 -t UTF-8 "$SRC" >/dev/null
-
-cp -p -- "$SRC" "$DEST"
-chmod 600 "$DEST"
-sha256sum "$DEST" > "$DEST.sha256"
-echo "backup: $DEST"
-
-# Keep the newest $KEEP snapshots.
-find "$BACKUP_DIR" -maxdepth 1 -type f -name 'todo-*.txt' \
-  -printf '%T@ %p\n' | sort -rn | tail -n +"$((KEEP + 1))" |
-  cut -d' ' -f2- | xargs -r rm -f --
+# Override the destination or retention count when needed.
+BACKUP_DIR=/srv/backups KEEP=14 ./bin/backup-todo.sh
 ```
 
-Run it manually, or from cron/systemd with an absolute path and a `BACKUP_DIR`
-outside the repository if the repository is on a small disk.
+`bin/backup-todo.sh` uses `set -euo pipefail`, creates the directory with mode
+`0700` via `umask 077`, refuses a missing file, a snapshot over 1 MiB, or
+invalid UTF-8, writes the copy as mode `0600`, records a SHA-256 checksum, and
+keeps the newest `KEEP` snapshots (default 14), pruning each one together with
+its `.sha256`. `BACKUP_DIR` defaults to `backups/` relative to the current
+directory.
+
+Run it from the repository root, or from cron/systemd after `cd`-ing there, with
+an absolute script path and a `BACKUP_DIR` outside the repository if the
+repository is on a small disk.
 
 ## Restore
 

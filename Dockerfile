@@ -3,8 +3,11 @@
 # without registry access. This Dockerfile only uses features the built-in
 # frontend supports.
 
+# Base image pinned by digest for reproducible builds. Update both stages
+# together (Dependabot's docker ecosystem can also bump the digest):
+#   docker buildx imagetools inspect node:26-alpine
 # ---- deps: install production dependencies only ----
-FROM node:26-alpine AS deps
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS deps
 
 WORKDIR /app
 
@@ -13,7 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 # ---- runtime: minimal image with application sources ----
-FROM node:26-alpine AS runtime
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS runtime
 
 ENV NODE_ENV=production
 ENV PORT=3000

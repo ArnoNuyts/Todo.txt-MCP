@@ -318,7 +318,16 @@ export function isLoopbackHost(host: string): boolean {
   return false;
 }
 
-function isWildcardTrustProxy(trustProxy: TrustProxyValue): boolean {
+/**
+ * True when the setting trusts every hop: `true`, or a `/0` wildcard in any
+ * entry. Used by startup validation and the proxy posture warning.
+ */
+export function isWildcardTrustProxy(
+  trustProxy: TrustProxyValue | undefined,
+): boolean {
+  if (trustProxy === undefined) {
+    return false;
+  }
   if (trustProxy === true) {
     return true;
   }
@@ -329,8 +338,11 @@ function isWildcardTrustProxy(trustProxy: TrustProxyValue): boolean {
     : [];
   return entries.some((entry) => {
     const normalized = entry.trim().toLowerCase();
-    return normalized === "true" || normalized === "0.0.0.0/0" ||
-      normalized === "::/0";
+    if (normalized === "true") {
+      return true;
+    }
+    const [address, prefix] = normalized.split("/");
+    return prefix === "0" && isIP(address) !== 0;
   });
 }
 

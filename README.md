@@ -125,7 +125,17 @@ In stdio mode:
 ```yaml
 services:
   todo-txt-mcp:
-    build: https://github.com/ArnoNuyts/Todo.txt-MCP.git
+    # Run the published npm package in the official Node image; no local build.
+    image: node:26-alpine
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --global --prefix /tmp/todo-txt-mcp
+        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.3.0} 1>&2
+        && exec /tmp/todo-txt-mcp/bin/todo.txt-mcp
+    user: node
+    working_dir: /tmp
     ports:
       # Loopback only; put a TLS reverse proxy in front to expose it.
       - "127.0.0.1:3000:3000"
@@ -133,6 +143,13 @@ services:
       # Mount a directory so atomic file replacement works.
       - ./data:/data
     environment:
+      # npm state lives in the writable /tmp tmpfs.
+      - HOME=/tmp
+      - NPM_CONFIG_AUDIT=false
+      - NPM_CONFIG_CACHE=/tmp/npm-cache
+      - NPM_CONFIG_FUND=false
+      - NPM_CONFIG_IGNORE_SCRIPTS=true
+      - NPM_CONFIG_UPDATE_NOTIFIER=false
       - HOST=0.0.0.0
       - MCP_ALLOWED_HOSTS=localhost,127.0.0.1
       - MCP_ALLOWED_ORIGINS=http://localhost:3000
@@ -144,6 +161,23 @@ services:
       # - TODOTXT_MCP_WEBDAV_URL=https://dav.example.com
       # - TODOTXT_MCP_WEBDAV_USERNAME=user
       # - TODOTXT_MCP_WEBDAV_PASSWORD=pass
+```
+
+The Compose setup pulls the official `node:26-alpine` image and runs the
+published npm package, so there is no local build. The first start needs
+outbound HTTPS to `registry.npmjs.org`; the package is installed into `/tmp`, so
+a recreated container downloads it again. Pin the release with
+`TODOTXT_MCP_VERSION` (default `3.3.0`). The full
+[`docker-compose.yml`](docker-compose.yml) adds memory/PID limits, log rotation,
+and a read-only runtime.
+
+Every push to `release/next` publishes a beta to npm's `next` tag, so you can
+test the latest merged code locally without changing the stable default:
+
+```bash
+TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
+# or pin the exact prerelease:
+TODOTXT_MCP_VERSION=3.3.1-beta.123 docker compose up -d --force-recreate
 ```
 
 1. **Run**:
@@ -390,8 +424,9 @@ CRLF handling, rejected control characters, and recovery steps.
   There are no tool profiles.
 - **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`, case-insensitive)
   registers only `list_todos`; mutating tools are absent from `tools/list` and
-  cannot be called. Prompts and resources remain available. Any other value,
-  including an unrecognized string, leaves writes enabled.
+  cannot be called. Prompts and resources remain available. `0`/`false`/`no`
+  or an empty value leaves writes enabled; any other value fails startup
+  instead of silently enabling writes.
 - **Text-only:** successful results are `hash text` lines. No
   `structuredContent` and no output schemas. Handler failures carry a stable
   `structuredContent.error.code`; schema-bound input violations are rejected by
@@ -421,16 +456,24 @@ CRLF handling, rejected control characters, and recovery steps.
   `MCP_METRICS_TOKEN` to keep the metrics credential distinct from `/mcp`; the
   metrics limiter (`MCP_METRICS_RATE_LIMIT_PER_MIN`, default 60) is separate
   from the `/mcp` limits. The proxy examples deny `/metrics` by default.
-- **Health:** `GET /healthz` is cheap liveness and stays reachable through the
-  reference proxies. `GET /readyz` loads and serializes the todo list and
-  returns `503` when the backend is unusable; it is unauthenticated but meant
-  for internal/orchestrator probes only. Probe it over loopback or an internal
-  listener: the reference Caddy and nginx configs return `404` for `/readyz`,
-  `/readyz/`, and case variants on the public host. Successful results are
-  cached for 5 seconds to absorb probe floods; failures are never cached. Do
-  not put the MCP bearer token in a probe spec.
-- **Backups:** snapshot `data/todo.txt` before upgrades or bulk edits. See
+- **Health:** `GET /healthz` is cheap, unthrottled liveness and stays reachable
+  through the reference proxies. `GET /readyz` loads and serializes the todo
+  list and returns `503` when the backend is unusable; it is unauthenticated
+  but meant for internal/orchestrator probes only. Probe it over loopback or an
+  internal listener: the reference Caddy and nginx configs return `404` for
+  `/readyz`, `/readyz/`, and case variants on the public host. Successful
+  results are cached for 5 seconds to absorb probe floods; failures are never
+  cached. `/readyz` also has a separate per-client limiter
+  (`MCP_READYZ_RATE_LIMIT_PER_MIN`, default 120; `0` disables) and returns
+  `429` with `Retry-After` when exceeded. Do not put the MCP bearer token in a
+  probe spec.
+- **Backups:** run `bin/backup-todo.sh` before upgrades or bulk edits; it
+  snapshots `data/todo.txt` with a SHA-256 sidecar and count-based retention,
+  and never includes tokens, `.env`, or `secrets/`. See
   [docs/backup-restore.md](docs/backup-restore.md).
+- **CI security:** `.github/workflows/security.yml` runs Gitleaks secret
+  scanning on pushes and pull requests, plus dependency review on pull
+  requests.
 
 See [SECURITY.md](SECURITY.md) for rotation, file permissions, and exposure
 guidance.

@@ -6,7 +6,22 @@
 # secret and adds the same log rotation.
 services:
   todo-txt-mcp:
-    build: .
+    # Run the published npm package in the official Node image instead of
+    # building a local image. Pin TODOTXT_MCP_VERSION for reproducible pulls.
+    image: node:26-alpine
+    # Install the pinned npm package into /tmp, then replace the shell with the
+    # server so SIGTERM reaches it directly and shutdown stays graceful.
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --global --prefix /tmp/todo-txt-mcp
+        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.3.0} 1>&2
+        && exec /tmp/todo-txt-mcp/bin/todo.txt-mcp
+    # npm writes its cache and logs to $HOME; /tmp is the writable tmpfs below.
+    # The rest of the filesystem stays read-only.
+    user: node
+    working_dir: /tmp
     ports:
       # Bind to the loopback interface only; use a TLS reverse proxy to expose it.
       - "127.0.0.1:3000:3000"
@@ -19,7 +34,9 @@ services:
     stop_grace_period: 15s
     read_only: true
     tmpfs:
-      - /tmp
+      # npm needs a writable, executable directory for its cache and the
+      # installed package; Docker mounts tmpfs noexec by default.
+      - /tmp:mode=1777,exec
     cap_drop:
       - ALL
     security_opt:
@@ -33,7 +50,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      # Allow time for the npm package download on first start.
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -48,6 +66,13 @@ services:
       # with a restartable V8 OOM instead of an abrupt container kill. The cgroup
       # still enforces RSS; this flag is not a memory cap. See docs/memory-budget.md.
       - NODE_OPTIONS=--max-old-space-size=384
+      # npm state lives in the writable /tmp tmpfs.
+      - HOME=/tmp
+      - NPM_CONFIG_AUDIT=false
+      - NPM_CONFIG_CACHE=/tmp/npm-cache
+      - NPM_CONFIG_FUND=false
+      - NPM_CONFIG_IGNORE_SCRIPTS=true
+      - NPM_CONFIG_UPDATE_NOTIFIER=false
       # Network security (see SECURITY.md)
       - HOST=0.0.0.0
       - MCP_ALLOWED_HOSTS=localhost,127.0.0.1

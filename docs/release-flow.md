@@ -48,6 +48,42 @@ flowchart LR
    git push
    ```
 
+## Test builds (alpha/beta/rc)
+
+Alpha, beta, and release-candidate builds are **not releases**. They are npm
+snapshots for testing, and they never change `latest` or create a GitHub
+release.
+
+Every push to `release/next` — including a merged pull request — runs the
+publish workflow and publishes an automatic beta. The version is the next patch
+plus a beta number derived from the workflow run, for example
+`3.3.1-beta.123`. `package.json` in the repository is not changed, and npm lets
+each version be published only once.
+
+Test it with the Compose setup:
+
+```bash
+TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
+# or pin the exact snapshot:
+TODOTXT_MCP_VERSION=3.3.1-beta.123 docker compose up -d --force-recreate
+```
+
+The package is installed when the container starts, so a new beta needs
+`--force-recreate` (or an equivalent recreate) to take effect. Return to the
+stable release with `TODOTXT_MCP_VERSION=3.3.0` (or by removing the variable).
+
+For a one-off build from an arbitrary commit, push a manual tag instead:
+
+```bash
+git tag prerelease-v3.3.1-beta.1
+git push origin prerelease-v3.3.1-beta.1
+```
+
+That publishes exactly that version to `next` and does not create a GitHub
+release. release-please ignores the `prerelease-v` tag prefix, so stable
+version history is unaffected. Delete the tag if you no longer need it; the npm
+version remains available.
+
 ## Hotfixes
 
 Hotfixes must reach users without waiting for the next release:

@@ -224,6 +224,42 @@ describe("D5: shared body reader for load and write-probe", () => {
     );
   });
 
+  it("rejects a streaming body over the limit without Content-Length", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8));
+        controller.enqueue(new Uint8Array(8));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(body, { status: 200, headers: { "Content-Type": "text/plain" } })
+    ));
+
+    await expect(
+      new WebDavBackend(url, undefined, undefined, {
+        ...fastRetry,
+        maxFileBytes: 10,
+      }).load(),
+    ).rejects.toThrow(/too large/);
+  });
+
+  it("treats a chunked read-back over the limit as unknown", async () => {
+    await saveWithProbe(() => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(8));
+          controller.enqueue(new Uint8Array(8));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }, 10);
+  });
+
   it("treats a read-back body over the byte limit as unknown", async () => {
     await saveWithProbe(
       () => response("x".repeat(64), 200, { "Content-Type": "text/plain" }),
