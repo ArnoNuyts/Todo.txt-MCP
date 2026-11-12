@@ -132,7 +132,7 @@ services:
       - -c
       - >-
         npm install --global --prefix /tmp/todo-txt-mcp
-        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.2.0} 1>&2
+        @arnoarnoarno/todo.txt-mcp@${TODOTXT_MCP_VERSION:-3.3.0} 1>&2
         && exec /tmp/todo-txt-mcp/bin/todo.txt-mcp
     user: node
     working_dir: /tmp
@@ -167,7 +167,7 @@ The Compose setup pulls the official `node:26-alpine` image and runs the
 published npm package, so there is no local build. The first start needs
 outbound HTTPS to `registry.npmjs.org`; the package is installed into `/tmp`, so
 a recreated container downloads it again. Pin the release with
-`TODOTXT_MCP_VERSION` (default `3.2.0`). The full
+`TODOTXT_MCP_VERSION` (default `3.3.0`). The full
 [`docker-compose.yml`](docker-compose.yml) adds memory/PID limits, log rotation,
 and a read-only runtime.
 
