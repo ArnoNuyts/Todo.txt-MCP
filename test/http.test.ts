@@ -400,6 +400,18 @@ describe("MCP HTTP endpoint", () => {
     expect(body.result?.serverInfo?.name).toBe("todo.txt-mcp");
   });
 
+  it("keeps grouped security options when a flat alias is explicitly undefined", async () => {
+    const token = "grouped-token-aaaaaaaaaaaaaaaaaaaaaaaa";
+    await restartApp({
+      security: { authToken: token },
+      authToken: undefined,
+    });
+
+    const response = await postWithToken(token);
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+
   it("requires a bearer token on /mcp when configured", async () => {
     await restartApp({ authToken: "s3cret-token" });
 
@@ -483,6 +495,23 @@ describe("MCP HTTP endpoint", () => {
     const rejected = await postWithToken("rotation-token-three-cccccccc");
     expect(rejected.status).toBe(401);
     await rejected.body?.cancel();
+  });
+
+  it("resolves bearer tokens from a provider on every request", async () => {
+    const first = "provider-token-one-aaaaaaaaaaaaaaa";
+    const second = "provider-token-two-bbbbbbbbbbbbbbb";
+    let active = [first];
+
+    await restartApp({ authTokens: () => active });
+    expect((await postWithToken(first)).status).toBe(200);
+    expect((await postWithToken(second)).status).toBe(401);
+
+    active = [first, second];
+    expect((await postWithToken(second)).status).toBe(200);
+
+    active = [second];
+    expect((await postWithToken(first)).status).toBe(401);
+    expect((await postWithToken(second)).status).toBe(200);
   });
 
   it("sets security headers and hides the framework name", async () => {
@@ -721,9 +750,7 @@ describe("MCP HTTP endpoint", () => {
     });
 
     expect((await postWithToken("wrong-token")).status).toBe(401);
-    expect((await postWithToken("wrong-token")).status).toBe(401);
-
-    const shed = await postWithToken("s3cret-token");
+    const shed = await postWithToken("wrong-token");
     expect(shed.status).toBe(503);
     expect(shed.headers.get("retry-after")).toBe("60");
     const shedBody = (await shed.json()) as RpcResponse;
@@ -733,8 +760,43 @@ describe("MCP HTTP endpoint", () => {
       requestId: expect.any(String),
     }));
 
+    // A valid bearer is authenticated normally even while the breaker is open.
+    const valid = await postWithToken("s3cret-token");
+    expect(valid.status).toBe(200);
+    await valid.body?.cancel();
+
+    // Invalid traffic is still shed promptly, including unauthenticated calls.
+    const stillShed = await postWithToken("wrong-token");
+    expect(stillShed.status).toBe(503);
+    await stillShed.body?.cancel();
+    const unauthenticated = await postWithToken();
+    expect(unauthenticated.status).toBe(503);
+    await unauthenticated.body?.cancel();
+
     const health = await fetch(`${baseUrl}/healthz`);
     expect(health.status).toBe(200);
+  });
+
+  it("closes the global circuit breaker after the cooldown", async () => {
+    let now = 1_000_000;
+    await restartApp({
+      authToken: "s3cret-token",
+      abuse: {
+        authFailLimit: 100,
+        globalAuthFailLimit: 2,
+        globalAuthFailWindowSec: 60,
+        globalBreakerCooldownSec: 60,
+        rateLimitPerMin: 1_000,
+        now: () => now,
+      },
+    });
+
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("wrong-token")).status).toBe(503);
+
+    now += 60_001;
+    expect((await postWithToken("wrong-token")).status).toBe(401);
+    expect((await postWithToken("s3cret-token")).status).toBe(200);
   });
 
   it("emits rate limit headers and rejects excess requests", async () => {

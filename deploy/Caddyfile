@@ -1,0 +1,117 @@
+# Production reference: Caddy 2.10+ in front of todo.txt-mcp.
+#
+# App assumptions (see docs/single-user-deployment.md):
+#   HOST=0.0.0.0 (container) or 127.0.0.1 (native), port 3000
+#   MCP_ALLOWED_HOSTS=todo.example.com
+#   MCP_ALLOWED_ORIGINS=https://todo.example.com   # only for a browser client
+#   MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_token  # 0600 / Docker secret
+#   TRUST_PROXY=loopback                            # same-host native proxy
+#
+# If the app runs in Docker with a published 127.0.0.1:3000 port, the container
+# usually sees the Docker bridge gateway (for example 172.17.0.1), not loopback.
+# Set TRUST_PROXY to the actual proxy address/CIDR and confirm the client IP in
+# the structured `msg:"request"` log line before exposing the service.
+#
+# Replace todo.example.com and the ACME e-mail before use. Caddy obtains and
+# renews public certificates automatically; use its internal CA for a private
+# hostname instead.
+
+{
+	email admin@example.com
+
+	servers {
+		# The app configures 10s header / 15s body / 5s keep-alive timeouts,
+		# but Node quantizes them on a 30s checker tick. Keep the proxy strict.
+		timeouts {
+			read_header 10s
+			read_body 15s
+			write 30s
+			idle 2m
+		}
+	}
+}
+
+# Explicit HTTP -> HTTPS redirect. Caddy also handles ACME HTTP-01 challenges.
+http://todo.example.com {
+	redir https://{host}{uri} permanent
+}
+
+todo.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The app already rejects bodies over 64 KiB. This rejects them before they
+	# reach Node and gives a proxy-level 413.
+	request_body {
+		max_size 64KB
+	}
+
+	# Optional proxy-level rate limiting. `rate_limit` is NOT in the Caddy
+	# standard build; it requires the caddy-ratelimit plugin:
+	#   xcaddy build --with github.com/mholt/caddy-ratelimit
+	# The app enforces 60 requests/minute per client key by default; this is a
+	# second, coarser layer that also covers /healthz. Uncomment after installing
+	# the plugin.
+	#
+	# rate_limit {
+	# 	zone mcp {
+	# 		key {remote_host}
+	# 		events 60
+	# 		window 1m
+	# 	}
+	# }
+
+	# /readyz performs a full load + serialize of the todo list, so keep it off
+	# the public listener. Probe it over loopback or an internal listener (for
+	# example an orchestrator exec probe against 127.0.0.1:3000). Do not put the
+	# MCP bearer token in a probe spec. /healthz stays reachable for liveness.
+	# Match the whole prefix case-insensitively: Express also serves /readyz/
+	# and /READYZ, and a plain `handle /readyz` would miss them.
+	@readyz path_regexp (?i)^/readyz(/|$)
+	handle @readyz {
+		respond 404
+	}
+
+	# /metrics is OFF by default. The app returns 404 for /metrics when HOST is
+	# non-loopback unless MCP_METRICS_ENABLED is set explicitly; this deny rule
+	# makes the proxy independent of app configuration.
+	handle /metrics {
+		respond 404
+	}
+
+	# If you deliberately enable metrics, delete the handle above and use this
+	# block instead. Prefer a separate high-entropy MCP_METRICS_TOKEN and scrape
+	# it from a trusted network or over the loopback interface.
+	#
+	# handle /metrics {
+	# 	reverse_proxy 127.0.0.1:3000 {
+	# 		header_up Host {host}
+	# 		header_up X-Forwarded-For {remote_host}
+	# 		header_up X-Forwarded-Proto {scheme}
+	# 	}
+	# }
+
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			# Preserve the public Host header; MCP_ALLOWED_HOSTS validates it.
+			header_up Host {host}
+			# Replace, never append to, a client-supplied X-Forwarded-For.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+
+			# Keep the proxy deadline slightly above the app's body timeout.
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+				read_timeout 30s
+				write_timeout 30s
+			}
+		}
+	}
+}

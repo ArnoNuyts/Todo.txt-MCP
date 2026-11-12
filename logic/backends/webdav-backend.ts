@@ -6,7 +6,10 @@ import { BackendConflictError } from "../backend-errors.ts";
 import {
   assertFileSizeWithinLimit,
   resolveMaxFileBytes,
+  resolveMaxLineChars,
+  resolveMaxReadTodos,
 } from "../limits.ts";
+import { validateTodoFileContent } from "../todo-file-validation.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -38,6 +41,10 @@ export interface WebDavBackendOptions {
   random?: () => number;
   /** Maximum allowed todo file size in bytes. Defaults to the env limit. */
   maxFileBytes?: number;
+  /** Maximum number of physical lines. Defaults to `TODOTXT_MCP_MAX_READ_TODOS`. */
+  maxReadTodos?: number;
+  /** Maximum UTF-16 code units per line. Defaults to `TODOTXT_MCP_MAX_LINE_CHARS`. */
+  maxLineChars?: number;
 }
 
 /**
@@ -134,10 +141,29 @@ function isTodoContentType(value: string | null): boolean {
     mediaType === "binary/octet-stream";
 }
 
-/** An error page is not a todo file, even when the proxy omits Content-Type. */
-function looksLikeHtml(text: string): boolean {
-  return /<!doctype\s+html|<html\b|<head\b|<body\b|<meta\b|<title\b|<script\b|<!--|<\?xml/i
-    .test(text.slice(0, 1024));
+const HTML_PROBE_LENGTH = 1024;
+const BROAD_HTML_MARKER =
+  /<!doctype\s+html|<html\b|<head\b|<body\b|<meta\b|<title\b|<script\b|<!--|<\?xml/i;
+const DOCUMENT_HTML_MARKER =
+  /<(?:head|body|title|meta|script|form)\b|<\/(?:html|head|body)\s*>/i;
+
+/**
+ * An error page is not a todo file. Without `text/plain` we can be strict and
+ * reject any HTML/XML marker; with `text/plain` only document-level markers
+ * are rejected, because a lone `<html>` token can legitimately be todo text.
+ */
+function looksLikeErrorPage(
+  text: string,
+  mediaType: string | null,
+): boolean {
+  const prefix = text.slice(0, HTML_PROBE_LENGTH);
+  if (mediaType !== "text/plain") {
+    return BROAD_HTML_MARKER.test(prefix);
+  }
+  const hasHtmlElement = /<html\b/i.test(prefix);
+  return /<!doctype\s+html/i.test(prefix) ||
+    /<\?xml/i.test(prefix) ||
+    (hasHtmlElement && DOCUMENT_HTML_MARKER.test(prefix));
 }
 
 /** Servers may normalise EOLs or the trailing newline of the stored body. */
@@ -145,6 +171,66 @@ function hasSameTodoContent(left: string, right: string): boolean {
   const normalize = (value: string) =>
     value.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
   return normalize(left) === normalize(right);
+}
+
+/**
+ * Reads and validates one stored todo body. Shared by `load()` and the
+ * write-probe so content-type, size, UTF-8 and error-page rules cannot drift.
+ * Throws on every rejection; the probe maps that to `unknown` at its call site.
+ */
+async function readTodoBody(
+  response: Response,
+  maxFileBytes: number,
+): Promise<string> {
+  try {
+    const contentType = response.headers.get("Content-Type");
+    const mediaType = mediaTypeOf(contentType);
+    if (!isTodoContentType(contentType)) {
+      throw new Error(
+        "Failed to read the WebDAV todo body: expected a plain-text body " +
+          `but received "${contentType}". The stored file was not modified.`,
+      );
+    }
+
+    // Reject an obviously oversized file before reading the body.
+    const contentLength = response.headers.get("Content-Length");
+    if (contentLength !== null && /^\d+$/.test(contentLength.trim())) {
+      assertFileSizeWithinLimit(
+        "WebDAV todo file",
+        Number(contentLength.trim()),
+        maxFileBytes,
+      );
+    }
+
+    const bytes = await response.arrayBuffer();
+    assertFileSizeWithinLimit(
+      "WebDAV todo file",
+      bytes.byteLength,
+      maxFileBytes,
+    );
+
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(
+        "WebDAV todo file is not valid UTF-8. Refusing to load or rewrite it.",
+      );
+    }
+
+    if (looksLikeErrorPage(text, mediaType)) {
+      throw new Error(
+        "Failed to read the WebDAV todo body: the response looks like an " +
+          "HTML error page, not a todo file. The stored file was not modified.",
+      );
+    }
+
+    return text;
+  } catch (error) {
+    // Every rejection path drains the body; callers never need to.
+    await discardBody(response);
+    throw error;
+  }
 }
 
 type WriteProbe =
@@ -167,6 +253,8 @@ export class WebDavBackend implements TodoBackend {
   private readonly maxDelayMs: number;
   private readonly random: () => number;
   private readonly maxFileBytes: number;
+  private readonly maxReadTodos: number;
+  private readonly maxLineChars: number;
   /**
    * Holds the revision for one load -> save transaction. `withLock` creates a
    * fresh context per mutation, so concurrent reads in other contexts cannot
@@ -211,6 +299,8 @@ export class WebDavBackend implements TodoBackend {
     this.maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
     this.random = options.random ?? Math.random;
     this.maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
+    this.maxReadTodos = options.maxReadTodos ?? resolveMaxReadTodos();
+    this.maxLineChars = options.maxLineChars ?? resolveMaxLineChars();
   }
 
   private getHeaders(): Record<string, string> {
@@ -305,7 +395,18 @@ export class WebDavBackend implements TodoBackend {
     const response = await this.fetchWithRetry({
       method: "GET",
       headers: this.getHeaders(),
+      // A redirect changes which resource is parsed as the todo file. Reads,
+      // like writes, must describe the resource at the configured URL.
+      redirect: "manual",
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      await discardBody(response);
+      throw new Error(
+        `WebDAV load was redirected (${response.status} ${response.statusText}). ` +
+          "Refusing to follow a redirect for a read.",
+      );
+    }
 
     if (!response.ok) {
       if (response.status === 404) {
@@ -317,60 +418,24 @@ export class WebDavBackend implements TodoBackend {
       );
     }
 
-    const contentType = response.headers.get("Content-Type");
-    if (!isTodoContentType(contentType)) {
-      await discardBody(response);
-      throw new Error(
-        "Failed to load todos from WebDAV: expected a plain-text body but " +
-          `received "${contentType}". The stored file was not modified.`,
-      );
-    }
-
     const etag = response.headers.get("ETag")?.trim() || undefined;
     const lastModified =
       response.headers.get("Last-Modified")?.trim() || undefined;
 
-    // Reject an obviously oversized file before reading the body.
-    const contentLength = response.headers.get("Content-Length");
-    if (contentLength !== null && /^\d+$/.test(contentLength.trim())) {
-      assertFileSizeWithinLimit(
-        "WebDAV todo file",
-        Number(contentLength.trim()),
-        this.maxFileBytes,
-      );
-    }
+    const text = await readTodoBody(response, this.maxFileBytes);
 
-    const bytes = await response.arrayBuffer();
-    assertFileSizeWithinLimit(
-      "WebDAV todo file",
-      bytes.byteLength,
-      this.maxFileBytes,
-    );
-
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      throw new Error(
-        "WebDAV todo file is not valid UTF-8. Refusing to load or rewrite it.",
-      );
-    }
-
-    if (mediaTypeOf(contentType) !== "text/plain" && looksLikeHtml(text)) {
-      throw new Error(
-        "Failed to load todos from WebDAV: the response looks like an HTML " +
-          "error page, not a todo file. The stored file was not modified.",
-      );
-    }
+    // Validate before constructing Todos so a WebDAV body gets the same
+    // read-side bounds and content checks as a local file.
+    const lines = validateTodoFileContent(text, {
+      maxReadTodos: this.maxReadTodos,
+      maxLineChars: this.maxLineChars,
+    });
 
     // Only record the revision after the body was read successfully, so a
     // failed load can never be turned into a write in the same transaction.
     this.recordRevision({ exists: true, etag, lastModified });
 
-    return text
-      .split("\n")
-      .filter((x) => x.trim())
-      .map((x) => new Todo(x));
+    return lines.filter((x) => x.trim()).map((x) => new Todo(x));
   }
 
   /**
@@ -398,30 +463,13 @@ export class WebDavBackend implements TodoBackend {
       await discardBody(response);
       return { state: "not-applied" };
     }
-    if (
-      !response.ok ||
-      !isTodoContentType(response.headers.get("Content-Type"))
-    ) {
+    if (!response.ok) {
       await discardBody(response);
       return { state: "unknown" };
     }
 
     try {
-      const contentLength = response.headers.get("Content-Length");
-      if (
-        contentLength !== null &&
-        /^\d+$/.test(contentLength.trim()) &&
-        Number(contentLength.trim()) > this.maxFileBytes
-      ) {
-        await discardBody(response);
-        return { state: "unknown" };
-      }
-
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > this.maxFileBytes) {
-        return { state: "unknown" };
-      }
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const text = await readTodoBody(response, this.maxFileBytes);
       if (!hasSameTodoContent(text, content)) {
         return { state: "not-applied" };
       }

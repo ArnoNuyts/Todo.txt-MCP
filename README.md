@@ -17,9 +17,10 @@ runtime is Node.js 24.15.
 
 ## 🗺️ How it works
 
-Claude Code (or any MCP client) talks to a self-hosted Todo.txt-MCP server over
-HTTP. The server owns the todo file; the only difference between the two setups
-is where that file lives.
+Claude Code (or any MCP client) either launches Todo.txt-MCP as a local
+subprocess over stdio, or connects to a self-hosted instance over HTTP. The
+server owns the todo file; the only difference between the setups is where that
+file lives.
 
 ### WebDAV backend: sync with Nextcloud or Seafile
 
@@ -45,7 +46,9 @@ flowchart LR
 ### Local file backend: keep everything on one host
 
 With `TODOTXT_MCP_BACKEND=local` the file never leaves the machine or Docker
-volume. Claude Code still connects over HTTP; only the storage is local.
+volume. The client can launch the server directly as a subprocess over stdio
+(the simplest option for local use), or connect over HTTP when the server is
+shared.
 
 ```mermaid
 flowchart LR
@@ -54,10 +57,13 @@ flowchart LR
     VOL[("Docker volume<br/>or host directory")]
     FILE["todo.txt"]
 
-    CC -- "MCP over HTTP<br/>http://localhost:3000/mcp" --> MCP
+    CC -- "MCP over stdio<br/>npx @arnoarnoarno/todo.txt-mcp --stdio" --> MCP
     MCP -- "atomic read / write<br/>+ advisory lock" --> FILE
     VOL --- FILE
 ```
+
+The same server still runs over HTTP for shared or containerized deployments;
+stdio is simply the shortest path when the client and file are on one host.
 
 ## 📦 Quick Start with npm
 
@@ -80,6 +86,39 @@ todo.txt-mcp
 The server listens on `http://localhost:3000` and the MCP endpoint is
 `http://localhost:3000/mcp`. It reads the same environment variables as the
 Docker setup below.
+
+### Run as a local subprocess (stdio)
+
+Clients that can launch a command can run the server directly. No HTTP listener,
+port, TLS, or bearer token is involved:
+
+```json
+{
+  "mcpServers": {
+    "todo.txt": {
+      "command": "npx",
+      "args": ["-y", "@arnoarnoarno/todo.txt-mcp", "--stdio"],
+      "env": {
+        "TODOTXT_MCP_BACKEND": "local",
+        "TODOTXT_MCP_LOCAL_FILENAME": "/home/me/todo.txt"
+      }
+    }
+  }
+}
+```
+
+`MCP_TRANSPORT=stdio` is equivalent to passing `--stdio`. The WebDAV backend
+works the same way; set `TODOTXT_MCP_BACKEND=webdav` and the WebDAV variables.
+HTTP remains the default, so `npm start`, Docker, and existing client URLs are
+unchanged.
+
+In stdio mode:
+
+- stdout carries MCP protocol messages only; all logs go to stderr.
+- `MCP_AUTH_TOKEN`, Host/Origin allowlists, TLS, and metrics do not apply.
+- stdin EOF, `SIGINT`, and `SIGTERM` stop the server cleanly. In-flight tool
+  calls are allowed to finish so the advisory lock is released, then the process
+  exits.
 
 ## 🚀 Quick Start with Docker
 
@@ -121,12 +160,48 @@ Authentication is **required**. The server refuses to start unless
 `MCP_AUTH_TOKEN`, `MCP_AUTH_TOKENS`, or `MCP_AUTH_TOKEN_FILE` is set. Clients
 must send `Authorization: Bearer <token>`.
 
+> **This quick start is for local use.** It passes `MCP_AUTH_TOKEN` in the
+> environment, where it is visible to `docker inspect` and
+> `/proc/<pid>/environ`. For a public host use `docker-compose.deploy.yml` with
+> a `0600` secret file and the TLS proxy references in
+> [`deploy/`](deploy/README.md).
+
 > The container runs as the unprivileged `node` user (UID 1000). If `data/` is
 > not writable by that user, adjust its ownership, for example
 > `sudo chown -R 1000:1000 data`.
 
 See [SECURITY.md](SECURITY.md) for Host/Origin allowlists, bearer-token auth,
 and reverse-proxy TLS guidance.
+
+### Expose it over HTTPS (single user)
+
+```bash
+install -d -m 700 secrets
+openssl rand -hex 32 > secrets/mcp_auth_token.txt
+chmod 600 secrets/mcp_auth_token.txt
+
+cp .env.example .env
+# Set the public hostname (and browser origin only if one is used), and change
+# the example TRUST_PROXY=false to loopback or the Docker gateway/CIDR:
+#   MCP_ALLOWED_HOSTS=todo.example.com
+#   MCP_ALLOWED_ORIGINS=https://todo.example.com
+#   TRUST_PROXY=loopback   # see the Docker caveat in deploy/README.md
+
+docker compose -f docker-compose.deploy.yml up -d
+```
+
+The deploy file mounts the token as a Docker secret and reads it through
+`MCP_AUTH_TOKEN_FILE`; it keeps the published port on `127.0.0.1:3000` and adds
+log rotation (`max-size: 10m`, `max-file: 3`). Put Caddy or nginx in front with
+[`deploy/Caddyfile`](deploy/Caddyfile) or [`deploy/nginx.conf`](deploy/nginx.conf):
+TLS, HTTP→HTTPS, HSTS, a 64 KiB body cap, proxy rate limits, and `/metrics`
+denied by default.
+
+Follow the full runbook in
+[docs/single-user-deployment.md](docs/single-user-deployment.md) and the
+backup/restore procedure in [docs/backup-restore.md](docs/backup-restore.md)
+before exposing `/mcp` to the internet. Static bearer auth is an API-key gate,
+not OAuth 2.1 or MCP discovery.
 
 ## 💻 Run Locally
 
@@ -145,6 +220,12 @@ The default port is `3000`. Override it with the `PORT` environment variable:
 
 ```bash
 PORT=8080 npm start
+```
+
+To serve stdio instead of HTTP from a checkout:
+
+```bash
+npm start -- --stdio
 ```
 
 If you change the port, update `MCP_ALLOWED_ORIGINS` and the MCP client URL
@@ -170,6 +251,9 @@ npm run knip          # unused files, exports, types, and dependencies
 npm run bench:actions # token cost of add/edit/status/pagination workflows
 npm run bench:agent   # LLM usability of the tool surface
 ```
+
+See [docs/release-flow.md](docs/release-flow.md) for the branch and release
+process.
 
 ## 🤖 LLM usability evaluation
 
@@ -230,6 +314,25 @@ Configuration is read from `todo.txt-mcp-config.json` in the working directory
 (optional), then overridden by environment variables. See
 `todo.txt-mcp-config.example.json`.
 
+### Transport
+
+- `MCP_TRANSPORT`: `http` (default) or `stdio`. The `--stdio` CLI flag takes
+  precedence. Invalid values fail startup instead of silently falling back.
+
+### Deployment and security
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only for a container or the private proxy hop. |
+| `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Hostnames accepted in `Host`; add the public name. |
+| `MCP_ALLOWED_ORIGINS` | `http://localhost:3000` | Browser origins allowed for `POST /mcp`; leave empty to disable CORS. |
+| `MCP_AUTH_TOKEN_FILE` | unset | Token file (precedence over env). Reloaded on `SIGHUP`; keep it `0600`. |
+| `MCP_ALLOW_WEAK_TOKEN` | unset | Loopback-only escape hatch; refused on a non-loopback `HOST`. |
+| `TRUST_PROXY` | `false` | Trust only the real proxy (`loopback` for same-host native, the Docker gateway/CIDR for a published port). |
+| `MCP_METRICS_ENABLED` | loopback: on; non-loopback: off | Explicitly enable/disable `GET /metrics` (`1`/`true`/`yes` or `0`/`false`/`no`). |
+| `MCP_METRICS_TOKEN` | unset | Separate high-entropy token for `/metrics`; when set, the `/mcp` token is rejected there. |
+| `MCP_METRICS_RATE_LIMIT_PER_MIN` | `60` | Separate metrics limiter; `0` disables it. |
+
 ### Local File Backend (Default)
 
 Stores todos in a local text file.
@@ -256,7 +359,19 @@ exhaust the process memory:
   (default: `1048576`, i.e. 1 MiB). An oversized file is rejected before it is
   parsed.
 - `TODOTXT_MCP_MAX_TODOS`: Maximum total number of todos (default: `10000`).
-  `add_todos` rejects an add that would exceed this limit and saves nothing.
+  The limit is checked after recurrence expansion, so an add or a completion
+  that would append a follow-up past the cap fails with `LIMIT_EXCEEDED` and
+  saves nothing.
+- `TODOTXT_MCP_MAX_READ_TODOS`: Maximum physical lines accepted on read
+  (default: `50000`). It is deliberately higher than the write cap so an
+  over-cap file stays readable, trimmable, and deletable through MCP.
+- `TODOTXT_MCP_MAX_LINE_CHARS`: Maximum UTF-16 code units in one line
+  (default: `8192`; astral characters count twice). The write tools keep their
+  smaller 2,000/2,100-character limits.
+
+The same read limits apply to the local-file and WebDAV backends. See
+[`docs/file-safety.md`](docs/file-safety.md) for the full validation rules,
+CRLF handling, rejected control characters, and recovery steps.
 
 ### File configuration example
 
@@ -273,12 +388,14 @@ exhaust the process memory:
 
 - **Four tools:** `list_todos`, `add_todos`, `update_todos`, `delete_todos`.
   There are no tool profiles.
-- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`) registers only
-  `list_todos`; mutating tools are absent from `tools/list` and cannot be
-  called. Prompts and resources remain available.
+- **Read-only:** `MCP_READ_ONLY=1` (or `true`/`yes`, case-insensitive)
+  registers only `list_todos`; mutating tools are absent from `tools/list` and
+  cannot be called. Prompts and resources remain available. Any other value,
+  including an unrecognized string, leaves writes enabled.
 - **Text-only:** successful results are `hash text` lines. No
-  `structuredContent` and no output schemas. Errors still carry a stable
-  `structuredContent.error.code`.
+  `structuredContent` and no output schemas. Handler failures carry a stable
+  `structuredContent.error.code`; schema-bound input violations are rejected by
+  the MCP SDK with `-32602` and no structured error object.
 - **Batch-first, text-first:** `add_todos` and `update_todos` both take arrays
   of todo.txt lines; `delete_todos` takes hashes.
 - **Benchmark:** the multi-item add/edit/status/pagination workflow costs
@@ -286,16 +403,34 @@ exhaust the process memory:
   estimate). Run `npm run bench:actions` to reproduce it.
 - **Token rotation:** keep several bearers active with
   `MCP_AUTH_TOKENS=old-token,new-token`, or mount a secret with
-  `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_tokens` (takes precedence).
-  Environment/file tokens must be at least 32 characters unless
-  `MCP_ALLOW_WEAK_TOKEN=1`.
+  `MCP_AUTH_TOKEN_FILE=/run/secrets/mcp_auth_token` (takes precedence).
+  `SIGHUP` re-reads the token file atomically; overlap, reload, verify, then
+  remove the old token and reload again. Use a 256-bit token (64 hex or 43+
+  base64url characters): the server enforces a 32-character floor plus
+  weak-pattern checks, and warns below the recommended shape.
+  `MCP_ALLOW_WEAK_TOKEN=1` is a loopback-only escape hatch and is refused on a
+  non-loopback bind.
 - **Logs:** structured JSON to stdout/stderr; set `MCP_LOG_LEVEL` to `debug`,
-  `info` (default), `warn`, or `error`. Tokens, request bodies, and todo content
-  are never logged.
+  `info` (default), `warn`, or `error`. In stdio mode every record goes to
+  stderr so stdout stays protocol-only. Tokens, request bodies, and todo content
+  are never logged. Both Compose files cap Docker logs at 10 MB × 3 files.
 - **Metrics:** `GET /metrics` serves in-memory Prometheus counters
-  (`todo_mcp_requests_total`, auth failures, and response classes). It requires
-  the bearer token when authentication is enabled and is open otherwise, so keep
-  the server on loopback or scrape it through the protected proxy.
+  (`todo_mcp_requests_total`, auth failures, and response classes). It is
+  enabled on loopback and **disabled (404) when `HOST` is non-loopback** unless
+  `MCP_METRICS_ENABLED` explicitly enables it. Set a separate
+  `MCP_METRICS_TOKEN` to keep the metrics credential distinct from `/mcp`; the
+  metrics limiter (`MCP_METRICS_RATE_LIMIT_PER_MIN`, default 60) is separate
+  from the `/mcp` limits. The proxy examples deny `/metrics` by default.
+- **Health:** `GET /healthz` is cheap liveness and stays reachable through the
+  reference proxies. `GET /readyz` loads and serializes the todo list and
+  returns `503` when the backend is unusable; it is unauthenticated but meant
+  for internal/orchestrator probes only. Probe it over loopback or an internal
+  listener: the reference Caddy and nginx configs return `404` for `/readyz`,
+  `/readyz/`, and case variants on the public host. Successful results are
+  cached for 5 seconds to absorb probe floods; failures are never cached. Do
+  not put the MCP bearer token in a probe spec.
+- **Backups:** snapshot `data/todo.txt` before upgrades or bulk edits. See
+  [docs/backup-restore.md](docs/backup-restore.md).
 
 See [SECURITY.md](SECURITY.md) for rotation, file permissions, and exposure
 guidance.
@@ -323,7 +458,9 @@ guidance.
 `due:` is a deadline. `t:` is a threshold (defer until) and is not a due date.
 Completing a recurring todo follows the usual todo.txt convention:
 `rec:+1w` advances from the due date, `rec:1w` from the completion date, and
-a `t:` threshold keeps its offset from the due date.
+a `t:` threshold keeps its offset from the due date. Month and year recurrences
+clamp to the last day of the target month (`2026-01-31` + `rec:+1m` is
+`2026-02-28`; `2024-02-29` + `rec:+1y` is `2025-02-28`).
 
 All tool results are text-only. A batch that finds no matching hash returns
 `Todo with hash <hash> not found.` A partial batch keeps the successful
@@ -341,12 +478,27 @@ today's creation date. Additions never create duplicates; a recurrence spawned
 by completing a todo is always added.
 
 Todo text must be valid Unicode without line separators or control characters
-(tab is allowed). Unchanged lines are written back byte-for-byte, so saving
-does not reorder tags or rewrite CRLF endings.
+(tab is allowed). Bidi controls (U+202A–U+202E, U+2066–U+2069) are accepted as
+ordinary text; they cannot create a new line, but they can visually reorder
+terminal output. Unchanged lines are written back byte-for-byte, so saving does
+not reorder tags or rewrite CRLF endings.
 
-Failures return `isError: true` with a stable machine-readable code in
+Calendar dates must be real dates. `add_todos` and `update_todos` reject
+impossible values in a leading date field, such as `2024-13-01 task` or
+`2024-02-30 task`, with `INVALID_ARGUMENT` and save nothing. A date-only string
+without a trailing space is plain text, not a date field. A pre-existing file
+that already contains an impossible date stays listable, hashable, and
+deletable; the raw line is preserved. An edit never silently drops a date: a
+line carrying two leading date tokens is rejected with `INVALID_ARGUMENT`
+rather than rewritten with one date. Error messages for malformed update lines
+do not echo the submitted payload; they describe the expected `<hash> <text>`
+shape.
+
+Handler failures return `isError: true` with a stable machine-readable code in
 `structuredContent.error`: `TODO_NOT_FOUND`, `INVALID_ARGUMENT`,
-`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`.
+`LIMIT_EXCEEDED`, `CONFLICT`, or `BACKEND_ERROR`. Schema-bound input violations
+(for example an array over the batch limit) are rejected by the MCP SDK with
+`-32602` and do not include a `structuredContent.error` object.
 
 ### MCP resources
 
@@ -388,13 +540,20 @@ Lock takeover is conservative:
 
 Local writes are atomic (temp file plus rename), preserve the existing file
 mode, refuse to replace a read-only file, and reject any write that would
-exceed `TODOTXT_MCP_MAX_FILE_BYTES` before creating a temp file. Reads use
-strict UTF-8 decoding and refuse invalid bytes instead of silently rewriting
-them with replacement characters.
+exceed `TODOTXT_MCP_MAX_FILE_BYTES` before creating a temp file. Atomicity is
+not durability: the temp file and its directory are not fsynced, so a power
+loss can lose the most recently acknowledged write even though readers never
+observe a partially written file. A writer killed between creating the temp
+file and renaming it can leave a stale `.<uuid>.tmp` file next to the todo
+file; it is inert and safe to delete. Reads use strict UTF-8 decoding and
+refuse invalid bytes instead of silently rewriting them with replacement
+characters.
 
 The WebDAV backend sends `If-Match` with the ETag from the last load. A `412
 Precondition Failed` is returned as a `CONFLICT` tool error, so clients know to
-reload with `list_todos` before retrying. A `200` body with an HTML content
+reload with `list_todos` before retrying. Reads use `redirect: "manual"` and
+reject any `3xx` response, so point `TODOTXT_MCP_WEBDAV_URL` at the final
+resource URL instead of relying on a redirect. A `200` body with an HTML content
 type is rejected, and HTML/XML error pages are rejected even when a proxy
 omits or mislabels `Content-Type`, before any of them can be parsed as todos.
 When a PUT fails after it may have reached storage, the

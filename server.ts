@@ -4,31 +4,51 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import express from "express";
-import type { Request, Response } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 import cors from "cors";
+import type { Readable, Writable } from "node:stream";
 
 import {
   buildCorsOptions,
   createBearerAuthMiddleware,
   DEFAULT_HOST,
+  isLoopbackHost,
   parseTrustProxy,
+  type BearerAuthHooks,
   type HttpSecurityOptions,
   resolveHttpSecurityOptions,
+  warnOnProxyPosture,
 } from "./logic/http-security.ts";
 import {
+  type AbuseConfig,
   type AbuseControlOverrides,
+  type AbuseControls,
   createAbuseControls,
   resolveAbuseConfig,
+  SlidingWindowLimiter,
 } from "./logic/abuse-controls.ts";
 import {
   assertAuthTokensConfigured,
   assertStrongAuthTokens,
+  type AuthTokenOrigin,
+  type AuthTokenSource,
+  createAuthTokenStore,
   isWeakTokenOverrideEnabled,
+  type MutableAuthTokenStore,
+  readAuthTokenFile,
   resolveAuthTokens,
   warnOnInsecureTokenFile,
 } from "./logic/auth-tokens.ts";
+import {
+  assertStrongMetricsToken,
+  type MetricsOverrides,
+  type ResolvedMetricsConfig,
+  resolveMetricsConfig,
+} from "./logic/metrics-config.ts";
+import { logSecurityPosture } from "./logic/security-posture.ts";
 import {
   createLogger,
   createRequestLoggingMiddleware,
@@ -38,7 +58,24 @@ import {
   type LogLevel,
   resolveLogLevel,
 } from "./logic/logging.ts";
-import { createMetrics } from "./logic/metrics.ts";
+import { createMetrics, type Metrics } from "./logic/metrics.ts";
+import {
+  createOperationTracker,
+  type OperationTracker,
+} from "./logic/operation-tracker.ts";
+import { resolveTransportMode, type TransportMode } from "./logic/transport.ts";
+
+/** Upper bound on draining in-flight stdio handlers during shutdown. */
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** Readiness probes must not hang on a wedged backend. */
+const READINESS_TIMEOUT_MS = 2_000;
+
+/**
+ * Reuse a successful readiness result briefly so a probe flood cannot reparse
+ * the todo file after each probe settles. Failures are never cached.
+ */
+const READINESS_CACHE_MS = 5_000;
 
 import { filterTodos } from "./logic/Todos.ts";
 import type { TodoBackend } from "./logic/backend.ts";
@@ -48,6 +85,9 @@ import { loadConfig } from "./logic/config.ts";
 import type { TodoTxtMcpConfig } from "./logic/config.ts";
 import { createJsonContentTypeMiddleware } from "./logic/content-type.ts";
 import { serializeTodoContent } from "./logic/content.ts";
+import { createReadinessProbe } from "./logic/readiness.ts";
+import { resolveReadOnlyMode } from "./logic/read-only.ts";
+import { cleanupStaleTempFiles } from "./logic/todo-file-helpers.ts";
 import {
   addTodosHandler,
   CompactAddTodosSchema,
@@ -79,28 +119,18 @@ export function createBackend(config: TodoTxtMcpConfig): TodoBackend {
 export interface CreateTodoMcpServerOptions {
   /** When true only `list_todos` is registered; mutating tools are absent. */
   readOnly?: boolean;
+  /** Tracks in-flight handlers so a transport can drain before shutdown. */
+  activity?: OperationTracker;
 }
 
-/**
- * Resolves read-only mode from an explicit option, then `MCP_READ_ONLY`.
- * Accepts `1`, `true`, or `yes` (case-insensitive).
- */
-export function resolveReadOnlyMode(
-  options: { readOnly?: boolean } = {},
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (options.readOnly !== undefined) {
-    return options.readOnly;
-  }
-  const value = env.MCP_READ_ONLY?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
 
 export function createTodoMcpServer(
   backend: TodoBackend,
   options: CreateTodoMcpServerOptions = {},
 ) {
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const tracked = <T>(work: () => T | Promise<T>): T | Promise<T> =>
+    options.activity === undefined ? work() : options.activity.run(work);
   const server = new McpServer({
     name: "todo.txt-mcp",
     version: "3.2.0",
@@ -141,10 +171,11 @@ export function createTodoMcpServer(
       description: "The complete todo.txt file.",
       mimeType: "text/plain",
     },
-    async (uri) => {
-      const todos = await backend.load();
-      return textResource(uri, serializeTodoContent(todos));
-    },
+    (uri) =>
+      tracked(async () => {
+        const todos = await backend.load();
+        return textResource(uri, serializeTodoContent(todos));
+      }),
   );
 
   server.registerResource(
@@ -156,13 +187,14 @@ export function createTodoMcpServer(
         "Visible open todos only; hidden and future-threshold todos omitted.",
       mimeType: "text/plain",
     },
-    async (uri) => {
-      const todos = await backend.load();
-      return textResource(
-        uri,
-        serializeTodoContent(filterTodos(todos, { status: "todo" })),
-      );
-    },
+    (uri) =>
+      tracked(async () => {
+        const todos = await backend.load();
+        return textResource(
+          uri,
+          serializeTodoContent(filterTodos(todos, { status: "todo" })),
+        );
+      }),
   );
 
   server.registerResource(
@@ -181,12 +213,14 @@ export function createTodoMcpServer(
       } catch {
         // Keep the raw value when it is not valid percent-encoding.
       }
-      const todos = await backend.load();
-      const matching = filterTodos(todos, {
-        status: "todo",
-        context,
+      return await tracked(async () => {
+        const todos = await backend.load();
+        const matching = filterTodos(todos, {
+          status: "todo",
+          context,
+        });
+        return textResource(uri, serializeTodoContent(matching));
       });
-      return textResource(uri, serializeTodoContent(matching));
     },
   );
 
@@ -198,7 +232,7 @@ export function createTodoMcpServer(
       inputSchema: CompactListTodosSchema.shape,
       annotations: { readOnlyHint: true },
     },
-    (rawArgs: unknown) => listTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => listTodosHandler(backend, rawArgs)),
   );
 
   // Read-only mode keeps mutating tools out of tools/list and the callable
@@ -216,7 +250,7 @@ export function createTodoMcpServer(
       inputSchema: CompactAddTodosSchema.shape,
       annotations: { destructiveHint: false },
     },
-    (rawArgs: unknown) => addTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => addTodosHandler(backend, rawArgs)),
   );
 
   server.registerTool(
@@ -231,7 +265,7 @@ export function createTodoMcpServer(
       inputSchema: CompactUpdateTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
-    (rawArgs: unknown) => updateTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => updateTodosHandler(backend, rawArgs)),
   );
 
   server.registerTool(
@@ -244,13 +278,146 @@ export function createTodoMcpServer(
       inputSchema: CompactDeleteTodosSchema.shape,
       annotations: { destructiveHint: true },
     },
-    (rawArgs: unknown) => deleteTodosHandler(backend, rawArgs),
+    (rawArgs: unknown) => tracked(() => deleteTodosHandler(backend, rawArgs)),
   );
 
   return server;
 }
 
-export type CreateAppOptions = HttpSecurityOptions & {
+export interface RunStdioServerOptions
+  extends Omit<CreateTodoMcpServerOptions, "activity"> {
+  /** Protocol input. Defaults to `process.stdin`; injectable for tests. */
+  stdin?: Readable;
+  /** Protocol output. Defaults to `process.stdout`; injectable for tests. */
+  stdout?: Writable;
+}
+
+/**
+ * Serves MCP over stdin/stdout for clients that launch the process directly.
+ *
+ * stdout is reserved for protocol frames; every log record goes to stderr.
+ * Authentication, Host/Origin validation, and metrics are HTTP concerns and
+ * are intentionally not applied here.
+ *
+ * Resolves after a clean shutdown (stdin EOF, `SIGINT`, or `SIGTERM`).
+ */
+export async function runStdioServer(
+  backend: TodoBackend,
+  options: RunStdioServerOptions = {},
+): Promise<void> {
+  const activity = createOperationTracker();
+  const logger = createLogger({
+    level: resolveLogLevel(process.env),
+    stderrOnly: true,
+  });
+  const server = createTodoMcpServer(backend, {
+    ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+    activity,
+  });
+  const stdin = options.stdin ?? process.stdin;
+  const stdout = options.stdout ?? process.stdout;
+  const transport = new StdioServerTransport(stdin, stdout);
+
+  let shutdownPromise: Promise<void> | undefined;
+  let resolveFinished!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    resolveFinished = resolve;
+  });
+
+  const removeListeners = () => {
+    stdin.off("end", onEnd);
+    stdin.off("close", onEnd);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+
+  const onEnd = () => {
+    void shutdown("stdin_end");
+  };
+  const onSigint = () => {
+    void shutdown("SIGINT");
+  };
+  const onSigterm = () => {
+    void shutdown("SIGTERM");
+  };
+
+  const shutdown = (reason: string): Promise<void> => {
+    if (shutdownPromise !== undefined) {
+      return shutdownPromise;
+    }
+    removeListeners();
+    shutdownPromise = (async () => {
+      logger.info("stdio_shutdown", { reason });
+
+      // Pause the reader first so no new frames start, but leave the MCP
+      // server open: closing it aborts in-flight handlers. Drain them so a
+      // load -> mutate -> save cycle releases the advisory lock in `finally`.
+      stdin.pause();
+      const timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(true), SHUTDOWN_TIMEOUT_MS);
+        timer.unref();
+        void activity.idle().then(() => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      });
+
+      if (timedOut) {
+        logger.error("stdio_shutdown_timeout", {
+          pendingOperations: activity.active(),
+        });
+        // A stuck backend must not keep the client's subprocess alive.
+        process.exit(1);
+      }
+
+      try {
+        await server.close();
+      } catch (error) {
+        logger.error("stdio_close_error", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      logger.info("stdio_stopped", { reason });
+      resolveFinished();
+    })();
+    return shutdownPromise;
+  };
+
+  stdin.once("end", onEnd);
+  stdin.once("close", onEnd);
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    await shutdown("connect_error");
+    throw error;
+  }
+
+  logger.info("stdio_ready");
+  await finished;
+}
+
+export { resolveReadOnlyMode };
+
+export interface CreateAppOptions extends HttpSecurityOptions {
+  /** Grouped security options; flat fields above remain supported. */
+  security?: HttpSecurityOptions;
+  /** Grouped logging/metrics options; flat fields below remain supported. */
+  observability?: {
+    logger?: Logger;
+    logLevel?: LogLevel;
+    metrics?: MetricsOverrides;
+    resolvedMetrics?: ResolvedMetricsConfig;
+  };
+  /** Grouped runtime limits; flat fields below remain supported. */
+  limits?: {
+    abuse?: AbuseControlOverrides;
+    readinessTimeoutMs?: number;
+    readinessCacheMs?: number;
+  };
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
   /** When true only `list_todos` is registered on the MCP endpoint. */
@@ -259,21 +426,289 @@ export type CreateAppOptions = HttpSecurityOptions & {
   logger?: Logger;
   /** Overrides `MCP_LOG_LEVEL` for the default logger. */
   logLevel?: LogLevel;
-};
+  /** `/metrics` overrides for tests/embedders; resolved from env when absent. */
+  metrics?: MetricsOverrides;
+  /** Already-resolved metrics settings, used by `main()` for one source of truth. */
+  resolvedMetrics?: ResolvedMetricsConfig;
+  /** Readiness probe timeout in milliseconds. Default: 2000. */
+  readinessTimeoutMs?: number;
+  /** How long a successful readiness result may be reused, in milliseconds. Default: 5000. */
+  readinessCacheMs?: number;
+}
+
+/** Describes which credential `/metrics` uses, for the posture record only. */
+function describeMetricsTokenSource(
+  config: ResolvedMetricsConfig,
+  authConfigured: boolean,
+): "env" | "mcp" | "none" {
+  if (!config.enabled) {
+    return "none";
+  }
+  if (config.token !== undefined) {
+    return "env";
+  }
+  return authConfigured ? "mcp" : "none";
+}
+
+interface RateLimitMiddlewareOptions {
+  limiter: SlidingWindowLimiter;
+  clientKey: (req: { ip?: string }) => string;
+  logger: Logger;
+  event: string;
+  message: string;
+}
+
+/** Shared 429/header handling for the `/mcp` and `/metrics` limiters. */
+function createRateLimitMiddleware(
+  options: RateLimitMiddlewareOptions,
+): (req: Request, res: Response, next: NextFunction) => void {
+  return (req, res, next) => {
+    const key = options.clientKey(req);
+    const limit = options.limiter.check(key);
+    if (limit.limit > 0) {
+      res.setHeader("RateLimit-Limit", String(limit.limit));
+      res.setHeader("RateLimit-Remaining", String(limit.remaining));
+      res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
+    }
+    if (!limit.allowed) {
+      options.logger.warn(options.event, {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        retryAfterSec: limit.retryAfterSec,
+      });
+      res.setHeader("Retry-After", String(limit.retryAfterSec));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: options.message },
+        id: null,
+      });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Builds the `/mcp` auth hooks. The failure hook records metrics, applies the
+ * per-key lockout and the global breaker, and writes the 429/503 response when
+ * either limit is reached.
+ */
+function createMcpAuthHooks(options: {
+  abuse: AbuseControls;
+  metrics: Metrics;
+  logger: Logger;
+}): BearerAuthHooks {
+  const { abuse, metrics, logger } = options;
+  return {
+    onFailure: (req, res) => {
+      metrics.recordAuthFailure();
+      logger.warn("auth_failure", {
+        requestId: getRequestId(req),
+        ip: req.ip ?? "unknown",
+        path: getRequestPath(req),
+      });
+
+      const key = abuse.clientKey(req);
+      const breaker = abuse.breaker.recordFailure();
+      if (breaker.openedNow) {
+        logger.warn("auth_failure_circuit_breaker", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: breaker.retryAfterSec,
+        });
+      }
+
+      const failure = abuse.authFailures.recordFailure(key);
+      if (failure.banned) {
+        logger.warn("auth_banned", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: failure.retryAfterSec,
+        });
+        res.setHeader("Retry-After", String(failure.retryAfterSec));
+        res.status(429).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Too many failed authentication attempts.",
+          },
+          id: null,
+        });
+        return true;
+      }
+
+      // Invalid traffic is shed while the breaker is open, but a valid token
+      // never reaches this hook and therefore always proceeds.
+      if (breaker.open) {
+        logger.warn("auth_failure_circuit_open", {
+          requestId: getRequestId(req),
+          ip: req.ip ?? "unknown",
+          retryAfterSec: breaker.retryAfterSec,
+        });
+        res.setHeader("Retry-After", String(breaker.retryAfterSec));
+        res.status(503).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message:
+              "Service temporarily unavailable due to authentication failures.",
+          },
+          id: null,
+        });
+        return true;
+      }
+      return false;
+    },
+    onSuccess: (req) => {
+      abuse.authFailures.recordSuccess(abuse.clientKey(req));
+    },
+  };
+}
+
+interface MetricsMountOptions {
+  app: Express;
+  metricsConfig: ResolvedMetricsConfig;
+  metrics: Metrics;
+  tokenSource: AuthTokenSource;
+  /** True when `/mcp` has a bearer token source to reuse for `/metrics`. */
+  authConfigured: boolean;
+  abuse: AbuseControls;
+  abuseConfig: AbuseConfig;
+  abuseOverrides: AbuseControlOverrides;
+  logger: Logger;
+}
+
+/**
+ * Mounts the optional `/metrics` endpoint with its own limiter and bucket so
+ * scrapes can neither exhaust the `/mcp` budget nor trigger its auth ban or
+ * global breaker.
+ */
+function mountMetrics(options: MetricsMountOptions): void {
+  const {
+    app,
+    metricsConfig,
+    metrics,
+    tokenSource,
+    authConfigured,
+    abuse,
+    abuseConfig,
+    abuseOverrides,
+    logger,
+  } = options;
+  if (!metricsConfig.enabled) {
+    return;
+  }
+
+  const metricsLimiter = new SlidingWindowLimiter({
+    limit: metricsConfig.rateLimitPerMin,
+    windowMs: 60_000,
+    maxEntries: abuseConfig.maxTrackedKeys,
+    ...(abuseOverrides.now === undefined ? {} : { now: abuseOverrides.now }),
+  });
+
+  app.use(
+    "/metrics",
+    createRateLimitMiddleware({
+      limiter: metricsLimiter,
+      clientKey: abuse.clientKey,
+      logger,
+      event: "metrics_rate_limited",
+      message: "Too many metrics requests.",
+    }),
+  );
+
+  // When a separate metrics token is configured it is the only credential
+  // accepted here. Otherwise reuse the /mcp token but bypass its lockout.
+  const separateMetricsToken = metricsConfig.token;
+  const metricsAuthConfigured = separateMetricsToken !== undefined ||
+    authConfigured;
+  if (metricsAuthConfigured) {
+    const metricsTokenSource = separateMetricsToken ?? tokenSource;
+    app.use(
+      "/metrics",
+      createBearerAuthMiddleware(metricsTokenSource, {
+        onFailure: (req) => {
+          metrics.recordAuthFailure();
+          logger.warn("auth_failure", {
+            requestId: getRequestId(req),
+            ip: req.ip ?? "unknown",
+            path: getRequestPath(req),
+          });
+        },
+      }),
+    );
+  }
+
+  app.get("/metrics", (_req: Request, res: Response) => {
+    res.setHeader(
+      "Content-Type",
+      "text/plain; version=0.0.4; charset=utf-8",
+    );
+    res.status(200).send(metrics.render());
+  });
+}
+
+/** Flat security fields override the grouped form only when actually set. */
+function resolveSecurityOptions(
+  options: CreateAppOptions,
+): HttpSecurityOptions {
+  const flat: HttpSecurityOptions = {};
+  if (options.allowedHosts !== undefined) {
+    flat.allowedHosts = options.allowedHosts;
+  }
+  if (options.allowedOrigins !== undefined) {
+    flat.allowedOrigins = options.allowedOrigins;
+  }
+  if (options.authToken !== undefined) {
+    flat.authToken = options.authToken;
+  }
+  if (options.authTokens !== undefined) {
+    flat.authTokens = options.authTokens;
+  }
+  return { ...options.security, ...flat };
+}
 
 export function createApp(
   backend: TodoBackend,
   options: CreateAppOptions = {},
 ) {
-  const { allowedHosts, allowedOrigins, authTokens } =
-    resolveHttpSecurityOptions(options);
-  const abuseOverrides = options.abuse ?? {};
+  const { allowedHosts, allowedOrigins, authTokens, authTokenProvider } =
+    resolveHttpSecurityOptions(resolveSecurityOptions(options));
+  const tokenSource = authTokenProvider ?? authTokens;
+  const authConfigured = authTokenProvider !== undefined ||
+    authTokens.length > 0;
+  const abuseOverrides = options.limits?.abuse ?? options.abuse ?? {};
   const abuseConfig = resolveAbuseConfig(process.env, abuseOverrides);
   const abuse = createAbuseControls(abuseConfig, abuseOverrides.now);
-  const logger = options.logger ??
-    createLogger({ level: options.logLevel ?? resolveLogLevel(process.env) });
+  const logger = options.observability?.logger ?? options.logger ??
+    createLogger({
+      level: options.observability?.logLevel ?? options.logLevel ??
+        resolveLogLevel(process.env),
+    });
   const metrics = createMetrics();
+  const metricsConfig = options.observability?.resolvedMetrics ??
+    options.resolvedMetrics ??
+    resolveMetricsConfig(
+      options.observability?.metrics ?? options.metrics,
+      process.env,
+    );
   const readOnly = resolveReadOnlyMode(options, process.env);
+  const readinessTimeoutMs = options.limits?.readinessTimeoutMs ??
+    options.readinessTimeoutMs ??
+    READINESS_TIMEOUT_MS;
+  const readinessCacheMs = options.limits?.readinessCacheMs ??
+    options.readinessCacheMs ??
+    READINESS_CACHE_MS;
+  const readiness = createReadinessProbe(backend, readinessTimeoutMs, {
+    cacheMs: readinessCacheMs,
+  });
+  const mcpRateLimit = createRateLimitMiddleware({
+    limiter: abuse.limiter,
+    clientKey: abuse.clientKey,
+    logger,
+    event: "rate_limited",
+    message: "Too many requests.",
+  });
   const app = express();
 
   // Do not advertise the framework.
@@ -318,6 +753,7 @@ export function createApp(
   };
   app.use("/mcp", securityHeaders);
   app.use("/metrics", securityHeaders);
+  app.use("/readyz", securityHeaders);
 
   // Port-agnostic Host validation protects against DNS rebinding.
   app.use(hostHeaderValidation(allowedHosts));
@@ -331,29 +767,29 @@ export function createApp(
     res.status(200).json({ status: "ok" });
   });
 
-  // Abuse controls run before authentication so floods and banned keys are
-  // rejected without doing token work. Health checks are never affected.
-  app.use("/mcp", (req: Request, res: Response, next) => {
-    const key = abuse.clientKey(req);
-
-    const breaker = abuse.breaker.state();
-    if (breaker.open) {
-      logger.warn("auth_failure_circuit_open", {
+  // Liveness stays cheap; readiness actually loads and serializes the todo
+  // list so a bricked backend is visible. It is unauthenticated but still
+  // Host-validated by the middleware above, and never returns the error.
+  app.get("/readyz", async (req: Request, res: Response) => {
+    const result = await readiness();
+    if (!result.ready) {
+      logger.warn("readiness_failed", {
         requestId: getRequestId(req),
         ip: req.ip ?? "unknown",
-        retryAfterSec: breaker.retryAfterSec,
+        reason: result.reason ?? "unknown",
       });
-      res.setHeader("Retry-After", String(breaker.retryAfterSec));
-      res.status(503).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32000,
-          message: "Service temporarily unavailable due to authentication failures.",
-        },
-        id: null,
-      });
+      res.status(503).json({ status: "unavailable" });
       return;
     }
+    res.status(200).json({ status: "ready" });
+  });
+
+  // Abuse controls run before authentication so floods and banned keys are
+  // rejected without doing token work. Health/readiness checks are never
+  // affected. The global breaker is checked after authentication instead, so
+  // a valid bearer is never shed because of other clients' failures.
+  app.use("/mcp", (req: Request, res: Response, next) => {
+    const key = abuse.clientKey(req);
 
     const ban = abuse.authFailures.getBan(key);
     if (ban.banned) {
@@ -374,100 +810,29 @@ export function createApp(
       return;
     }
 
-    const limit = abuse.limiter.check(key);
-    if (limit.limit > 0) {
-      res.setHeader("RateLimit-Limit", String(limit.limit));
-      res.setHeader("RateLimit-Remaining", String(limit.remaining));
-      res.setHeader("RateLimit-Reset", String(limit.resetAfterSec));
-    }
-    if (!limit.allowed) {
-      logger.warn("rate_limited", {
-        requestId: getRequestId(req),
-        ip: req.ip ?? "unknown",
-        retryAfterSec: limit.retryAfterSec,
-      });
-      res.setHeader("Retry-After", String(limit.retryAfterSec));
-      res.status(429).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Too many requests." },
-        id: null,
-      });
-      return;
-    }
-
-    next();
+    mcpRateLimit(req, res, next);
   });
 
-  if (authTokens.length > 0) {
+  if (authConfigured) {
     app.use(
       "/mcp",
-      createBearerAuthMiddleware(authTokens, {
-        onFailure: (req, res) => {
-          metrics.recordAuthFailure();
-          logger.warn("auth_failure", {
-            requestId: getRequestId(req),
-            ip: req.ip ?? "unknown",
-            path: getRequestPath(req),
-          });
-
-          const key = abuse.clientKey(req);
-          const breaker = abuse.breaker.recordFailure();
-          if (breaker.openedNow) {
-            logger.warn("auth_failure_circuit_breaker", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              retryAfterSec: breaker.retryAfterSec,
-            });
-          }
-
-          const failure = abuse.authFailures.recordFailure(key);
-          if (failure.banned) {
-            logger.warn("auth_banned", {
-              requestId: getRequestId(req),
-              ip: req.ip ?? "unknown",
-              retryAfterSec: failure.retryAfterSec,
-            });
-            res.setHeader("Retry-After", String(failure.retryAfterSec));
-            res.status(429).json({
-              jsonrpc: "2.0",
-              error: {
-                code: -32000,
-                message: "Too many failed authentication attempts.",
-              },
-              id: null,
-            });
-            return true;
-          }
-          return false;
-        },
-        onSuccess: (req) => {
-          abuse.authFailures.recordSuccess(abuse.clientKey(req));
-        },
-      }),
-    );
-    // /metrics uses the same bearer check but deliberately bypasses the /mcp
-    // abuse controls so a scraper cannot trip the login lockout.
-    app.use(
-      "/metrics",
-      createBearerAuthMiddleware(authTokens, {
-        onFailure: (req) => {
-          metrics.recordAuthFailure();
-          logger.warn("auth_failure", {
-            requestId: getRequestId(req),
-            ip: req.ip ?? "unknown",
-            path: getRequestPath(req),
-          });
-        },
-      }),
+      createBearerAuthMiddleware(
+        tokenSource,
+        createMcpAuthHooks({ abuse, metrics, logger }),
+      ),
     );
   }
 
-  app.get("/metrics", (_req: Request, res: Response) => {
-    res.setHeader(
-      "Content-Type",
-      "text/plain; version=0.0.4; charset=utf-8",
-    );
-    res.status(200).send(metrics.render());
+  mountMetrics({
+    app,
+    metricsConfig,
+    metrics,
+    tokenSource,
+    authConfigured,
+    abuse,
+    abuseConfig,
+    abuseOverrides,
+    logger,
   });
 
   let inFlightMcpRequests = 0;
@@ -572,7 +937,54 @@ export function createApp(
   return app;
 }
 
+interface TokenReloadOptions {
+  tokenFile: string | undefined;
+  allowWeakTokens: boolean;
+  store: MutableAuthTokenStore;
+  logger: Logger;
+}
+
+/**
+ * Re-reads and re-validates `MCP_AUTH_TOKEN_FILE` on SIGHUP. A failed reload
+ * keeps the previous tokens active; logs only counts or reasons, never values.
+ */
+function installTokenReload(options: TokenReloadOptions): void {
+  const { tokenFile, allowWeakTokens, store, logger } = options;
+  if (tokenFile === undefined || tokenFile === "") {
+    return;
+  }
+  process.on("SIGHUP", () => {
+    try {
+      const nextTokens = readAuthTokenFile(tokenFile);
+      assertStrongAuthTokens(
+        nextTokens,
+        allowWeakTokens,
+        "file",
+        (message) => logger.warn("auth_token_entropy_warning", { message }),
+      );
+      assertAuthTokensConfigured(nextTokens);
+      store.set(nextTokens);
+      logger.info("auth_tokens_reloaded", { count: nextTokens.length });
+    } catch (error) {
+      logger.warn("auth_tokens_reload_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+}
+
 export async function main() {
+  let transportMode: TransportMode;
+  try {
+    transportMode = resolveTransportMode();
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   let config: TodoTxtMcpConfig;
   try {
     config = await loadConfig();
@@ -597,6 +1009,18 @@ export async function main() {
   }
 
   const backend = createBackend(config);
+  if (config.backend === "local") {
+    // A killed writer can leave an abandoned temp file; clean old ones at the
+    // composition root rather than as a backend-constructor side effect.
+    cleanupStaleTempFiles(config.local.filename);
+  }
+
+  if (transportMode === "stdio") {
+    // stdio mode skips HTTP-only concerns: bearer tokens, host/origin
+    // allowlists, TLS, and metrics. stdout carries protocol frames only.
+    await runStdioServer(backend);
+    return;
+  }
 
   let trustProxy: ReturnType<typeof parseTrustProxy>;
   try {
@@ -609,23 +1033,72 @@ export async function main() {
     return;
   }
 
+  const host = process.env.HOST ?? DEFAULT_HOST;
+  const logger = createLogger({ level: resolveLogLevel(process.env) });
+  const allowWeakTokens = isWeakTokenOverrideEnabled(
+    process.env.MCP_ALLOW_WEAK_TOKEN,
+  );
+  const tokenFile = process.env.MCP_AUTH_TOKEN_FILE?.trim();
+
+  // Resolve metrics before building the app: invalid boolean/rate values and
+  // a weak separate metrics token fail startup with a clear message.
+  let metricsConfig: ResolvedMetricsConfig;
+  try {
+    metricsConfig = resolveMetricsConfig({ host }, process.env);
+    if (metricsConfig.token !== undefined) {
+      assertStrongMetricsToken(
+        metricsConfig.token,
+        allowWeakTokens,
+        (message) =>
+          logger.warn("metrics_token_entropy_warning", { message }),
+      );
+    }
+  } catch (error) {
+    console.error(
+      `❌ ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // The weak-token override is an escape hatch for local experiments only.
+  if (allowWeakTokens && !isLoopbackHost(host)) {
+    console.error(
+      `❌ MCP_ALLOW_WEAK_TOKEN=1 is only allowed when HOST is loopback ` +
+        `(current HOST "${host}"). Unset MCP_ALLOW_WEAK_TOKEN or bind to ` +
+        `127.0.0.1.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (allowWeakTokens) {
+    logger.warn("weak_token_override_enabled", {
+      host,
+      message:
+        "MCP_ALLOW_WEAK_TOKEN=1 is set; short or guessable tokens are " +
+        "accepted. This is only safe for local experiments.",
+    });
+  }
+
   // Resolve and validate bearer tokens before building the app so a weak or
   // unreadable secret fails fast instead of silently disabling authentication.
   let authTokens: string[] = [];
+  let authTokenSource: AuthTokenOrigin = "none";
   try {
-    const tokenFile = process.env.MCP_AUTH_TOKEN_FILE?.trim();
     if (tokenFile !== undefined && tokenFile !== "") {
       warnOnInsecureTokenFile(tokenFile);
     }
 
     const resolvedTokens = resolveAuthTokens({}, process.env);
+    authTokenSource = resolvedTokens.source;
     if (
       resolvedTokens.source === "env" || resolvedTokens.source === "file"
     ) {
       assertStrongAuthTokens(
         resolvedTokens.tokens,
-        isWeakTokenOverrideEnabled(process.env.MCP_ALLOW_WEAK_TOKEN),
+        allowWeakTokens,
         resolvedTokens.source,
+        (message) => logger.warn("auth_token_entropy_warning", { message }),
       );
     }
     assertAuthTokensConfigured(resolvedTokens.tokens);
@@ -638,9 +1111,36 @@ export async function main() {
     return;
   }
 
+  // Keep the active list in a mutable store so SIGHUP can swap it atomically.
+  const tokenStore = createAuthTokenStore(authTokens);
+  const readOnlyMode = resolveReadOnlyMode({}, process.env);
+
+  const proxyWarnings = warnOnProxyPosture(
+    host,
+    trustProxy,
+    (message, fields) => {
+      logger.warn("proxy_posture_warning", { ...fields, message });
+    },
+  ).map((warning) => warning.code);
+
+  const metricsTokenSource = describeMetricsTokenSource(
+    metricsConfig,
+    authTokens.length > 0,
+  );
+
+  installTokenReload({
+    tokenFile,
+    allowWeakTokens,
+    store: tokenStore,
+    logger,
+  });
+
   const app = createApp(backend, {
+    logger,
+    readOnly: readOnlyMode,
     ...(trustProxy === undefined ? {} : { trustProxy }),
-    ...(authTokens.length > 0 ? { authTokens } : {}),
+    ...(authTokens.length > 0 ? { authTokens: tokenStore } : {}),
+    resolvedMetrics: metricsConfig,
   });
 
   const port = Number(process.env.PORT ?? "3000");
@@ -652,8 +1152,6 @@ export async function main() {
     return;
   }
 
-  const host = process.env.HOST ?? DEFAULT_HOST;
-
   const server = app.listen(port, host, () => {
     const address = server.address();
     const boundPort = typeof address === "object" && address !== null
@@ -663,6 +1161,25 @@ export async function main() {
       `todo.txt-mcp Server running on http://localhost:${boundPort}`,
     );
     console.log(`MCP Endpoint: http://localhost:${boundPort}/mcp`);
+
+    logSecurityPosture(logger, {
+      host,
+      port: boundPort,
+      ...(trustProxy === undefined ? {} : { trustProxy }),
+      metrics: {
+        enabled: metricsConfig.enabled,
+        tokenSource: metricsTokenSource,
+      },
+      tokenSource: authTokenSource,
+      tokenCount: authTokens.length,
+      readOnly: readOnlyMode,
+      backend: config.backend,
+      allowWeakToken: allowWeakTokens,
+      ...(process.env.MCP_READ_ONLY === undefined
+        ? {}
+        : { readOnlyValue: process.env.MCP_READ_ONLY }),
+      proxyWarnings,
+    });
   });
 
   // Bound slow-body and idle-connection attacks.

@@ -53,21 +53,83 @@ export function parseDateTag(
   return date;
 }
 
+/** Number of days in a UTC calendar month; `monthIndex` is 0-based. */
+function daysInUtcMonth(year: number, monthIndex: number): number {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+/**
+ * Builds a UTC date, clamping the day to the last day of the target month.
+ * Without this, `2026-01-31 +1m` would overflow into March.
+ */
+function clampedUtcDate(
+  year: number,
+  monthIndex: number,
+  day: number,
+): Date {
+  const lastDay = daysInUtcMonth(year, monthIndex);
+  return new Date(Date.UTC(year, monthIndex, Math.min(day, lastDay)));
+}
+
+/**
+ * Domain error for a recurrence that would leave the supported date range.
+ * It is intentionally independent of the tool/MCP error layer; `tools.ts`
+ * maps it to `INVALID_ARGUMENT`.
+ */
+export class RecurrenceRangeError extends Error {
+  readonly recurrence: Recurrence;
+
+  constructor(recurrence: Recurrence) {
+    const value = `rec:${recurrence.strict ? "+" : ""}${recurrence.amount}` +
+      recurrence.unit;
+    super(
+      `Invalid recurrence "${value}": the next date is out of range. ` +
+        "Nothing was saved.",
+    );
+    this.name = "RecurrenceRangeError";
+    this.recurrence = recurrence;
+  }
+}
+
+function invalidRecurrence(recurrence: Recurrence): RecurrenceRangeError {
+  return new RecurrenceRangeError(recurrence);
+}
+
 function addRecurrence(date: Date, recurrence: Recurrence): Date {
-  const next = new Date(date.getTime());
+  let next: Date;
   switch (recurrence.unit) {
     case "d":
-      next.setUTCDate(next.getUTCDate() + recurrence.amount);
+    case "w": {
+      const days = recurrence.unit === "w"
+        ? recurrence.amount * 7
+        : recurrence.amount;
+      next = new Date(date.getTime());
+      next.setUTCDate(next.getUTCDate() + days);
       break;
-    case "w":
-      next.setUTCDate(next.getUTCDate() + recurrence.amount * 7);
+    }
+    case "m": {
+      const targetMonth = date.getUTCMonth() + recurrence.amount;
+      const targetYear = date.getUTCFullYear() + Math.floor(targetMonth / 12);
+      const monthIndex = ((targetMonth % 12) + 12) % 12;
+      next = clampedUtcDate(targetYear, monthIndex, date.getUTCDate());
       break;
-    case "m":
-      next.setUTCMonth(next.getUTCMonth() + recurrence.amount);
-      break;
+    }
     case "y":
-      next.setUTCFullYear(next.getUTCFullYear() + recurrence.amount);
+      next = clampedUtcDate(
+        date.getUTCFullYear() + recurrence.amount,
+        date.getUTCMonth(),
+        date.getUTCDate(),
+      );
       break;
+  }
+
+  const year = next.getUTCFullYear();
+  if (
+    !Number.isFinite(next.getTime()) ||
+    year < 1 ||
+    year > 9999
+  ) {
+    throw invalidRecurrence(recurrence);
   }
   return next;
 }
@@ -111,5 +173,18 @@ export function nextRecurrence(
   const offset = daysBetween(referenceDue, threshold);
   const nextThreshold = new Date(nextDue.getTime());
   nextThreshold.setUTCDate(nextThreshold.getUTCDate() - offset);
+
+  // The offset can push the threshold outside the supported year range even
+  // when the due date itself is valid (for example a year-9999 due date with a
+  // late threshold). Fail the whole mutation instead of persisting a broken
+  // `t:` value.
+  const thresholdYear = nextThreshold.getUTCFullYear();
+  if (
+    !Number.isFinite(nextThreshold.getTime()) ||
+    thresholdYear < 1 ||
+    thresholdYear > 9999
+  ) {
+    throw invalidRecurrence(recurrence);
+  }
   return { due: nextDue, threshold: nextThreshold };
 }

@@ -7,15 +7,31 @@ import {
   startOfUtcDay,
 } from "./recurrence.ts";
 import {
+  parseTodoHeader,
+  type TodoDateIssues,
+} from "./todo-date-header.ts";
+import {
   CONTEXT_REGEX,
   PROJECT_REGEX,
   TAG_REGEX,
 } from "./tokens.ts";
 
-const TODO_REGEX =
-  /^((?<done>[x])\s){0,1}(\((?<prio>[A-Z])\)\s){0,1}((?<completionDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}((?<creationDate>\d{4}-[0-1][0-9]-[0-3][0-9])\s){0,1}(?<rest>[^\n\r]+)\s*$/;
-
 const formatDate = (date: Date) => date.toISOString().substring(0, 10);
+
+/**
+ * Domain error for mutating a line whose two leading dates cannot be
+ * canonicalised without dropping one. Callers should reject the write with
+ * `INVALID_ARGUMENT` instead of guessing.
+ */
+export class AmbiguousTodoError extends Error {
+  constructor() {
+    super(
+      "This todo starts with two dates; editing it would silently drop one. " +
+        "Delete and re-add it instead.",
+    );
+    this.name = "AmbiguousTodoError";
+  }
+}
 
 /**
  * Serializes tags, emitting a repeated `key:value` token for every value of a
@@ -30,6 +46,22 @@ function serializeTags(tags: { [key: string]: string | string[] }): string {
         : [`${key}:${value}`]
     )
     .join(" ");
+}
+
+/**
+ * Restores the public `string | string[]` tag shape from the per-key value
+ * sets used during parsing. A single value stays a string so serialization and
+ * callers see the same representation as before.
+ */
+function materializeTags(
+  valuesByKey: Map<string, Set<string>>,
+): { [key: string]: string | string[] } {
+  const tags: { [key: string]: string | string[] } = {};
+  for (const [key, values] of valuesByKey) {
+    const list = [...values];
+    tags[key] = list.length === 1 ? list[0] : list;
+  }
+  return tags;
 }
 
 export class Todo {
@@ -48,43 +80,57 @@ export class Todo {
    */
   private originalLine: string | undefined;
   private originalSerialized: string | undefined;
+  private dateIssues: TodoDateIssues = {
+    invalidTokens: [],
+    ambiguous: false,
+  };
+
+  /**
+   * Leading date tokens that matched {@link parseTodoHeader} but are not real
+   * calendar dates. Kept read-only for callers so parser bookkeeping cannot be
+   * mutated from outside the class.
+   */
+  get invalidDateTokens(): readonly string[] {
+    return this.dateIssues.invalidTokens;
+  }
+
+  /**
+   * True when an open todo starts with two date tokens. Only one can be its
+   * creation date, so editing such a line would silently drop a token; write
+   * operations reject it instead.
+   */
+  get hasTwoLeadingDates(): boolean {
+    return this.dateIssues.ambiguous;
+  }
 
   constructor(text: string) {
     const originalLine = text;
-    const match = text.match(TODO_REGEX);
-    if (match?.groups) {
-      const { done, completionDate, creationDate } = match.groups;
-      if (done) {
-        // A completed todo is stored as "x <completionDate> <creationDate>":
-        // the first optional date is the completion date, the second the
-        // creation date. A lone date is therefore a completion date.
-        this.completionDate = completionDate
-          ? new Date(completionDate)
-          : undefined;
-        this.creationDate = creationDate ? new Date(creationDate) : undefined;
-      } else {
-        // An open todo has no completion date; a lone date is its creation
-        // date.
-        const date = creationDate ?? completionDate;
-        this.creationDate = date ? new Date(date) : undefined;
-        this.completionDate = undefined;
-      }
-      this.priority = match.groups.prio as UpperCaseLetter;
-      text = match.groups.rest as string;
-      this.state = match.groups.done ? TodoStateEnum.done : TodoStateEnum.todo;
+    const parsed = parseTodoHeader(text);
+    if (parsed !== undefined) {
+      this.priority = parsed.priority;
+      this.state = parsed.done
+        ? TodoStateEnum.done
+        : TodoStateEnum.todo;
+      this.completionDate = parsed.header.completionDate;
+      this.creationDate = parsed.header.creationDate;
+      this.dateIssues = parsed.header.issues;
+      text = parsed.header.literalPrefix + parsed.rest;
     }
     this.setText(text);
     this.originalLine = originalLine;
     try {
       this.originalSerialized = this.serialize();
     } catch {
-      // Keep construction permissive for malformed dates; serialization will
-      // fail with the original error when the line is actually written.
+      // Keep construction permissive for programmatic mutation; a loaded line
+      // with malformed dates is handled above and never reaches this catch.
       this.originalSerialized = undefined;
     }
   }
   /** Toggles completion and returns a recurrence todo when one is spawned. */
   toggleState(completedAt: Date = new Date()): { recurrence?: Todo } {
+    if (this.hasTwoLeadingDates) {
+      throw new AmbiguousTodoError();
+    }
     this.state = this.state === TodoStateEnum.todo
       ? TodoStateEnum.done
       : TodoStateEnum.todo;
@@ -133,11 +179,19 @@ export class Todo {
    */
   toString() {
     const serialized = this.serialize();
-    if (
-      this.originalLine !== undefined &&
-      serialized === this.originalSerialized
-    ) {
-      return this.originalLine;
+    if (this.originalLine !== undefined) {
+      if (this.hasTwoLeadingDates) {
+        // A two-date line cannot be canonicalised without dropping a token.
+        // Keep the raw line while unchanged; refuse to serialize a mutation
+        // that would silently lose it.
+        if (serialized === this.originalSerialized) {
+          return this.originalLine;
+        }
+        throw new AmbiguousTodoError();
+      }
+      if (serialized === this.originalSerialized) {
+        return this.originalLine;
+      }
     }
     return serialized;
   }
@@ -145,14 +199,19 @@ export class Todo {
   private serialize() {
     // Completed todos must be serialized as
     // "x [priority] <completionDate> <creationDate> <text> [tags]" so that
-    // TODO_REGEX parses the dates back into the same fields. Open todos only
-    // carry a creation date.
+    // parseTodoHeader parses the dates back into the same fields. Open todos
+    // only carry a creation date.
     const dates: string[] = [];
-    if (this.isDone()) {
-      if (this.completionDate) dates.push(formatDate(this.completionDate));
-      if (this.creationDate) dates.push(formatDate(this.creationDate));
-    } else if (this.creationDate) {
-      dates.push(formatDate(this.creationDate));
+    // The literal prefix of a line with an invalid token is already part of
+    // `text`; emitting the parsed dates too would duplicate a valid token.
+    if (this.invalidDateTokens.length === 0) {
+      if (this.isDone()) {
+        // On a done line a lone date is the completion date by format.
+        if (this.completionDate) dates.push(formatDate(this.completionDate));
+        if (this.creationDate) dates.push(formatDate(this.creationDate));
+      } else if (this.creationDate) {
+        dates.push(formatDate(this.creationDate));
+      }
     }
 
     return (this.isDone() ? "x " : "") +
@@ -164,11 +223,22 @@ export class Todo {
   }
 
   toDisplayString() {
+    if (this.hasTwoLeadingDates && this.originalLine !== undefined) {
+      // Show both dates so the user can see why an update is rejected. This
+      // deliberately differs from canonical rows, which hide the creation
+      // date, so `search` can match these literal tokens.
+      if (this.serialize() !== this.originalSerialized) {
+        throw new AmbiguousTodoError();
+      }
+      return this.originalLine;
+    }
     return (this.isDone() ? "x " : "") +
       (this.priority ? `(${this.priority}) ` : "") +
       // Creation dates are omitted from the display string. Only a completed
-      // todo shows a date and it is always its completion date.
-      (this.isDone() && this.completionDate
+      // todo shows a date and it is always its completion date. A line with an
+      // invalid token already carries its literal dates in `text`.
+      (this.invalidDateTokens.length === 0 && this.isDone() &&
+          this.completionDate
         ? formatDate(this.completionDate) + " "
         : "") +
       this.text +
@@ -210,30 +280,35 @@ export class Todo {
       this.contexts.add(context.groups!.name);
     }
 
-    const matchTags = text.matchAll(TAG_REGEX);
-    for (const tag of matchTags) {
+    const tagValues = this.collectTagValues(text);
+    this.tags = materializeTags(tagValues);
+    // Projects and contexts were extracted from the original body above; the
+    // single global pass removes every tag token (and its leading whitespace)
+    // without the per-token `replace` scan that made this quadratic.
+    this.text = text.replace(TAG_REGEX, "");
+  }
+
+  /**
+   * Collects tag values for one body into per-key sets seeded with the values
+   * already on this todo. This preserves append/dedupe behavior across repeated
+   * `setText` calls while keeping membership checks O(1) and first-seen order.
+   */
+  private collectTagValues(text: string): Map<string, Set<string>> {
+    const valuesByKey = new Map<string, Set<string>>();
+    for (const [key, value] of Object.entries(this.tags)) {
+      valuesByKey.set(key, new Set(Array.isArray(value) ? value : [value]));
+    }
+    for (const tag of text.matchAll(TAG_REGEX)) {
       const key = tag.groups!.key;
       const value = tag.groups!.value;
-      const existing = this.tags[key];
-      const alreadyPresent = existing === value ||
-        (Array.isArray(existing) && existing.includes(value));
-      // Re-applying the same body (a common follow-up edit) must not append an
-      // identical tag, which would render as `due:2026-12-15,2026-12-15`.
-      if (!alreadyPresent) {
-        switch (typeof existing) {
-          case "object":
-            this.tags[key] = [...existing, value];
-            break;
-          case "string":
-            this.tags[key] = [existing, value];
-            break;
-          default:
-            this.tags[key] = value;
-        }
+      let values = valuesByKey.get(key);
+      if (values === undefined) {
+        values = new Set();
+        valuesByKey.set(key, values);
       }
-      text = text.replace(tag[0], "");
+      values.add(value);
     }
-    this.text = text;
+    return valuesByKey;
   }
 
   setTag(key: string, value: string): void {

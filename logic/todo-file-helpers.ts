@@ -8,7 +8,14 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import type { Stats, WriteFileOptions } from "node:fs";
+import {
+  readdirSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  type Stats,
+  type WriteFileOptions,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 import { Todo } from "./todo.ts";
@@ -17,11 +24,18 @@ import { isNotFoundError } from "./fs-errors.ts";
 import {
   assertFileSizeWithinLimit,
   resolveMaxFileBytes,
+  resolveMaxLineChars,
+  resolveMaxReadTodos,
 } from "./limits.ts";
+import { validateTodoFileContent } from "./todo-file-validation.ts";
 
 export interface ReadTodosOptions {
   /** Maximum allowed file size in bytes. Defaults to `TODOTXT_MCP_MAX_FILE_BYTES`. */
   maxFileBytes?: number;
+  /** Maximum number of physical lines. Defaults to `TODOTXT_MCP_MAX_READ_TODOS`. */
+  maxReadTodos?: number;
+  /** Maximum characters per line. Defaults to `TODOTXT_MCP_MAX_LINE_CHARS`. */
+  maxLineChars?: number;
 }
 
 export interface WriteTodosOptions {
@@ -34,6 +48,8 @@ export async function readTodosFromFile(
   options: ReadTodosOptions = {},
 ): Promise<Todo[]> {
   const maxFileBytes = options.maxFileBytes ?? resolveMaxFileBytes();
+  const maxReadTodos = options.maxReadTodos ?? resolveMaxReadTodos();
+  const maxLineChars = options.maxLineChars ?? resolveMaxLineChars();
   let fileInfo: Stats;
   try {
     fileInfo = await stat(filename); // Check if file exists
@@ -84,7 +100,11 @@ export async function readTodosFromFile(
     maxFileBytes,
   );
 
-  return data.split("\n").filter((x) => x.trim()).map((x) => new Todo(x));
+  // Validate structure after decoding and before building Todo objects. The
+  // returned lines keep their original bytes (including a CRLF terminator).
+  const lines = validateTodoFileContent(data, { maxReadTodos, maxLineChars });
+
+  return lines.filter((x) => x.trim()).map((x) => new Todo(x));
 }
 
 /**
@@ -177,3 +197,72 @@ export const writeTodosToFile = async (
     throw error;
   }
 };
+
+/**
+ * Matches the temporary files created by `writeTodosToFile`: a dot, a UUID,
+ * and `.tmp`. Anything else in the directory is left alone.
+ */
+const TEMP_FILE_PATTERN =
+  /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i;
+
+/** Only files untouched for an hour are considered abandoned. */
+const DEFAULT_STALE_TEMP_AGE_MS = 60 * 60 * 1_000;
+
+export interface CleanupStaleTempFilesOptions {
+  /** Minimum age before a temp file is removed. Default: one hour. */
+  maxAgeMs?: number;
+  /** Injectable clock in milliseconds. Default: `Date.now()`. */
+  now?: number;
+}
+
+/** Resolves the directory holding the real todo file, following symlinks. */
+function resolveTodoDirectory(filename: string): string {
+  try {
+    return dirname(realpathSync(filename));
+  } catch {
+    return dirname(filename);
+  }
+}
+
+/**
+ * Best-effort removal of abandoned `.<uuid>.tmp` files next to the todo file.
+ *
+ * The write path removes its temp file on error, but a killed process can
+ * leave one behind. Recent temp files are preserved because another writer may
+ * be using them. Every filesystem error is swallowed so a read-only or missing
+ * directory cannot prevent startup. Returns the number of files removed.
+ */
+export function cleanupStaleTempFiles(
+  filename: string,
+  options: CleanupStaleTempFilesOptions = {},
+): number {
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_STALE_TEMP_AGE_MS;
+  const now = options.now ?? Date.now();
+  const directory = resolveTodoDirectory(filename);
+
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!TEMP_FILE_PATTERN.test(entry)) {
+      continue;
+    }
+    const path = join(directory, entry);
+    try {
+      const info = statSync(path);
+      if (!info.isFile() || now - info.mtimeMs <= maxAgeMs) {
+        continue;
+      }
+      unlinkSync(path);
+      removed += 1;
+    } catch {
+      // Another process may have removed it, or the directory is read-only.
+    }
+  }
+  return removed;
+}
