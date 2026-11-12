@@ -87,6 +87,8 @@ Use [`deploy/Caddyfile`](../deploy/Caddyfile) or
 - rate limit at the edge;
 - forward `Host` and a replaced `X-Forwarded-For`;
 - return `404` for `/metrics` by default;
+- return `404` for `/readyz` and its subpaths (`/readyz/`, case-insensitive)
+  by default, because it triggers a full load and serialize;
 - proxy to `127.0.0.1:3000`.
 
 After reloading the proxy, verify:
@@ -98,6 +100,10 @@ curl -o /dev/null -w '%{http_code}\n' \
   https://todo.example.com/mcp                      # 401 without a token
 curl -o /dev/null -w '%{http_code}\n' \
   https://todo.example.com/metrics                  # 404 by default
+curl -o /dev/null -w '%{http_code}\n' \
+  https://todo.example.com/readyz                   # 404 by default
+curl -o /dev/null -w '%{http_code}\n' \
+  https://todo.example.com/readyz/                  # 404 by default
 ```
 
 ## 5. `TRUST_PROXY` and the real client IP

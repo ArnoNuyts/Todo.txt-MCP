@@ -71,7 +71,10 @@ todo.example.com {
 	# the public listener. Probe it over loopback or an internal listener (for
 	# example an orchestrator exec probe against 127.0.0.1:3000). Do not put the
 	# MCP bearer token in a probe spec. /healthz stays reachable for liveness.
-	handle /readyz {
+	# Match the whole prefix case-insensitively: Express also serves /readyz/
+	# and /READYZ, and a plain `handle /readyz` would miss them.
+	@readyz path_regexp (?i)^/readyz(/|$)
+	handle @readyz {
 		respond 404
 	}
 

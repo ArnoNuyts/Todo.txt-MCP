@@ -415,8 +415,10 @@ exhaust the process memory:
   reference proxies. `GET /readyz` loads and serializes the todo list and
   returns `503` when the backend is unusable; it is unauthenticated but meant
   for internal/orchestrator probes only. Probe it over loopback or an internal
-  listener: the reference Caddy and nginx configs return `404` for `/readyz` on
-  the public host. Do not put the MCP bearer token in a probe spec.
+  listener: the reference Caddy and nginx configs return `404` for `/readyz`,
+  `/readyz/`, and case variants on the public host. Successful results are
+  cached for 5 seconds to absorb probe floods; failures are never cached. Do
+  not put the MCP bearer token in a probe spec.
 - **Backups:** snapshot `data/todo.txt` before upgrades or bulk edits. See
   [docs/backup-restore.md](docs/backup-restore.md).
 

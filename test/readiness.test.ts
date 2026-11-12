@@ -32,7 +32,7 @@ describe("readiness probe", () => {
 
   async function startApp(
     backend: TodoBackend,
-    options: { readinessTimeoutMs?: number } = {},
+    options: { readinessTimeoutMs?: number; readinessCacheMs?: number } = {},
   ) {
     httpServer = createApp(backend, {
       authToken: "readyz-token-aaaaaaaaaaaaaaaaaaaaaaaa",
@@ -149,7 +149,7 @@ describe("readiness probe", () => {
       save: async () => {},
     };
 
-    await startApp(backend);
+    await startApp(backend, { readinessCacheMs: 60_000 });
 
     const first = await fetch(`${baseUrl}/readyz`);
     const second = await fetch(`${baseUrl}/readyz`);
@@ -230,7 +230,34 @@ describe("readiness probe", () => {
     expect(loads).toBe(2);
   });
 
-  it("keeps single-flight behavior when caching is enabled", async () => {
+  it("does not cache a timed-out result even when caching is enabled", async () => {
+    let loads = 0;
+    let release!: () => void;
+    const backend: TodoBackend = {
+      load: () => {
+        loads += 1;
+        if (loads > 1) {
+          return Promise.resolve([]);
+        }
+        return new Promise<Todo[]>((resolve) => {
+          release = () => resolve([]);
+        });
+      },
+      save: async () => {},
+    };
+    const probe = createReadinessProbe(backend, 10, { cacheMs: 5_000 });
+
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    await expect(probe()).resolves.toMatchObject({ ready: false });
+    expect(loads).toBe(1);
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(probe()).resolves.toEqual({ ready: true });
+    expect(loads).toBe(2);
+  });
+
+  it("keeps single-flight behavior and serves the settled result from cache", async () => {
     let loads = 0;
     const backend: TodoBackend = {
       load: async () => {
@@ -245,6 +272,9 @@ describe("readiness probe", () => {
     const results = await Promise.all([probe(), probe(), probe()]);
 
     expect(results).toEqual([{ ready: true }, { ready: true }, { ready: true }]);
+    expect(loads).toBe(1);
+
+    await expect(probe()).resolves.toEqual({ ready: true });
     expect(loads).toBe(1);
   });
 

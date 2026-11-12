@@ -416,6 +416,7 @@ export interface CreateAppOptions extends HttpSecurityOptions {
   limits?: {
     abuse?: AbuseControlOverrides;
     readinessTimeoutMs?: number;
+    readinessCacheMs?: number;
   };
   abuse?: AbuseControlOverrides;
   trustProxy?: string | number | boolean | string[];
@@ -431,6 +432,8 @@ export interface CreateAppOptions extends HttpSecurityOptions {
   resolvedMetrics?: ResolvedMetricsConfig;
   /** Readiness probe timeout in milliseconds. Default: 2000. */
   readinessTimeoutMs?: number;
+  /** How long a successful readiness result may be reused, in milliseconds. Default: 5000. */
+  readinessCacheMs?: number;
 }
 
 /** Describes which credential `/metrics` uses, for the posture record only. */
@@ -690,12 +693,15 @@ export function createApp(
       process.env,
     );
   const readOnly = resolveReadOnlyMode(options, process.env);
-  const readiness = createReadinessProbe(
-    backend,
-    options.limits?.readinessTimeoutMs ?? options.readinessTimeoutMs ??
-      READINESS_TIMEOUT_MS,
-    { cacheMs: READINESS_CACHE_MS },
-  );
+  const readinessTimeoutMs = options.limits?.readinessTimeoutMs ??
+    options.readinessTimeoutMs ??
+    READINESS_TIMEOUT_MS;
+  const readinessCacheMs = options.limits?.readinessCacheMs ??
+    options.readinessCacheMs ??
+    READINESS_CACHE_MS;
+  const readiness = createReadinessProbe(backend, readinessTimeoutMs, {
+    cacheMs: readinessCacheMs,
+  });
   const mcpRateLimit = createRateLimitMiddleware({
     limiter: abuse.limiter,
     clientKey: abuse.clientKey,

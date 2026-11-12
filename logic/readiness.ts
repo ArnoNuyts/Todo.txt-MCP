@@ -97,7 +97,11 @@ export function createReadinessProbe(
       if (cacheMs > 0) {
         void current.result.then((result) => {
           if (result.ready) {
-            cached = { result, expiresAt: now() + cacheMs };
+            cached = {
+              // Copy so a caller cannot mutate the shared cached result.
+              result: { ...result },
+              expiresAt: now() + cacheMs,
+            };
           }
         });
       }

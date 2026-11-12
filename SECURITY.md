@@ -63,8 +63,10 @@ authorization (there is a single shared todo file).
   is broken. Because it triggers backend work, `/readyz` is for internal
   orchestrator probes only: probe it over loopback or an internal listener, and
   keep `/healthz` for public liveness checks. The reference Caddy and nginx
-  configs return `404` for `/readyz` on the public host. Never put the MCP
-  bearer token in a probe spec. `/mcp` and `/metrics` require a bearer token;
+  configs return `404` for `/readyz`, `/readyz/`, and case variants on the
+  public host. A successful readiness result is cached for 5 seconds to absorb
+  probe floods; failures are never cached. Never put the MCP bearer token in a
+  probe spec. `/mcp` and `/metrics` require a bearer token;
   the server refuses to start when no token source is configured.
 - **`/metrics` is off by default on a network deployment.** It is enabled when
   the server binds loopback and disabled when `HOST` is non-loopback, unless
