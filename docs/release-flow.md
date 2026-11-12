@@ -48,6 +48,41 @@ flowchart LR
    git push
    ```
 
+## Test builds (alpha/beta/rc)
+
+Alpha, beta, and release-candidate builds are **not releases**. They are npm
+snapshots for testing, and they never change `latest` or create a GitHub
+release. release-please ignores the `prerelease-v` tag prefix, so the stable
+version history is unaffected.
+
+From `release/next` (or a feature branch you want to test), create and push a
+tag whose version is a valid prerelease:
+
+```bash
+git switch release/next
+git pull
+git tag prerelease-v3.3.0-beta.1
+git push origin prerelease-v3.3.0-beta.1
+```
+
+The publish workflow runs the normal checks and publishes that version to npm
+under the `next` dist-tag. The version is taken from the tag; `package.json` in
+the repository is not changed. Each prerelease version can only be published
+once, so increment the number (`beta.2`, `rc.1`, ...) when testing again.
+
+Test it with the Compose setup from this repository:
+
+```bash
+TODOTXT_MCP_VERSION=next docker compose up -d --force-recreate
+# or pin the exact snapshot:
+TODOTXT_MCP_VERSION=3.3.0-beta.1 docker compose up -d --force-recreate
+```
+
+Return to the stable release with `TODOTXT_MCP_VERSION=3.2.0` (or by removing
+the variable). Delete the test tag with
+`git push --delete origin prerelease-v3.3.0-beta.1` if you no longer need it;
+the npm version remains available.
+
 ## Hotfixes
 
 Hotfixes must reach users without waiting for the next release:

@@ -3,6 +3,11 @@ name: Publish
 on:
   release:
     types: [published]
+  # Test builds for local Docker testing. These do not create a GitHub
+  # release and never move the `latest` dist-tag.
+  push:
+    tags:
+      - "prerelease-v*"
 
 permissions:
   contents: read
@@ -23,6 +28,18 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - name: Set prerelease version
+        if: startsWith(github.ref, 'refs/tags/prerelease-v')
+        run: |
+          version="${GITHUB_REF_NAME#prerelease-v}"
+          case "$version" in
+            *-alpha.*|*-beta.*|*-rc.*) ;;
+            *)
+              echo "::error::Tag must be prerelease-vX.Y.Z-alpha.N, -beta.N, or -rc.N."
+              exit 1
+              ;;
+          esac
+          npm version "$version" --no-git-tag-version
       - run: npm run typecheck
       - run: npm test
       - name: Publish to npm
@@ -32,4 +49,8 @@ jobs:
             echo "@arnoarnoarno/todo.txt-mcp@${version} is already published; skipping."
             exit 0
           fi
-          npm publish --provenance --access public
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$tag"
