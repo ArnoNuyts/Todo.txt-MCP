@@ -3,6 +3,10 @@ name: Publish
 on:
   release:
     types: [published]
+  # release-please creates its releases with GITHUB_TOKEN, whose `release`
+  # events do not start workflows. The Release Please workflow dispatches this
+  # workflow on the new tag so stable releases still reach npm.
+  workflow_dispatch:
   # Every push to release/next publishes an automatic beta to npm's `next`
   # tag. prerelease-v* tags are a manual escape hatch for testing an arbitrary
   # commit. Neither creates a GitHub release or moves `latest`.
