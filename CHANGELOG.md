@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.4.1...v3.5.0) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ci:** target dependabot updates at release/next ([#75](https://github.com/ArnoNuyts/Todo.txt-MCP/issues/75)) ([9f601e1](https://github.com/ArnoNuyts/Todo.txt-MCP/commit/9f601e137c0684d11d877dd2b48d6809f0a0222e))
+
 ## [3.4.1](https://github.com/ArnoNuyts/Todo.txt-MCP/compare/v3.4.0...v3.4.1) (2026-11-12)
 
 
