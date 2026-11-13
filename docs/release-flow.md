@@ -98,4 +98,6 @@ Hotfixes must reach users without waiting for the next release:
   land there.
 - `release/next` may be recreated after a release; the name is intentionally
   versionless so the flow does not change for every minor release.
+- Dependabot opens its update PRs against `release/next`, not `main`, so
+  dependency bumps follow the normal release train.
 - Update this document if the workflow changes.
